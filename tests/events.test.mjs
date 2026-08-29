@@ -736,6 +736,60 @@ echo "SCRIPT_OUTPUT: constitution loaded"`,
     }
   });
 
+  it("ps variant with no pwsh/powershell on PATH → degrades to 'no argv' (fail-open), not ENOENT (spec-kit #4340)", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const skillsDir = join(projectRoot, ".agents", "skills");
+      mkdirSync(join(skillsDir, "ps-skill"), { recursive: true });
+      writeFileSync(
+        join(skillsDir, "ps-skill", "SKILL.md"),
+        `---
+name: ps-skill
+description: ps-only skill
+scripts:
+  ps: scripts/boot.ps1
+---
+
+# ps-skill
+
+Body injected when script unresolvable.`,
+        "utf-8",
+      );
+      mkdirSync(join(skillsDir, "ps-skill", "scripts"), { recursive: true });
+      writeFileSync(join(skillsDir, "ps-skill", "scripts", "boot.ps1"), "exit 0\n", "utf-8");
+
+      installDispatcher(projectRoot);
+      const dispatcher = join(projectRoot, DISPATCHER_REL);
+
+      // Scrub PATH so neither pwsh nor powershell can be resolved, regardless
+      // of what the host machine has installed. Use process.execPath (absolute)
+      // for node itself so the parent spawnSync doesn't need PATH to launch it;
+      // the child only needs PATH for its own launcher probe, which must find
+      // nothing here.
+      const result = spawnSync(process.execPath, [dispatcher, "session_start", "ps-skill", skillsDir, "10"], {
+        encoding: "utf-8",
+        cwd: projectRoot,
+        env: { ...process.env, PATH: "" },
+      });
+
+      assert.equal(result.status, 0, `dispatcher exited ${result.status}: ${result.stderr}`);
+      assert.ok(
+        result.stderr.includes("unresolvable"),
+        `clean "unresolvable, falling back" logged, got: ${result.stderr}`,
+      );
+      assert.ok(
+        !result.stderr.includes("ENOENT") && !/script error/i.test(result.stderr),
+        `no confusing pwsh ENOENT, got: ${result.stderr}`,
+      );
+      assert.ok(
+        result.stdout.includes("Body injected when script unresolvable"),
+        "degraded to body injection instead of crashing spawn",
+      );
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("fail-open: missing skill logs and exits 0", () => {
     const projectRoot = createTestProject(true);
     try {

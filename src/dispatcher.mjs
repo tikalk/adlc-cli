@@ -24,10 +24,10 @@
 //   2. Body path (superpowers model): output the skill's markdown body
 //      (frontmatter stripped). LLM-interpreted orientation/instructions.
 
-import { readFileSync, readSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readSync, existsSync, readdirSync, statSync, accessSync, constants } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isatty } from "node:tty";
-import { join, resolve, dirname, sep } from "node:path";
+import { join, resolve, dirname, sep, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_TIMEOUT = 60;
@@ -200,6 +200,40 @@ function findProjectRoot() {
 
 // ── Script resolution (ported from spec-kit _resolve_event_command_argv) ─
 
+// Resolve a runnable launcher by scanning PATH (mirrors Python's
+// shutil.which). Returns the absolute path of the first `names` entry that
+// both exists and is executable, or null when none is found — so the ps
+// variant can degrade to "no argv" (clean "unresolvable, falling back")
+// instead of fabricating a bare "pwsh" that spawnSync would fail to exec
+// with a confusing ENOENT (spec-kit #4340).
+function findLauncher(names) {
+  const pathEnv = process.env.PATH || "";
+  if (!pathEnv) return null;
+  const dirs = pathEnv.split(delimiter).filter(Boolean);
+  // On Windows, PATHEXT lists the executable suffixes to probe; on POSIX a
+  // script name carries no extension.
+  const exts = process.platform === "win32"
+    ? (process.env.PATHEXT || ".EXE;.CMD;.BAT").split(delimiter).filter(Boolean)
+    : [""];
+  for (const name of names) {
+    for (const dir of dirs) {
+      for (const ext of exts) {
+        const candidate = join(dir, name + ext);
+        if (!existsSync(candidate)) continue;
+        try {
+          // X_OK is a no-op on Windows (Node never enforces the execute bit
+          // there); on POSIX it rejects files present but not executable.
+          accessSync(candidate, constants.X_OK);
+          return candidate;
+        } catch {
+          // exists but not executable — keep scanning
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function resolveScriptArgv(scriptsField, skillDir) {
   // scripts: is either a YAML-style string ("sh: scripts/boot.sh\nps: ...")
   // already parsed by our frontmatter parser into an object, or a raw string.
@@ -229,7 +263,12 @@ function resolveScriptArgv(scriptsField, skillDir) {
     return [process.execPath || "python3", scriptPath, ...rest];
   }
   if (variant === "ps") {
-    return ["pwsh", "-File", scriptPath, ...rest];
+    // Probe for a real launcher (pwsh, then powershell). When neither is on
+    // PATH, return null like every other unresolvable branch — NOT a bare
+    // "pwsh" argv, which would make spawnSync raise ENOENT (spec-kit #4340).
+    const launcher = findLauncher(["pwsh", "powershell"]);
+    if (!launcher) return null;
+    return [launcher, "-File", scriptPath, ...rest];
   }
   // sh: direct on POSIX; bash launcher on Windows.
   if (process.platform === "win32") {
