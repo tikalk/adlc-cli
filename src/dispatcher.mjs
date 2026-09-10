@@ -257,7 +257,7 @@ function confineScriptPath(base, token, projectRoot) {
     const realRoot = realpathSync(root);
     const realRel = relative(realRoot, realCandidate);
     if (realRel === "" || realRel.startsWith("..") || isAbsolute(realRel)) return null;
-    return realCandidate;
+    return candidate;
   } catch {
     return candidate;
   }
