@@ -250,17 +250,21 @@ function confineScriptPath(base, token, projectRoot) {
   if (posix.isAbsolute(token) || win32.isAbsolute(token)) return null;
   const candidate = resolve(base, token);
   const root = resolve(projectRoot);
-  const rel = relative(root, candidate);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
+  // Resolve symlinks on both sides BEFORE comparing, so macOS /var → /private/var
+  // doesn't cause a false ".." in the relative path. Return the original
+  // (non-realpath) candidate for execution so the path stays consistent with
+  // what the caller expects.
+  let realCandidate, realRoot;
   try {
-    const realCandidate = realpathSync(candidate);
-    const realRoot = realpathSync(root);
-    const realRel = relative(realRoot, realCandidate);
-    if (realRel === "" || realRel.startsWith("..") || isAbsolute(realRel)) return null;
-    return candidate;
+    realCandidate = realpathSync(candidate);
+    realRoot = realpathSync(root);
   } catch {
-    return candidate;
+    realCandidate = candidate;
+    realRoot = root;
   }
+  const rel = relative(realRoot, realCandidate);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
+  return candidate;
 }
 
 function resolveScriptArgv(scriptsField, skillDir, projectRoot) {
