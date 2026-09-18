@@ -164,6 +164,39 @@ async function cmdUpgrade(args, flags) {
   const mode = flags.mode || null;
   const isGlobal = flags.global || false;
 
+  if (flags.pull) {
+    // npx skills update doesn't re-copy files for local sources, so we
+    // read skills-lock.json for the source and re-install via npx skills add --copy
+    const lockPath = join(projectRoot, "skills-lock.json");
+    let pullSource = null;
+    if (existsSync(lockPath)) {
+      try {
+        const lock = JSON.parse(readFileSync(lockPath, "utf-8"));
+        const skillNames = flags.skill && flags.skill !== "*" ? [flags.skill] : Object.keys(lock.skills || {});
+        for (const name of skillNames) {
+          const entry = lock.skills?.[name];
+          if (entry?.source && !pullSource) pullSource = entry.source;
+        }
+      } catch {}
+    }
+    if (!pullSource) {
+      console.error("│  ✗ --pull requires skills-lock.json with source info (run 'add' first)");
+      return 1;
+    }
+    for (const agentKey of agents) {
+      const npxAgent = resolveNpxAgent(agentKey);
+      const npxArgs = ["skills", "add", pullSource, "-a", npxAgent, "--copy"];
+      if (flags.skill && flags.skill !== "*") { npxArgs.push("-s", flags.skill); }
+      npxArgs.push("-y");
+      console.log(`Pulling latest skills from ${pullSource} for ${agentKey}...`);
+      const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot });
+      if (result.status !== 0) {
+        console.error(`│  ✗ npx skills add failed for ${agentKey}`);
+        return result.status || 1;
+      }
+    }
+  }
+
   for (const agentKey of agents) {
     const agent = getAgent(agentKey);
     if (!agent) continue;
@@ -371,6 +404,8 @@ function parseArgs(argv) {
       flags.skill = rest[++i];
     } else if (arg === "--copy") {
       flags.copy = true;
+    } else if (arg === "--pull") {
+      flags.pull = true;
     } else if (arg === "-y" || arg === "--yes") {
       flags.yes = true;
     } else if (arg === "--commands-dir") {
@@ -396,7 +431,8 @@ USAGE:
 
 COMMANDS:
   add <source>       Install skills via npx skills + generate commands + events
-  upgrade            Re-generate commands from currently-installed skills
+  upgrade [--pull]    Re-generate commands from currently-installed skills
+                      --pull: also re-install skills from source (via npx skills add)
   remove             Remove generated commands + event configs
   status             Show what's installed per agent
   agents             List supported agents
@@ -409,6 +445,7 @@ FLAGS:
   --mode <mode>      inline (default) | wrapper
   --skill <name>     Install/generate for one skill only (use '*' for all)
   --copy             Copy files instead of symlinking (passthrough to npx skills)
+  --pull              Pull latest from source before regenerating (upgrade only)
   -y, --yes          Skip confirmation prompts
 
 INSTALL:
@@ -419,6 +456,8 @@ EXAMPLES:
   adlc-skills-cli add tikalk/adlc-team-skills -a opencode
   adlc-skills-cli add mattpocock/skills -a claude-code -a opencode --no-events
   adlc-skills-cli add tikalk/adlc-team-skills -a opencode --prefix adlc --skill team-setup
+  adlc-skills-cli upgrade --pull -a opencode
+  adlc-skills-cli upgrade --pull --skill team-boot -a opencode
   adlc-skills-cli status
   adlc-skills-cli agents
 `);
