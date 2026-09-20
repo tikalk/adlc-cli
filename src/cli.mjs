@@ -15,7 +15,9 @@ import {
   resolveEvents,
 } from "./events.mjs";
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), opts = {}) {
+  const mode = opts.mode ?? "legacy"; // "cli" (new tree) | "legacy" (adlc-skills-cli alias)
+  void mode; // Task 2 branches dispatch on mode; Task 1 keeps both trees identical
   const { command, args, flags } = parseArgs(argv);
 
   switch (command) {
