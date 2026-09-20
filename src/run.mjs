@@ -53,8 +53,13 @@ export function runTask({ profile, prompt, model, requireApproval, onLine }) {
 
     if (child.stdout) {
       const rl = createInterface({ input: child.stdout });
+      // Serialize line processing so an async onLine (e.g. HITL prompt)
+      // blocks subsequent lines — same pattern as the container's adapter.
+      let lineQueue = Promise.resolve();
       rl.on("line", (line) => {
-        if (onLine) onLine(line);
+        lineQueue = lineQueue
+          .then(() => onLine(line))
+          .catch((err) => console.error("[run] line error:", err));
       });
     }
 

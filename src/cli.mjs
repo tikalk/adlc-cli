@@ -15,6 +15,8 @@ import {
   resolveEvents,
 } from "./events.mjs";
 import { runTask } from "./run.mjs";
+import { normalizeLine } from "./run-events.mjs";
+import { createInterface } from "node:readline";
 
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const mode = opts.mode ?? "legacy"; // "cli" (new tree) | "legacy" (adlc-skills-cli alias)
@@ -134,24 +136,73 @@ async function cmdRunImpl(runArgs) {
     return 1;
   }
 
-  const { promise } = runTask({
+  const { promise, kill } = runTask({
     profile,
     prompt,
     model,
     requireApproval,
-    onLine: (line) => {
-      // Task 5 replaces this with the format-aware normalizer.
-      // For now: raw passthrough (text mode only).
-      if (format === "json") {
-        process.stdout.write(line + "\n");
-      } else {
-        process.stdout.write(line + "\n");
+    onLine: async (line) => {
+      const events = normalizeLine(line, profile.outputFormat);
+      for (const event of events) {
+        if (format === "json") {
+          process.stdout.write(JSON.stringify(event) + "\n");
+        } else if (event.type === "permission_request" && process.stdin.isTTY) {
+          await handleInlineHitl(event, kill);
+        } else {
+          renderTextEvent(event);
+        }
       }
     },
   });
 
   const { code, signal } = await promise;
   return code ?? (signal ? 130 : 1);
+}
+
+function renderTextEvent(event) {
+  switch (event.type) {
+    case "message":
+      process.stdout.write(String(event.text ?? ""));
+      break;
+    case "tool":
+      if (event.phase === "call") {
+        console.log(`\n[tool] ${event.name ?? "?"}(${JSON.stringify(event.arguments ?? {}).slice(0, 200)})`);
+      } else {
+        console.log(`[tool] → ${String(event.result ?? "").slice(0, 200)}`);
+      }
+      break;
+    case "permission_request":
+      // Non-TTY: emit as a log line (no interactive prompt possible)
+      console.log(`\n[permission_request] tool="${event.tool}" id=${event.request_id}`);
+      break;
+    case "error":
+      console.error(`[error] ${event.message ?? ""}`);
+      break;
+    case "complete":
+      break;
+    case "log":
+      console.log(`[log] ${event.message ?? JSON.stringify(event).slice(0, 300)}`);
+      break;
+  }
+}
+
+async function handleInlineHitl(event, kill) {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(
+      `\n[HITL] Allow tool "${event.tool}"? (id: ${event.request_id}) [a]llow / [o]nce / [d]eny / a[l]ways: `,
+      (answer) => {
+        rl.close();
+        const a = answer.trim().toLowerCase();
+        if (a === "d" || a === "deny") {
+          kill("SIGTERM");
+        }
+        // allow/once/always → continue (documented limitation: allow doesn't
+        // propagate into the agent process; same as the container today)
+        resolve();
+      },
+    );
+  });
 }
 
 // ── add ────────────────────────────────────────────────────────────────

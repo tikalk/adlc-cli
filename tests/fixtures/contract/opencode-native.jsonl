@@ -1,0 +1,6 @@
+{"type":"message","content":"Analyzing the codebase..."}
+{"type":"tool_call","name":"Bash","arguments":{"command":"ls -la"}}
+{"type":"tool_result","result":"total 48\ndrwxr-xr-x 5 lior lior 4096 ..."}
+{"type":"permission","tool":"Write","id":"req-abc123"}
+{"type":"error","message":"File not found"}
+{"type":"complete"}
