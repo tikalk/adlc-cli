@@ -1196,9 +1196,10 @@ Body should NOT be injected when file is unreadable.`,
 });
 
 describe("Registry: events data", () => {
-  it("has 6 canonical events", () => {
-    assert.equal(CANONICAL_EVENTS.length, 6);
+  it("has 7 canonical events", () => {
+    assert.equal(CANONICAL_EVENTS.length, 7);
     assert.ok(CANONICAL_EVENTS.includes("session_start"));
+    assert.ok(CANONICAL_EVENTS.includes("session_compact"));
     assert.ok(CANONICAL_EVENTS.includes("user_prompt_submit"));
     assert.ok(CANONICAL_EVENTS.includes("pre_tool_use"));
     assert.ok(CANONICAL_EVENTS.includes("post_tool_use"));
@@ -1206,8 +1207,9 @@ describe("Registry: events data", () => {
     assert.ok(CANONICAL_EVENTS.includes("stop"));
   });
 
-  it("body injection applies to session_start and user_prompt_submit only", () => {
+  it("body injection applies to session_start, session_compact, and user_prompt_submit only", () => {
     assert.ok(BODY_INJECTION_EVENTS.has("session_start"));
+    assert.ok(BODY_INJECTION_EVENTS.has("session_compact"));
     assert.ok(BODY_INJECTION_EVENTS.has("user_prompt_submit"));
     assert.ok(!BODY_INJECTION_EVENTS.has("pre_tool_use"));
     assert.ok(!BODY_INJECTION_EVENTS.has("session_end"));

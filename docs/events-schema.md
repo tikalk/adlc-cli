@@ -35,6 +35,7 @@ Repos without `.events.json` are handled gracefully — commands are generated, 
 | Event | Fires when | Payload (stdin) | Body path |
 |-------|-----------|-----------------|-----------|
 | `session_start` | Agent session begins | `{}` | yes |
+| `session_compact` | Harness compacts/summarizes history (post-compaction re-injection) | `{}` | yes |
 | `user_prompt_submit` | User sends a prompt | `{ "prompt": "..." }` | yes |
 | `pre_tool_use` | Before a tool call | `{ "tool": "...", "args": {} }` | no (script only) |
 | `post_tool_use` | After a tool call | `{ "tool": "...", "result": {} }` | no (script only) |

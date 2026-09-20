@@ -36,7 +36,7 @@ const DEFAULT_TIMEOUT = 60;
 // readFileSync(0) lets a hostile or buggy agent exhaust memory on every fire.
 const MAX_STDIN_BYTES = 1024 * 1024; // 1 MiB
 
-const BODY_INJECTION_EVENTS = new Set(["session_start", "user_prompt_submit"]);
+const BODY_INJECTION_EVENTS = new Set(["session_start", "session_compact", "user_prompt_submit"]);
 
 function main() {
   const [,, event, skillName, skillsDirArg, timeoutArg, envelopeArg] = process.argv;

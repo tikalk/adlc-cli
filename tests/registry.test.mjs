@@ -72,3 +72,37 @@ describe("Registry integrity", () => {
     assert.ok(!getAgent("claude-code").user_invoked_mode, "claude-code respects the flag → execution fallback");
   });
 });
+
+describe("session_compact event support", () => {
+  it("session_compact is a recognized canonical event", async () => {
+    const { CANONICAL_EVENTS } = await import("../src/registry.mjs");
+    assert.ok(CANONICAL_EVENTS.includes("session_compact"));
+  });
+
+  it("every event agent declares an explicit session_compact mapping (even null)", async () => {
+    const { EVENT_AGENTS } = await import("../src/registry.mjs");
+    for (const [key, entry] of Object.entries(EVENT_AGENTS)) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(entry.canonical_to_native, "session_compact"),
+        `${key}: canonical_to_native lacks an explicit session_compact mapping`,
+      );
+    }
+  });
+
+  it("no canonical event is silently unknown to any event agent", async () => {
+    const { EVENT_AGENTS, CANONICAL_EVENTS } = await import("../src/registry.mjs");
+    for (const [key, entry] of Object.entries(EVENT_AGENTS)) {
+      for (const ev of CANONICAL_EVENTS) {
+        assert.ok(
+          Object.prototype.hasOwnProperty.call(entry.canonical_to_native, ev),
+          `${key}: canonical event ${ev} has no per-agent decision`,
+        );
+      }
+    }
+  });
+
+  it("session_compact participates in the body-injection path", async () => {
+    const { BODY_INJECTION_EVENTS } = await import("../src/registry.mjs");
+    assert.ok(BODY_INJECTION_EVENTS.has("session_compact"));
+  });
+});
