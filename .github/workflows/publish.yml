@@ -24,7 +24,7 @@ jobs:
         run: npm test
 
       - name: Verify CLI starts
-        run: node bin/adlc-skills-cli.mjs agents
+        run: node bin/adlc-cli.mjs agent list
 
   publish:
     needs: test
@@ -55,7 +55,9 @@ jobs:
           fi
 
       - name: Publish to npm
-        run: npm publish
+        run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
         run: gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"

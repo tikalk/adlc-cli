@@ -1,0 +1,120 @@
+// Command dispatch: parse args, route to skill/agent/version/help trees.
+
+import { AGENTS } from "./registry.mjs";
+import { cmdAdd, cmdUpgrade, cmdRemove, cmdStatus } from "./commands/skill.mjs";
+import { cmdAgentRun, cmdAgentList } from "./commands/agent.mjs";
+import { printCliHelp, printSkillHelp, printAgentHelp, printHelp } from "./help.mjs";
+
+const VERSION = "1.0.2";
+
+export async function dispatch(argv, mode = "legacy") {
+  const parsed = parseArgs(argv);
+  return mode === "cli" ? runNewTree(parsed, argv) : runLegacyTree(parsed);
+}
+
+function runLegacyTree({ command, args, flags }) {
+  switch (command) {
+    case "add":
+      return cmdAdd(args, flags);
+    case "upgrade":
+      return cmdUpgrade(args, flags);
+    case "remove":
+      return cmdRemove(args, flags);
+    case "status":
+      return cmdStatus(args, flags);
+    case "agents":
+      return cmdAgentList();
+    case "help":
+    default:
+      printHelp();
+      return 0;
+  }
+}
+
+function runNewTree({ command, args, flags }, argv) {
+  switch (command) {
+    case "skill": {
+      const sub = args[0] ?? "help";
+      const rest = args.slice(1);
+      switch (sub) {
+        case "add":
+          return cmdAdd(rest, flags);
+        case "upgrade":
+          return cmdUpgrade(rest, flags);
+        case "remove":
+          return cmdRemove(rest, flags);
+        case "status":
+          return cmdStatus(rest, flags);
+        case "help":
+          printSkillHelp();
+          return 0;
+        default:
+          console.error(`Unknown skill command: "${sub}"`);
+          printSkillHelp();
+          return 1;
+      }
+    }
+    case "agent": {
+      const sub = args[0] ?? "help";
+      const rest = argv.slice(argv.indexOf(sub) + 1);
+      switch (sub) {
+        case "run":
+          return cmdAgentRun(rest);
+        case "list":
+          return cmdAgentList();
+        case "help":
+          printAgentHelp();
+          return 0;
+        default:
+          console.error(`Unknown agent command: "${sub}"`);
+          printAgentHelp();
+          return 1;
+      }
+    }
+    case "version":
+      console.log(`adlc-cli ${VERSION}`);
+      return 0;
+    case "help":
+    default:
+      printCliHelp();
+      return 0;
+  }
+}
+
+function parseArgs(argv) {
+  const command = argv[0] || "help";
+  const rest = argv.slice(1);
+
+  const args = [];
+  const flags = { agents: [] };
+
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+
+    if (arg === "-a" || arg === "--agent") {
+      flags.agents.push(rest[++i]);
+    } else if (arg === "-g" || arg === "--global") {
+      flags.global = true;
+    } else if (arg === "--no-events") {
+      flags.noEvents = true;
+    } else if (arg === "--prefix") {
+      flags.prefix = rest[++i];
+    } else if (arg === "--mode") {
+      flags.mode = rest[++i];
+    } else if (arg === "--skill" || arg === "-s") {
+      flags.skill = rest[++i];
+    } else if (arg === "--copy") {
+      flags.copy = true;
+    } else if (arg === "--pull") {
+      flags.pull = true;
+    } else if (arg === "-y" || arg === "--yes") {
+      flags.yes = true;
+    } else if (arg === "--commands-dir") {
+      flags.commandsDir = rest[++i];
+    } else if (!arg.startsWith("-")) {
+      args.push(arg);
+    }
+  }
+
+  return { command, args, flags };
+}

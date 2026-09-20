@@ -1,0 +1,5 @@
+{"type":"message","text":"Hello! 👋"}
+{"type":"tool","phase":"call","name":"write","arguments":{"filePath":"/tmp/test.txt","content":"hello"}}
+{"type":"tool","phase":"result","result":"Wrote file successfully."}
+{"type":"message","text":"Done."}
+{"type":"complete"}

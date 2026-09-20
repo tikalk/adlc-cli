@@ -1,0 +1,5 @@
+{"type":"assistant","content":[{"type":"text","text":"Hello! 👋"}]}
+{"type":"tool_use","name":"write","input":{"filePath":"/tmp/test.txt","content":"hello"}}
+{"type":"tool_result","content":[{"type":"text","text":"Wrote file successfully."}]}
+{"type":"assistant","content":[{"type":"text","text":"Done."}]}
+{"type":"result","result":"done"}

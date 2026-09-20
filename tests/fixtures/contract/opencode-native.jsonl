@@ -1,0 +1,7 @@
+{"type":"step_start","timestamp":1789909278514,"sessionID":"ses_abc","part":{"id":"prt_1","messageID":"msg_1","sessionID":"ses_abc","type":"step-start"}}
+{"type":"text","timestamp":1789909278515,"sessionID":"ses_abc","part":{"id":"prt_2","messageID":"msg_1","type":"text","text":"Hello! 👋"}}
+{"type":"tool_use","timestamp":1789909406255,"sessionID":"ses_abc","part":{"type":"tool","tool":"write","callID":"call_1","state":{"status":"completed","input":{"filePath":"/tmp/test.txt","content":"hello"},"output":"Wrote file successfully."},"id":"prt_3","messageID":"msg_2"}}
+{"type":"step_finish","timestamp":1789909406357,"sessionID":"ses_abc","part":{"id":"prt_4","reason":"tool-calls","messageID":"msg_2","type":"step-finish","tokens":{"total":145218,"input":261,"output":31}}}
+{"type":"step_start","timestamp":1789909410181,"sessionID":"ses_abc","part":{"id":"prt_5","messageID":"msg_3","type":"step-start"}}
+{"type":"text","timestamp":1789909410181,"sessionID":"ses_abc","part":{"id":"prt_6","messageID":"msg_3","type":"text","text":"Done.","time":{"start":1789909410170,"end":1789909410176}}}
+{"type":"step_finish","timestamp":1789909410226,"sessionID":"ses_abc","part":{"id":"prt_7","reason":"stop","messageID":"msg_3","type":"step-finish","tokens":{"total":145870,"input":1092,"output":3}}}

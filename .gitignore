@@ -14,3 +14,9 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Generated install artifacts (via adlc-cli skill add)
+.agents/
+.opencode/
+.events.json
+skills-lock.json

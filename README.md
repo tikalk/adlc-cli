@@ -1,28 +1,104 @@
-# adlc-skills-cli
+# adlc-cli
 
-A generic CLI that wraps `npx skills add` and converts installed skills to slash commands — plus **event hooks** (`session_start`, `session_compact`, `user_prompt_submit`, and more) that auto-trigger skills on any coding agent.
+A dual-mode CLI for coding agents: **skill management** (install skills, generate slash commands, wire lifecycle event hooks) + **agent execution** (run any coding agent headlessly with a task — the invocation layer the [Agentic Container](https://github.com/tikalk/agentic-container) delegates to).
+
+> **Renamed from** `adlc-skills-cli` in v1.0.0. The old command surface still works via the deprecated `adlc-skills-cli` alias bin + npm shim during 1.x.
 
 Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-team-skills), [mattpocock/skills](https://github.com/mattpocock/skills), [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), [obra/superpowers](https://github.com/obra/superpowers), or your own.
-
-## Why?
-
-`npx skills add` installs `SKILL.md` files to an agent's skills directory, but does **not** generate slash command files or wire event hooks. Many coding agents only support commands (not skills), and auto-triggering skills at lifecycle points (session start, prompt submit) requires per-agent native hook configuration. This CLI fills both gaps.
 
 ## Quickstart
 
 ```bash
-# Install skills + generate commands + wire events (if .events.json present)
-npx adlc-skills-cli add tikalk/adlc-team-skills -a opencode
+# Install skills + generate commands + wire events
+npx adlc-cli skill add tikalk/adlc-team-skills -a opencode
 
 # Works with any skills repo — events auto-skip if no .events.json
-npx adlc-skills-cli add mattpocock/skills -a claude-code --no-events
-npx adlc-skills-cli add addyosmani/agent-skills -a opencode -a cursor
+npx adlc-cli skill add mattpocock/skills -a claude-code --no-events
+npx adlc-cli skill add addyosmani/agent-skills -a opencode -a cursor
+
+# Run a coding agent headlessly with a task
+npx adlc-cli agent run "Fix the failing auth test" -a opencode
+
+# List supported agents + run profiles
+npx adlc-cli agent list
+
+# Print version
+npx adlc-cli version
 ```
 
-## How it works
+## Commands
+
+### Skill management
+
+| Command | Description |
+|---------|-------------|
+| `skill add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire events |
+| `skill upgrade [-a <agent>]` | Re-generate commands from installed skills; `--pull` re-installs from source |
+| `skill remove [-a <agent>]` | Remove generated commands + event configs; cleans dispatcher + `.events.json` |
+| `skill status [-a <agent>]` | Show what's installed per agent + dispatcher + event status |
+
+### Agent execution
+
+| Command | Description |
+|---------|-------------|
+| `agent run "<task>" [flags]` | Run a coding agent headlessly with a task |
+| `agent list` | List supported agents, command formats, event support, and run profiles |
+
+### Top-level
+
+| Command | Description |
+|---------|-------------|
+| `version` | Print installed version |
+| `help` | Show full help |
+
+## `agent run` flags
+
+| Flag | Description |
+|------|-------------|
+| `-a <agent>` | Agent: `opencode` \| `claude-code` \| `goose` \| `gemini` (default: `opencode`) |
+| `--model <id>` | Model id passed to the agent CLI (optional — agent picks its own if absent) |
+| `--format <fmt>` | Output: `text` (default, human-readable) \| `json` (normalized JSONL for container/CI) |
+| `--cwd <path>` | Working directory (default: current directory) |
+| `--timeout <s>` | Kill agent after N seconds (CI safety) |
+| `--require-approval <tools>` | Comma-separated tools that pause for human approval (e.g., `Bash,Write`) |
+| `-` | Read the task from stdin |
+
+### `agent run` examples
+
+```bash
+# One-shot run (text output)
+adlc-cli agent run "Fix the failing auth test" -a opencode
+
+# JSON output (normalized JSONL — what the Agentic Container consumes)
+adlc-cli agent run "echo hello" -a opencode --format json
+
+# Read task from stdin
+cat brief.md | adlc-cli agent run - --format json
+
+# Run in a specific workspace with a timeout
+adlc-cli agent run "refactor utils" -a opencode --cwd ./my-project --timeout 120
+
+# Require approval for dangerous tools (HITL)
+adlc-cli agent run "deploy to staging" -a opencode --require-approval Bash,Write
+```
+
+### Normalized JSONL event vocabulary
+
+`agent run --format json` emits one JSON object per line:
+
+| Type | Payload | Meaning |
+|------|---------|---------|
+| `message` | `{text}` | Agent text output |
+| `tool` | `{phase: "call"\|"result", name?, arguments?, result?}` | Tool invocation or result |
+| `permission_request` | `{tool, request_id}` | HITL permission gate |
+| `error` | `{message}` | Error |
+| `complete` | `{}` | Agent finished |
+| `log` | `{message?}` | Non-structured log line |
+
+## How skill installation works
 
 ```
-adlc-skills-cli add <source> -a <agent>
+adlc-cli skill add <source> -a <agent>
   │
   ├─ 1. npx skills add <source> -a <npx_agent>     ← installs SKILL.md files
   │
@@ -37,67 +113,47 @@ adlc-skills-cli add <source> -a <agent>
         .opencode/plugin/adlc-skills-events.ts        agent-native hook config
 ```
 
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire events |
-| `upgrade [-a <agent>]` | Re-generate commands from currently-installed skills (header-matched overwrite); re-generates events from local `.events.json` |
-| `remove [-a <agent>]` | Remove generated commands + event configs (marker-matched only); also removes dispatcher + copied `.events.json` |
-| `status [-a <agent>]` | Show what's installed per agent + dispatcher + event status |
-| `agents` | List supported agents, directories, formats, event support |
-
-## Flags
+## Skill flags
 
 | Flag | Description |
 |------|-------------|
-| `-a <agent>` | Target agent (repeatable). Run `agents` to list. |
+| `-a <agent>` | Target agent (repeatable). Run `agent list` to list. |
 | `-g, --global` | Install to user directory instead of project |
 | `--no-events` | Skip event config generation |
 | `--prefix <str>` | Namespace command filenames (e.g., `adlc.team-setup.md`) |
-| `--mode <mode>` | `inline` (embeds full skill body) or `wrapper` (references skill by name). Overrides the per-agent default — opencode, claude-code, cursor, copilot, and codex default to `wrapper`; all others default to `inline`. |
+| `--mode <mode>` | `inline` (embeds full skill body) or `wrapper` (references skill by name) |
 | `--skill, -s <name>` | Install/generate for one skill only (use `'*'` for all) |
 | `--copy` | Copy files instead of symlinking (passthrough to `npx skills`) |
 | `-y, --yes` | Skip confirmation prompts |
 
 ## Supported agents
 
-24 agents across 3 command formats. 9 agents support event hooks.
+24 agents across 3 command formats. 9 agents support event hooks. 4 agents support `agent run`.
 
-| Agent | Commands dir | Format | Events |
-|-------|-------------|--------|--------|
-| opencode | `.opencode/commands/` | markdown | yes |
-| claude-code | `.claude/commands/` | markdown | yes |
-| cursor | `.cursor/commands/` | markdown | yes |
-| github-copilot | `.github/prompts/` | markdown | yes |
-| codex | `~/.codex/prompts/` | markdown | yes |
-| devin | `.devin/commands/` | markdown | yes |
-| qwen-code | `.qwen/commands/` | markdown | yes |
-| gemini-cli | `.gemini/commands/` | toml | yes |
-| tabnine-cli | `.tabnine/agent/commands/` | toml | yes |
-| amp | `.agents/commands/` | markdown | no |
-| goose | `.goose/recipes/` | yaml | no |
-| ...and 13 more | | | |
+| Agent | Commands dir | Format | Events | Run |
+|-------|-------------|--------|--------|-----|
+| opencode | `.opencode/commands/` | markdown | yes | yes |
+| claude-code | `.claude/commands/` | markdown | yes | yes |
+| goose | `.goose/recipes/` | yaml | no | yes |
+| gemini | `.gemini/commands/` | toml | yes | yes |
+| ...and 20 more | | | | |
 
-Run `adlc-skills-cli agents` for the full list.
+Run `adlc-cli agent list` for the full table.
 
 ## Command generation: two modes
 
 ### Inline
 
-Embeds the full `SKILL.md` body in the command file — self-contained, works on any agent even without skill support:
+Embeds the full `SKILL.md` body in the command file — self-contained, works on any agent:
 
 ```markdown
 ---
 description: Clone, scaffold, or configure a team AI directives repository
 ---
 
-<!-- generated by adlc-skills-cli; source: tikalk/adlc-team-skills — do not edit -->
+<!-- generated by adlc-cli; source: tikalk/adlc-team-skills — do not edit -->
 
 Base directory for this skill: /project/.agents/skills/team-setup
-Relative paths in this skill are relative to this base directory.
-
----
 
 # Team Setup
 
@@ -115,55 +171,49 @@ Thin command that references the installed skill — requires the agent to have 
 description: Clone, scaffold, or configure a team AI directives repository
 ---
 
-<!-- generated by adlc-skills-cli; source: tikalk/adlc-team-skills — do not edit -->
+<!-- generated by adlc-cli; source: tikalk/adlc-team-skills — do not edit -->
 
 Invoke the `team-setup` skill.
 
-<skill summary — first 1-2 paragraphs>
+<skill summary>
 
 ## User Input
-
-The arguments supplied when invoking this command appear below. Read them and use them as input to the skill workflow — do not ask the user to repeat or rephrase what they already provided. If this section is empty, proceed with the skill's default first step.
 
 $ARGUMENTS
 ```
 
-The `## User Input` block is generated by the CLI for **both wrapper and execution modes** so the args placeholder is framed as workflow input rather than appended as trailing text. This bridges the gap that the `skill` tool has no parameter for arguments — the model sees args inline in the command body and is instructed to consume them directly.
+The `## User Input` block is generated for **both modes** so the args placeholder is framed as workflow input rather than trailing text.
 
 ## User-invoked skills: wrapper vs execution mode
 
-User-invoked skills (`disable-model-invocation: true` in frontmatter) are meant to be triggered explicitly, not auto-invoked by the model. On wrapper-default agents (those with a `skill` tool), the command body strategy is chosen per agent via `user_invoked_mode`:
+User-invoked skills (`disable-model-invocation: true` in frontmatter) are meant to be triggered explicitly. The command body strategy depends on the agent:
 
-| `user_invoked_mode` | Used by | Command body | Why |
-|---------------------|---------|--------------|-----|
-| `"wrapper"` | `opencode` | `Invoke the \`team-setup\` skill.` + summary + `## User Input` block with `$ARGUMENTS` | opencode **ignores** `disable-model-invocation` — the skill stays in `<available_skills>` and loads via the `skill` tool. The wrapper command tells the model to invoke it, and it can. Args are framed as workflow input since the `skill` tool has no args parameter. |
-| `"execution"` (default) | `claude-code`, cursor, copilot, codex | Full body inlined, framed as imperative steps + `## User Input` block with `$ARGUMENTS` | These agents **respect** `disable-model-invocation` — the skill is hidden from the model, so `skill({name})` would fail. Inlining the body is the only working path. |
-
-For opencode, `/team-setup` expands to the wrapper text, the model sees `team-setup` in `<available_skills>`, and calls `skill({ name: "team-setup" })` — the skill loads via the tool with full progressive disclosure (base dir + sampled files, invocation visible in traces).
+| Mode | Used by | Why |
+|------|---------|-----|
+| `wrapper` | opencode | Ignores `disable-model-invocation` — skill stays available, model calls `skill({name})` |
+| `execution` | claude-code, cursor, copilot, codex | Respects `disable-model-invocation` — skill hidden, body must be inlined |
 
 ## Install
 
 ```bash
 # One-off (no install needed)
-npx adlc-skills-cli add tikalk/adlc-team-skills -a opencode
+npx adlc-cli skill add tikalk/adlc-team-skills -a opencode
 
-# Install as global binary → adlc-skills-cli available everywhere
-npm install -g adlc-skills-cli
-adlc-skills-cli add tikalk/adlc-team-skills -a opencode
+# Install as global binary
+npm install -g adlc-cli
+adlc-cli skill add tikalk/adlc-team-skills -a opencode
 ```
 
 ## Events: lifecycle hooks
 
-For agents with native hook support (9 agents), the CLI wires event hooks that auto-trigger skills at lifecycle points — replacing the "model must invoke the skill" soft directive with deterministic, runtime-enforced context injection.
+For agents with native hook support (9 agents), the CLI wires event hooks that auto-trigger skills at lifecycle points.
 
 Events are **auto-enabled** when:
-1. The agent supports events (9 agents above)
+1. The agent supports events
 2. The source repo declares a `.events.json` manifest
 3. `--no-events` is not set
 
 ### `.events.json` manifest
-
-Skills repos declare events at the repo root:
 
 ```json
 {
@@ -172,51 +222,32 @@ Skills repos declare events at the repo root:
       { "skill": "team-boot", "description": "Bootstrap session with team context", "timeout": 60 }
     ],
     "user_prompt_submit": [
-      { "skill": "team-discover", "description": "Fetch relevant context for the current prompt", "timeout": 30 }
+      { "skill": "team-discover", "description": "Fetch relevant context", "timeout": 30 }
     ]
   }
 }
 ```
 
-Repos without `.events.json` (e.g., mattpocock/skills) simply get commands only — events are skipped silently.
-
-During `add`, the `.events.json` manifest is copied from the source repo to the project root so that `upgrade` can re-read it without the source repo being present.
+Repos without `.events.json` get commands only — events are skipped silently.
 
 ### The dispatcher: two execution paths
 
-A generic dispatcher (`.agents/dispatcher.mjs`) is shipped to the project. When a native hook fires, it calls the dispatcher with `(event, skill, skills_dir, timeout)`. The dispatcher resolves the skill and executes it via one of two paths:
+A generic dispatcher (`.agents/dispatcher.mjs`) is shipped to the project. When a native hook fires, it calls the dispatcher:
 
-| Path | When | How | Best for |
-|------|------|-----|----------|
-| **Script** (spec-kit model) | Skill has `scripts:` in frontmatter | Runs the script (sh/ps/py variant) → stdout | Deterministic logic (file assembly, keyword matching) |
-| **Body** (superpowers model) | No `scripts:` block | Outputs the skill's markdown body → stdout | Orientation/instruction skills (pure LLM prompts) |
+| Path | When | How |
+|------|------|-----|
+| **Script** | Skill has `scripts:` in frontmatter | Runs the script → stdout |
+| **Body** | No `scripts:` block | Outputs the skill's markdown body → stdout |
 
-Both paths share the **stdout → context injection** pipeline: whatever the dispatcher outputs to stdout is captured by the agent's native hook and injected as session context.
-
-```yaml
-# Skill with a script (deterministic path)
----
-name: team-boot
-scripts:
-  sh: scripts/boot.sh
----
-```
-
-```yaml
-# Skill without a script (body path — default)
----
-name: using-superpowers
-description: Orientation skill injected at session start
----
-```
+Both paths feed the **stdout → context injection** pipeline.
 
 ### 7 canonical events
 
 | Event | Fires when | Body path? | Script path? |
 |-------|-----------|-----------|-------------|
 | `session_start` | Agent session begins | yes | yes |
-| `session_compact` | Harness compacts/summarizes history (post-compaction re-injection) | yes | yes |
-| `user_prompt_submit` | User sends a prompt (payload via stdin) | yes | yes |
+| `session_compact` | Harness compacts history | yes | yes |
+| `user_prompt_submit` | User sends a prompt | yes | yes |
 | `pre_tool_use` | Before a tool call | no | yes |
 | `post_tool_use` | After a tool call | no | yes |
 | `session_end` | Session ends | no | yes |
@@ -224,45 +255,21 @@ description: Orientation skill injected at session start
 
 ### Per-agent native hook configuration
 
-The CLI generates agent-native hook configs that call the dispatcher. Each agent's native event names and config format are handled automatically:
-
 | Agent | Config file | Format | Timeout unit |
 |-------|------------|--------|-------------|
 | opencode | `.opencode/plugin/adlc-skills-events.ts` | TS plugin | seconds |
 | claude-code | `.claude/settings.json` (merged) | JSON nested | seconds |
 | cursor | `.cursor/hooks.json` (merged) | JSON nested | seconds |
-| github-copilot | `.github/hooks/adlc-skills.json` | JSON (bash+powershell) | seconds |
+| github-copilot | `.github/hooks/adlc-skills.json` | JSON | seconds |
 | codex | `.codex/config.toml` (merged) | TOML | seconds |
-| gemini-cli | `.gemini/settings.json` (merged) | JSON nested | milliseconds |
+| gemini | `.gemini/settings.json` (merged) | JSON nested | milliseconds |
 | qwen-code | `.qwen/settings.json` (merged) | JSON nested | milliseconds |
 | devin | `.devin/hooks.v1.json` (merged) | JSON root-nested | seconds |
-| tabnine-cli | `.tabnine/agent/settings.json` (merged) | JSON nested | milliseconds |
-
-### Context injection: what reaches the model
-
-Not every agent injects a hook's plain-text stdout as model context. The dispatcher wraps its stdout in the JSON envelope each agent's hook protocol requires (passed as a 5th argv arg), per this matrix:
-
-| Agent | `session_start` injection | `user_prompt_submit` injection | Mechanism |
-|-------|--------------------------|-------------------------------|-----------|
-| claude-code | ✅ plain stdout | ✅ plain stdout | none needed |
-| codex | ✅ plain stdout | ✅ plain stdout | none needed |
-| gemini-cli | ✅ JSON envelope | ✅ JSON envelope | `{"hookSpecificOutput":{"additionalContext":...}}` |
-| tabnine-cli | ✅ JSON envelope | ✅ JSON envelope | same |
-| qwen-code | ✅ JSON envelope | ✅ JSON envelope | same |
-| devin | ✅ JSON envelope | ✅ JSON envelope | same |
-| github-copilot | ✅ JSON envelope | ⛔ impossible | `{"additionalContext":...}` (top-level); `userPromptSubmitted` output is not processed |
-| cursor | ✅ JSON envelope | ⛔ impossible | `{"additional_context":...}` (snake_case); `beforeSubmitPrompt` has no context field |
-| opencode | ✅ `system.transform` | ✅ `chat.message` | plugin pushes into hook outputs (no stdout) |
-
-For strict-JSON agents (gemini-cli, tabnine-cli, qwen-code, devin), plain stdout on non-injectable events would become user-facing noise or a hook parse error — there the dispatcher is invoked with `suppress` and emits nothing. On cursor, everything except `sessionStart` is suppressed for the same reason.
-
-> **Codex trust review**: Codex skips non-managed hooks until you review and trust them. After installing, run `/hooks` in Codex once and trust the generated entries (trust is recorded against the hook hash, so upgrades that change the entries need re-trusting). The repo's `.codex/` layer must also be trusted. Hooks are enabled by default otherwise — `[features] hooks = false` in `config.toml` is the kill switch.
-
-> **opencode compatibility**: the generated TS plugin is verified against opencode **≥ 1.18**. opencode's `Part.id` must start with `prt` (its `Identifier` brand) and hooks must never throw — a schema error or rethrown exception in a plugin crashes the whole session. The plugin derives the injected part's id from the last existing part at runtime (so it inherits opencode's brand even if the prefix changes), falling back to `prt_`, and wraps every hook body in try/catch that logs instead of rethrowing. If you upgrade opencode, re-run `adlc-skills-cli upgrade -a opencode` to regenerate the plugin.
+| tabnine | `.tabnine/agent/settings.json` (merged) | JSON nested | milliseconds |
 
 ### Safety patterns (ported from spec-kit)
 
-- **Idempotent merge**: re-install never duplicates hook entries (marker-based dedup)
+- **Idempotent merge**: re-install never duplicates hook entries
 - **Surgical teardown**: `remove` strips only our entries, preserves user hooks
 - **JSONC preservation**: malformed JSON aborts, never resets user content
 - **Safe-destination validation**: rejects symlink redirects outside project root
@@ -271,13 +278,11 @@ For strict-JSON agents (gemini-cli, tabnine-cli, qwen-code, devin), plain stdout
 
 ## Self-describing files
 
-Every generated file includes a `<!-- generated by adlc-skills-cli -->` header. Event hook entries carry a `_adlc_skills_cli: true` marker (JSON) or `adlc_skills_marker = true` (TOML). This enables:
-- `remove` to safely delete only our files (user-created commands/hooks are never touched)
-- `upgrade` to overwrite our files while skipping user-modified ones (header removed = user-owned)
+Every generated file includes a `<!-- generated by adlc-cli -->` header. Event hook entries carry a `_adlc_skills_cli: true` marker (JSON) or `adlc_skills_marker = true` (TOML). This enables:
+- `remove` to safely delete only our files
+- `upgrade` to overwrite our files while skipping user-modified ones
 
 No manifest database or state file needed.
-
-> **Upgrading from `adlc-agents-cli` (v0.3.0 or earlier)**: The CLI and generated artifacts were renamed in v0.4.0. If you installed skills/events with `adlc-agents-cli`, run `npx adlc-agents-cli remove` before installing with `npx adlc-skills-cli add`.
 
 ## Development
 
@@ -286,9 +291,12 @@ No manifest database or state file needed.
 npm test
 
 # Run the CLI locally
-node bin/adlc-skills-cli.mjs agents
-node bin/adlc-skills-cli.mjs help
-node bin/adlc-skills-cli.mjs status -a opencode
+node bin/adlc-cli.mjs help
+node bin/adlc-cli.mjs agent list
+node bin/adlc-cli.mjs skill status -a opencode
+
+# Run a task locally
+node bin/adlc-cli.mjs agent run "say hello" -a opencode --format text
 ```
 
 Zero runtime dependencies. Requires Node.js >= 18.
