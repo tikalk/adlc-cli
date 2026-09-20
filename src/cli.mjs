@@ -17,9 +17,12 @@ import {
 
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const mode = opts.mode ?? "legacy"; // "cli" (new tree) | "legacy" (adlc-skills-cli alias)
-  void mode; // Task 2 branches dispatch on mode; Task 1 keeps both trees identical
-  const { command, args, flags } = parseArgs(argv);
+  const parsed = parseArgs(argv);
+  return mode === "cli" ? runNewTree(parsed, argv) : runLegacyTree(parsed);
+}
 
+// ── legacy tree (adlc-skills-cli bin — frozen surface) ─────────────────
+function runLegacyTree({ command, args, flags }) {
   switch (command) {
     case "add":
       return cmdAdd(args, flags);
@@ -36,6 +39,46 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       printHelp();
       return 0;
   }
+}
+
+// ── new tree (adlc-cli bin — dual mode: skill management + run) ──────────
+function runNewTree({ command, args, flags }, argv) {
+  switch (command) {
+    case "skill": {
+      const sub = args[0] ?? "help";
+      const rest = args.slice(1);
+      switch (sub) {
+        case "add":
+          return cmdAdd(rest, flags);
+        case "upgrade":
+          return cmdUpgrade(rest, flags);
+        case "remove":
+          return cmdRemove(rest, flags);
+        case "status":
+          return cmdStatus(rest, flags);
+        case "agents":
+          return cmdAgents(rest, flags);
+        case "help":
+          printSkillHelp();
+          return 0;
+        default:
+          console.error(`Unknown skill command: "${sub}"`);
+          printSkillHelp();
+          return 1;
+      }
+    }
+    case "run":
+      return cmdRunStub(argv.slice(1));
+    case "help":
+    default:
+      printCliHelp();
+      return 0;
+  }
+}
+
+function cmdRunStub(runArgs) {
+  console.error(`adlc-cli: 'run' is not implemented in this build (args: ${runArgs.join(" ")})`);
+  return 1;
 }
 
 // ── add ────────────────────────────────────────────────────────────────
@@ -418,6 +461,57 @@ function parseArgs(argv) {
   }
 
   return { command, args, flags };
+}
+
+function printCliHelp() {
+  console.log(`
+adlc-cli — dual-mode CLI for coding agents: skill management + headless task runs
+
+USAGE:
+  adlc-cli <command> [options]
+
+COMMANDS:
+  skill add <source> -a <agent>    Install skills + generate commands + wire events
+  skill upgrade [-a <agent>]       Regenerate commands from installed skills
+  skill remove [-a <agent>]        Remove generated commands + event configs
+  skill status [-a <agent>]        Report installed commands/events state
+  skill agents                     List supported agents
+  run "<task>" [flags]             Run a coding agent headlessly with a task
+  help                             Show this help
+
+RUN FLAGS:
+  -a <agent>                       Agent: opencode | claude-code | goose | gemini (default: opencode)
+  --model <id>                     Model id passed to the agent CLI
+  --format <fmt>                   Output: text (default, human) | json (normalized JSONL)
+  --require-approval <tools>       Tools that pause for human approval (comma-separated)
+  -                                Read the task from stdin
+
+INSTALL:
+  npx adlc-cli skill add ...       one-off (no install needed)
+  npm install -g adlc-cli          install as global binary
+
+EXAMPLES:
+  adlc-cli skill add tikalk/adlc-team-skills -a opencode
+  adlc-cli run "Fix the failing auth test" -a opencode
+  cat brief.md | adlc-cli run - --format json
+`);
+}
+
+function printSkillHelp() {
+  console.log(`
+USAGE:
+  adlc-cli skill <command> [flags]
+
+COMMANDS:
+  add <source>       Install skills via npx skills + generate commands + events
+  upgrade [--pull]   Re-generate commands from currently-installed skills
+  remove             Remove generated commands + event configs
+  status             Show what's installed per agent
+  agents             List supported agents
+
+FLAGS: same as the legacy flags (-a, -g, --no-events, --prefix, --mode, --skill, --copy, --pull, -y)
+Run 'adlc-cli help' for the full list.
+`);
 }
 
 function printHelp() {

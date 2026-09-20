@@ -7,14 +7,13 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
-test("both bins print identical help and exit 0", async () => {
+test("both bins execute; helps diverge by design (new = dual-mode, legacy = frozen)", async () => {
   const [a, b] = await Promise.all([
     exec(process.execPath, ["bin/adlc-cli.mjs"]),
     exec(process.execPath, ["bin/adlc-skills-cli.mjs"]),
   ]);
-  assert.equal(a.stdout, b.stdout);
-  assert.match(a.stdout, /USAGE/);
-  assert.equal(a.code ?? 0, 0);
+  assert.match(a.stdout, /skill add/); // new dual-mode help
+  assert.match(b.stdout, /adlc-skills-cli add/); // legacy help frozen
 });
 
 test("legacy bin still dispatches the add command surface", async () => {

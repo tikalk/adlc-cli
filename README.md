@@ -1,22 +1,27 @@
-# adlc-skills-cli
+# adlc-cli
 
-A generic CLI that wraps `npx skills add` and converts installed skills to slash commands — plus **event hooks** (`session_start`, `session_compact`, `user_prompt_submit`, and more) that auto-trigger skills on any coding agent.
+A dual-mode CLI for coding agents: **skill management** (wraps `npx skills add`, converts installed skills to slash commands, wires lifecycle **event hooks** like `session_start`) + **headless task runs** (`adlc-cli run "<task>"` executes any supported agent CLI with a task — the same invocation layer the [Agentic Container](https://github.com/tikalk/agentic-container) delegates to).
+
+> **Renamed:** `adlc-skills-cli` → `adlc-cli` (v1.0.0). The old command surface still works via the `adlc-skills-cli` alias bin and a deprecated npm shim during 1.x.
 
 Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-team-skills), [mattpocock/skills](https://github.com/mattpocock/skills), [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), [obra/superpowers](https://github.com/obra/superpowers), or your own.
 
 ## Why?
 
-`npx skills add` installs `SKILL.md` files to an agent's skills directory, but does **not** generate slash command files or wire event hooks. Many coding agents only support commands (not skills), and auto-triggering skills at lifecycle points (session start, prompt submit) requires per-agent native hook configuration. This CLI fills both gaps.
+`npx skills add` installs `SKILL.md` files to an agent's skills directory, but does **not** generate slash command files or wire event hooks. Many coding agents only support commands (not skills), and auto-triggering skills at lifecycle points (session start, prompt submit) requires per-agent native hook configuration. This CLI fills both gaps — and `run` gives humans, CI, and the Agentic Container one headless "run the agent with this task" primitive.
 
 ## Quickstart
 
 ```bash
 # Install skills + generate commands + wire events (if .events.json present)
-npx adlc-skills-cli add tikalk/adlc-team-skills -a opencode
+npx adlc-cli skill add tikalk/adlc-team-skills -a opencode
 
 # Works with any skills repo — events auto-skip if no .events.json
-npx adlc-skills-cli add mattpocock/skills -a claude-code --no-events
-npx adlc-skills-cli add addyosmani/agent-skills -a opencode -a cursor
+npx adlc-cli skill add mattpocock/skills -a claude-code --no-events
+npx adlc-cli skill add addyosmani/agent-skills -a opencode -a cursor
+
+# Run a coding agent headlessly with a task (ships in 1.0.0)
+npx adlc-cli run "Fix the failing auth test" -a opencode
 ```
 
 ## How it works
