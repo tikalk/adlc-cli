@@ -1,0 +1,24 @@
+{
+  "name": "adlc-skills-cli",
+  "version": "1.0.0",
+  "description": "DEPRECATED — renamed to adlc-cli. This shim forwards to adlc-cli for backward compatibility. Run `npx adlc-cli skill ...` instead.",
+  "deprecated": "Renamed to adlc-cli. Run `npx adlc-cli skill add ...` instead.",
+  "type": "module",
+  "bin": {
+    "adlc-skills-cli": "bin/adlc-skills-cli.mjs"
+  },
+  "dependencies": {
+    "adlc-cli": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "author": "Tikal",
+  "homepage": "https://github.com/tikalk/adlc-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tikalk/adlc-cli.git",
+    "directory": "shim/adlc-skills-cli"
+  }
+}
