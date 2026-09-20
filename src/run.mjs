@@ -38,11 +38,11 @@ function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {
   return { cmd: profile.binary, args, env };
 }
 
-export function runTask({ profile, prompt, model, requireApproval, onLine }) {
+export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }) {
   const { cmd, args, env } = buildCommandFromProfile(profile, prompt, { model, requireApproval });
 
   const child = spawn(cmd, args, {
-    cwd: process.cwd(),
+    cwd: cwd ?? process.cwd(),
     env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,

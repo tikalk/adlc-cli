@@ -1,0 +1,11 @@
+{
+  "events": {
+    "session_start": [
+      {
+        "skill": "team-boot",
+        "description": "Bootstrap session with team constitution, CDR index, and PDR/ADR context",
+        "timeout": 60
+      }
+    ]
+  }
+}
