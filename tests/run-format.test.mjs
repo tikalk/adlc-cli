@@ -11,11 +11,11 @@ const parseJsonl = (lines) => lines.map((l) => JSON.parse(l));
 
 const expected = readLines("tests/fixtures/contract/expected-normalized.jsonl");
 
-test("normalizeLine: opencode native → normalized (all 6 event types)", () => {
+test("normalizeLine: opencode native → normalized (real event vocabulary)", () => {
   const native = readFileSync("tests/fixtures/contract/opencode-native.jsonl", "utf-8")
     .trim().split("\n").filter(Boolean);
   const out = native.flatMap((line) => normalizeLine(line, "json"));
-  assert.equal(out.length, expected.length, "same event count");
+  assert.equal(out.length, expected.length, "same event count (step_start/step_finish suppressed)");
   for (let i = 0; i < expected.length; i++) {
     assert.deepEqual(out[i], expected[i], `event ${i}: ${JSON.stringify(out[i])} vs ${JSON.stringify(expected[i])}`);
   }
@@ -41,6 +41,15 @@ test("normalizeLine: non-JSON line → log event", () => {
 test("normalizeLine: empty line → empty array", () => {
   assert.deepEqual(normalizeLine("", "json"), []);
   assert.deepEqual(normalizeLine("   ", "json"), []);
+});
+
+test("normalizeLine: default case does not overwrite type via spread-order bug", () => {
+  // Regression: { type:"log", raw_type:type, ...raw } used to let raw.type
+  // overwrite "log" — the event would become type:"text" and silently vanish.
+  const out = normalizeLine('{"type":"unknown_type","data":"x"}', "json");
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, "log", "type must stay 'log' even when raw has a different type");
+  assert.equal(out[0].raw_type, "unknown_type");
 });
 
 test("normalized events have exactly the spec vocabulary types", () => {

@@ -29,21 +29,40 @@ export function normalizeLine(rawLine, outputFormat) {
 function mapOpenCode(raw) {
   const type = raw.type;
   switch (type) {
-    case "message":
-      return [{ type: "message", text: String(raw.content ?? raw.text ?? "") }];
-    case "tool_call":
-      return [{ type: "tool", phase: "call", name: raw.name, arguments: raw.arguments ?? raw.input }];
-    case "tool_result":
-      return [{ type: "tool", phase: "result", result: raw.result ?? raw.output }];
-    case "permission":
-      return [{ type: "permission_request", tool: raw.tool ?? raw.name, request_id: raw.id ?? raw.request_id }];
+    case "step_start":
+      return []; // suppress — lifecycle noise, no agent content
+    case "text": {
+      const text = raw.part?.text ?? raw.content ?? raw.text ?? "";
+      return [{ type: "message", text: String(text) }];
+    }
+    case "tool_use": {
+      const part = raw.part ?? {};
+      const toolName = part.tool ?? raw.name;
+      const state = part.state ?? {};
+      const events = [];
+      // Tool calls and results arrive combined in one opencode event
+      if (state.input !== undefined) {
+        events.push({ type: "tool", phase: "call", name: toolName, arguments: state.input });
+      }
+      if (state.output !== undefined) {
+        events.push({ type: "tool", phase: "result", result: state.output });
+      }
+      return events.length > 0 ? events : [{ type: "tool", phase: "call", name: toolName }];
+    }
+    case "step_finish": {
+      const reason = raw.part?.reason ?? raw.reason;
+      // "stop" = agent finished the task; "tool-calls" = just a tool call boundary (suppress)
+      if (reason === "stop") return [{ type: "complete" }];
+      return []; // suppress — intermediate step boundary
+    }
     case "error":
-      return [{ type: "error", message: raw.message ?? String(raw) }];
+      return [{ type: "error", message: raw.message ?? raw.part?.error ?? String(raw) }];
     case "complete":
     case "completed":
       return [{ type: "complete" }];
     default:
-      return [{ type: "log", raw_type: type, ...raw }];
+      // Spread after type/raw_type to prevent the raw.type from overwriting "log"
+      return [{ ...raw, type: "log", raw_type: type }];
   }
 }
 
@@ -81,7 +100,7 @@ function mapStreamJson(raw) {
       return [{ type: "log", message: raw.subtype ?? JSON.stringify(raw) }];
     default:
       if (type !== "init" && type !== "ping") {
-        return [{ type: "log", raw_type: type, ...raw }];
+        return [{ ...raw, type: "log", raw_type: type }];
       }
       return [];
   }

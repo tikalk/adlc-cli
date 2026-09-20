@@ -37,8 +37,8 @@ test("goose run profile", () => {
 test("gemini run profile", () => {
   const p = getRunProfile("gemini");
   assert.equal(p.binary, "gemini");
-  assert.deepEqual(p.args, ["-p", "--output-format", "stream-json"]);
-  assert.equal(p.outputFormat, "stream-json");
+  assert.deepEqual(p.args, ["-p"]);
+  assert.equal(p.outputFormat, "text"); // gemini CLI has no --output-format flag
   assert.equal(p.permissionMode, "sandbox");
   assert.equal(p.modelFlag, "-m");
 });

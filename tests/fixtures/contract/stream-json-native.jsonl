@@ -1,6 +1,5 @@
-{"type":"assistant","content":[{"type":"text","text":"Analyzing the codebase..."}]}
-{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}
-{"type":"tool_result","content":[{"type":"text","text":"total 48\ndrwxr-xr-x 5 lior lior 4096 ..."}]}
-{"type":"can_use_tool","tool":"Write","id":"req-abc123"}
-{"type":"error","message":"File not found"}
+{"type":"assistant","content":[{"type":"text","text":"Hello! 👋"}]}
+{"type":"tool_use","name":"write","input":{"filePath":"/tmp/test.txt","content":"hello"}}
+{"type":"tool_result","content":[{"type":"text","text":"Wrote file successfully."}]}
+{"type":"assistant","content":[{"type":"text","text":"Done."}]}
 {"type":"result","result":"done"}

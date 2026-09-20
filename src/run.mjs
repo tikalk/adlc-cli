@@ -44,7 +44,7 @@ export function runTask({ profile, prompt, model, requireApproval, onLine }) {
   const child = spawn(cmd, args, {
     cwd: process.cwd(),
     env,
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
 

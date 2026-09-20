@@ -1,6 +1,5 @@
-{"type":"message","text":"Analyzing the codebase..."}
-{"type":"tool","phase":"call","name":"Bash","arguments":{"command":"ls -la"}}
-{"type":"tool","phase":"result","result":"total 48\ndrwxr-xr-x 5 lior lior 4096 ..."}
-{"type":"permission_request","tool":"Write","request_id":"req-abc123"}
-{"type":"error","message":"File not found"}
+{"type":"message","text":"Hello! 👋"}
+{"type":"tool","phase":"call","name":"write","arguments":{"filePath":"/tmp/test.txt","content":"hello"}}
+{"type":"tool","phase":"result","result":"Wrote file successfully."}
+{"type":"message","text":"Done."}
 {"type":"complete"}

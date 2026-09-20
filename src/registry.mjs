@@ -382,9 +382,9 @@ export const RUN_PROFILES = {
   },
   gemini: {
     binary: "gemini",
-    args: ["-p", "--output-format", "stream-json"],
+    args: ["-p"],
     promptPosition: "arg",
-    outputFormat: "stream-json",
+    outputFormat: "text",
     permissionMode: "sandbox",
     modelFlag: "-m",
   },

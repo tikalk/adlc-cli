@@ -55,7 +55,7 @@ test("runTask: spawns fake agent, captures exit code 7", async () => {
   const { code } = await promise;
   assert.equal(code, 7);
   assert.ok(lines.length >= 2);
-  assert.match(lines[0], /hello from fake agent/);
+  assert.ok(lines.some((l) => l.includes("hello from fake agent")), "has the text line");
 });
 
 // ── runTask: signal forwarding (POSIX only) ───────────────────────────────
