@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, copyFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { AGENTS, resolveNpxAgent, getAgent, GENERATED_HEADER, EVENT_AGENTS, getEventAgentConfig } from "./registry.mjs";
+import { AGENTS, resolveNpxAgent, getAgent, getRunProfile, GENERATED_HEADER, EVENT_AGENTS, getEventAgentConfig } from "./registry.mjs";
 import { findInstalledSkills, detectAdlc, expandTilde } from "./source.mjs";
 import { generateCommand, commandFilename, isGenerated, removeGeneratedCommands } from "./convert.mjs";
 import {
@@ -14,6 +14,7 @@ import {
   readLocalEventsManifest,
   resolveEvents,
 } from "./events.mjs";
+import { runTask } from "./run.mjs";
 
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const mode = opts.mode ?? "legacy"; // "cli" (new tree) | "legacy" (adlc-skills-cli alias)
@@ -68,7 +69,7 @@ function runNewTree({ command, args, flags }, argv) {
       }
     }
     case "run":
-      return cmdRunStub(argv.slice(1));
+      return cmdRun(argv.slice(1));
     case "help":
     default:
       printCliHelp();
@@ -76,9 +77,81 @@ function runNewTree({ command, args, flags }, argv) {
   }
 }
 
-function cmdRunStub(runArgs) {
-  console.error(`adlc-cli: 'run' is not implemented in this build (args: ${runArgs.join(" ")})`);
-  return 1;
+function cmdRun(runArgs) {
+  return cmdRunImpl(runArgs);
+}
+
+// Dedicated arg parser for run (keeps the legacy parseArgs frozen).
+function parseRunArgs(argv) {
+  let agent = "opencode";
+  let model = null;
+  let format = "text";
+  let requireApproval = null;
+  let prompt = null;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "-a" || arg === "--agent") {
+      agent = argv[++i];
+    } else if (arg === "--model") {
+      model = argv[++i];
+    } else if (arg === "--format") {
+      format = argv[++i];
+    } else if (arg === "--require-approval") {
+      requireApproval = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);
+    } else if (arg === "-") {
+      prompt = "__STDIN__";
+    } else if (!arg.startsWith("-")) {
+      prompt = arg;
+    }
+  }
+
+  return { agent, model, format, requireApproval, prompt };
+}
+
+async function cmdRunImpl(runArgs) {
+  const { agent, model, format, requireApproval, prompt: rawPrompt } = parseRunArgs(runArgs);
+
+  let prompt = rawPrompt;
+  if (prompt === "__STDIN__") {
+    const chunks = [];
+    await new Promise((r) => {
+      process.stdin.on("data", (c) => chunks.push(c)).on("end", r);
+    });
+    prompt = Buffer.concat(chunks).toString();
+  }
+
+  if (!prompt) {
+    console.error("Error: task is required (pass a string, or '-' for stdin)");
+    return 1;
+  }
+
+  let profile;
+  try {
+    profile = getRunProfile(agent);
+  } catch (err) {
+    console.error(err.message);
+    return 1;
+  }
+
+  const { promise } = runTask({
+    profile,
+    prompt,
+    model,
+    requireApproval,
+    onLine: (line) => {
+      // Task 5 replaces this with the format-aware normalizer.
+      // For now: raw passthrough (text mode only).
+      if (format === "json") {
+        process.stdout.write(line + "\n");
+      } else {
+        process.stdout.write(line + "\n");
+      }
+    },
+  });
+
+  const { code, signal } = await promise;
+  return code ?? (signal ? 130 : 1);
 }
 
 // ── add ────────────────────────────────────────────────────────────────

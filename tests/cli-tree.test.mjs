@@ -31,10 +31,10 @@ test("new bin: default help is dual-mode (skill + run)", async () => {
   assert.match(r.stdout, /run/);
 });
 
-test("new bin: run stub reports not implemented and exits 1", async () => {
-  const r = await run("adlc-cli", ["run", "do something"]);
-  assert.match(String(r.message ?? r.stdout), /not implemented/i);
+test("new bin: run with unsupported agent exits 1 (no spawn)", async () => {
+  const r = await run("adlc-cli", ["run", "do something", "-a", "nonexistent-agent"]);
   assert.equal(r.code ?? r.exitCode, 1);
+  assert.match(String(r.message ?? r.stderr ?? r.stdout), /Unsupported agent/i);
 });
 
 test("legacy bin: old top-level help preserved", async () => {
