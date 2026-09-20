@@ -1,6 +1,6 @@
 # adlc-skills-cli
 
-A generic CLI that wraps `npx skills add` and converts installed skills to slash commands — plus **event hooks** (`session_start`, `user_prompt_submit`, and more) that auto-trigger skills on any coding agent.
+A generic CLI that wraps `npx skills add` and converts installed skills to slash commands — plus **event hooks** (`session_start`, `session_compact`, `user_prompt_submit`, and more) that auto-trigger skills on any coding agent.
 
 Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-team-skills), [mattpocock/skills](https://github.com/mattpocock/skills), [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), [obra/superpowers](https://github.com/obra/superpowers), or your own.
 
@@ -210,11 +210,12 @@ description: Orientation skill injected at session start
 ---
 ```
 
-### 6 canonical events
+### 7 canonical events
 
 | Event | Fires when | Body path? | Script path? |
 |-------|-----------|-----------|-------------|
 | `session_start` | Agent session begins | yes | yes |
+| `session_compact` | Harness compacts/summarizes history (post-compaction re-injection) | yes | yes |
 | `user_prompt_submit` | User sends a prompt (payload via stdin) | yes | yes |
 | `pre_tool_use` | Before a tool call | no | yes |
 | `post_tool_use` | After a tool call | no | yes |

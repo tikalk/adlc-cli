@@ -353,6 +353,7 @@ export function resolveNpxAgent(agent) {
 
 export const CANONICAL_EVENTS = [
   "session_start",
+  "session_compact",
   "pre_tool_use",
   "post_tool_use",
   "session_end",
@@ -362,7 +363,7 @@ export const CANONICAL_EVENTS = [
 
 // Events where the body-injection path (superpowers model) applies.
 // Script path (spec-kit model) applies to ALL events.
-export const BODY_INJECTION_EVENTS = new Set(["session_start", "user_prompt_submit"]);
+export const BODY_INJECTION_EVENTS = new Set(["session_start", "session_compact", "user_prompt_submit"]);
 
 // Context-injection envelope for hook stdout, per agent + canonical event.
 //
@@ -420,6 +421,7 @@ export const EVENT_AGENTS = {
     //   session_end / stop  → (no equivalent; skip)
     canonical_to_native: {
       session_start: "experimental.chat.messages.transform",
+      session_compact: null, // covered by the per-step messages.transform + live dedup (compaction self-heals)
       pre_tool_use: "tool.execute.before",
       post_tool_use: "tool.execute.after",
       session_end: null,
@@ -434,6 +436,7 @@ export const EVENT_AGENTS = {
     merge_key: "hooks",
     canonical_to_native: {
       session_start: "SessionStart",
+      session_compact: null, // unmatched SessionStart fires on ALL sources incl. compact — a compact-matched second entry would double-inject
       pre_tool_use: "PreToolUse",
       post_tool_use: "PostToolUse",
       session_end: "SessionEnd",
@@ -448,6 +451,7 @@ export const EVENT_AGENTS = {
     merge_key: "hooks",
     canonical_to_native: {
       session_start: "sessionStart",
+      session_compact: null, // no native compaction surface yet
       pre_tool_use: "preToolUse",
       post_tool_use: "postToolUse",
       session_end: "sessionEnd",
@@ -468,6 +472,7 @@ export const EVENT_AGENTS = {
     format: "copilot-json",
     canonical_to_native: {
       session_start: "sessionStart",
+      session_compact: null, // no native compaction surface yet
       pre_tool_use: "preToolUse",
       post_tool_use: "postToolUse",
       session_end: "sessionEnd",
@@ -487,6 +492,7 @@ export const EVENT_AGENTS = {
     format: "toml",
     canonical_to_native: {
       session_start: "SessionStart",
+      session_compact: null, // no native compaction surface yet
       pre_tool_use: "PreToolUse",
       post_tool_use: "PostToolUse",
       session_end: "SessionEnd",
@@ -501,6 +507,7 @@ export const EVENT_AGENTS = {
     merge_key: "hooks",
     canonical_to_native: {
       session_start: "SessionStart",
+      session_compact: null, // no native compaction surface yet
       pre_tool_use: "BeforeTool",
       post_tool_use: "AfterTool",
       session_end: "SessionEnd",
@@ -523,6 +530,7 @@ export const EVENT_AGENTS = {
     merge_key: "hooks",
     canonical_to_native: {
       session_start: "SessionStart",
+      session_compact: null, // no native compaction surface yet
       pre_tool_use: "PreToolUse",
       post_tool_use: "PostToolUse",
       session_end: "SessionEnd",
@@ -542,6 +550,7 @@ export const EVENT_AGENTS = {
     format: "json-root-nested",
     canonical_to_native: {
       session_start: "SessionStart",
+      session_compact: null, // no native compaction surface yet
       pre_tool_use: "PreToolUse",
       post_tool_use: "PostToolUse",
       session_end: "SessionEnd",
@@ -563,6 +572,7 @@ export const EVENT_AGENTS = {
     merge_key: "hooks",
     canonical_to_native: {
       session_start: "SessionStart",
+      session_compact: null, // no native compaction surface yet
       pre_tool_use: "BeforeTool",
       post_tool_use: "AfterTool",
       session_end: "SessionEnd",
