@@ -55,7 +55,7 @@ export function readLocalEventsManifest(sourcePath) {
       // Non-UTF-8 manifest (spec-kit #3900): Node's utf-8 decode never throws,
       // it substitutes U+FFFD — detect it and skip with a warning instead of
       // silently dropping events or crashing on mojibake JSON.
-      console.warn(`adlc-skills-cli: ${manifestPath} is not valid UTF-8 — skipping events`);
+      console.warn(`adlc-cli: ${manifestPath} is not valid UTF-8 — skipping events`);
       return null;
     }
     return JSON.parse(raw);
@@ -101,7 +101,7 @@ async function fetchGitHubRaw(ownerRepo, ref, file) {
     const raw = await res.text();
     if (raw.includes("\uFFFD")) {
       // Same non-UTF-8 guard as readLocalEventsManifest (spec-kit #3900).
-      console.warn(`adlc-skills-cli: ${url} is not valid UTF-8 — skipping events`);
+      console.warn(`adlc-cli: ${url} is not valid UTF-8 — skipping events`);
       return null;
     }
     return JSON.parse(raw);
