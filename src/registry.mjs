@@ -347,6 +347,59 @@ export function resolveNpxAgent(agent) {
   return entry.npx_agent || "universal";
 }
 
+// ── Run profiles (headless task execution) ─────────────────────────────
+// Per-agent headless invocation data, ported from
+// agentic-container/packages/runtime/src/engine/agent-registry.ts:11-52.
+// Only agents with a run profile can be used with `adlc-cli run`.
+// v1: the 4 agents supported by the Agentic Container.
+
+export const RUN_PROFILES = {
+  opencode: {
+    binary: "opencode",
+    args: ["run", "--format", "json", "--dangerously-skip-permissions"],
+    promptPosition: "arg",
+    outputFormat: "json",
+    permissionMode: "auto",
+    modelFlag: "-m",
+  },
+  "claude-code": {
+    binary: "claude",
+    args: ["-p", "--output-format", "stream-json", "--verbose"],
+    promptPosition: "arg",
+    outputFormat: "stream-json",
+    permissionMode: "allowed-tools",
+    allowedTools: ["Read", "Edit", "Write", "Bash", "WebFetch"],
+    modelFlag: "--model",
+  },
+  goose: {
+    binary: "goose",
+    args: ["run", "--output-format", "stream-json", "-t"],
+    promptPosition: "arg",
+    outputFormat: "stream-json",
+    permissionMode: "auto",
+    envVars: { GOOSE_MODE: "auto" },
+    modelFlag: null,
+  },
+  gemini: {
+    binary: "gemini",
+    args: ["-p", "--output-format", "stream-json"],
+    promptPosition: "arg",
+    outputFormat: "stream-json",
+    permissionMode: "sandbox",
+    modelFlag: "-m",
+  },
+};
+
+export function getRunProfile(key) {
+  const profile = RUN_PROFILES[key];
+  if (!profile) {
+    throw new Error(
+      `Unsupported agent for run: "${key}". Supported: ${Object.keys(RUN_PROFILES).join(", ")}`,
+    );
+  }
+  return profile;
+}
+
 // ── Events ─────────────────────────────────────────────────────────────
 // Canonical event names (snake_case). The dispatcher and .events.json use
 // these. Each agent adapter translates them to the agent's native casing.
