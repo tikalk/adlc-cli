@@ -8,11 +8,14 @@ USAGE:
   adlc-cli <command> [options]
 
 COMMANDS:
-  skill add <source> -a <agent>    Install skills + generate commands + wire events
-  skill upgrade [-a <agent>]       Regenerate commands from installed skills
-  skill remove [-a <agent>]        Remove generated commands + event configs
-  skill status [-a <agent>]        Report installed commands/events state
-  agent run "<task>" [flags]        Run a coding agent headlessly with a task
+  skills add <source> -a <agent>   Install skills + generate commands + wire events
+  skills update [-a <agent>]       Regenerate commands from installed skills
+  skills remove [-a <agent>]       Remove generated commands + event configs
+  skills status [-a <agent>]       Report installed commands/events state
+  team setup <source> -a <agent>   Install skills + configure team-ai-directives
+  team update                      Git pull + skills update + confidence update
+  team repair                      Validate and repair team-ai-directives state
+  agent run "<task>" [flags]       Run a coding agent headlessly with a task
   agent list                       List supported agents + run profiles
   version                           Print installed version
   help                              Show this help
@@ -27,29 +30,54 @@ AGENT RUN FLAGS:
   -                                Read the task from stdin
 
 INSTALL:
-  npx adlc-cli skill add ...       one-off (no install needed)
+  npx adlc-cli skills add ...      one-off (no install needed)
   npm install -g adlc-cli          install as global binary
 
 EXAMPLES:
-  adlc-cli skill add tikalk/adlc-team-skills -a opencode
+  adlc-cli skills add tikalk/adlc-team-skills -a opencode
+  adlc-cli team setup tikalk/adlc-team-skills -a opencode
   adlc-cli agent run "Fix the failing auth test" -a opencode
   cat brief.md | adlc-cli agent run - --format json
 `);
 }
 
-export function printSkillHelp() {
+export function printSkillsHelp() {
   console.log(`
 USAGE:
-  adlc-cli skill <command> [flags]
+  adlc-cli skills <command> [flags]
 
 COMMANDS:
   add <source>       Install skills via npx skills + generate commands + events
-  upgrade [--pull]   Re-generate commands from currently-installed skills
+  update [--pull]    Re-generate commands from currently-installed skills
   remove             Remove generated commands + event configs
-  status             Show what's installed per agent
+  (no subcommand)    Show what's installed per agent
   help               Show this help
 
 FLAGS: -a, -g, --no-events, --prefix, --mode, --skill, --copy, --pull, -y
+Run 'adlc-cli help' for the full list.
+`);
+}
+
+export function printTeamHelp() {
+  console.log(`
+USAGE:
+  adlc-cli team <command> [flags]
+
+COMMANDS:
+  setup <source> -a <agent>   Install skills + configure team-ai-directives
+  update                      Git pull directives + update skills + confidence
+  repair                      Validate and repair team-ai-directives state
+
+REPAIR FLAGS:
+  --update-confidence         Update confidence scores (deterministic, no agent)
+  --validate-drafts           Validate draft files without modifying them
+  --build-to-delete            Propose rules the model no longer needs
+  -a <agent>                  Agent for interactive repair (default: from init-options)
+
+SETUP FLAGS:
+  --skip-skills               Skip skill installation (just configure directives)
+  -a <agent>                  Agent key (default: from init-options.json)
+
 Run 'adlc-cli help' for the full list.
 `);
 }
