@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtempSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const exec = promisify(execFile);
-const REPO_ROOT = resolve(import.meta.dirname, "..");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BIN = join(REPO_ROOT, "bin", "adlc-cli.mjs");
 const LEGACY_BIN = join(REPO_ROOT, "bin", "adlc-skills-cli.mjs");
 const run = (args, opts) => exec(process.execPath, [BIN, ...args], opts).catch((e) => e);
