@@ -1,7 +1,7 @@
 {
   "name": "adlc-cli",
   "version": "2.0.0",
-  "description": "Dual-mode CLI for coding agents: skill management (install skills, generate slash commands, wire lifecycle events) + headless task execution (run any agent CLI with a task).",
+  "description": "Dual-mode CLI for coding agents: skill management (install skills, generate slash commands, wire lifecycle events) + headless task execution (run any agent CLI headlessly with a task — the invocation layer the Agentic Container delegates to).",
   "type": "module",
   "bin": {
     "adlc-cli": "bin/adlc-cli.mjs",
@@ -14,41 +14,31 @@
   "engines": {
     "node": ">=18"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "shim/"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "skills",
+    "opencode",
+    "claude",
+    "cursor",
+    "codex",
+    "copilot",
+    "gemini",
+    "goose"
+  ],
   "license": "MIT",
-  "author": "Tikal",
-  "homepage": "https://github.com/tikalk/adlc-cli",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tikalk/adlc-cli.git"
   },
-  "bugs": {
-    "url": "https://github.com/tikalk/adlc-cli/issues"
-  },
-  "keywords": [
-    "skills",
-    "commands",
-    "agent",
-    "cli",
-    "adlc",
-    "slash-commands",
-    "events",
-    "hooks",
-    "opencode",
-    "claude-code",
-    "cursor",
-    "copilot",
-    "codex",
-    "gemini",
-    "npx-skills"
-  ],
-  "files": [
-    "bin/",
-    "src/",
-    "docs/",
-    "README.md",
-    "LICENSE"
-  ],
+  "homepage": "https://github.com/tikalk/adlc-cli#readme",
   "publishConfig": {
-    "access": "public"
+    "provenance": true
   }
 }
