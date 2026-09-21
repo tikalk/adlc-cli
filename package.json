@@ -1,6 +1,6 @@
 {
   "name": "adlc-cli",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "description": "Dual-mode CLI for coding agents: skill management (install skills, generate slash commands, wire lifecycle events) + headless task execution (run any agent CLI with a task).",
   "type": "module",
   "bin": {

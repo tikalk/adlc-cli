@@ -12,7 +12,7 @@ test("both bins execute; helps diverge by design (new = dual-mode, legacy = froz
     exec(process.execPath, ["bin/adlc-cli.mjs"]),
     exec(process.execPath, ["bin/adlc-skills-cli.mjs"]),
   ]);
-  assert.match(a.stdout, /skill add/); // new dual-mode help
+  assert.match(a.stdout, /skills add/); // new dual-mode help
   assert.match(b.stdout, /adlc-skills-cli add/); // legacy help frozen
 });
 
