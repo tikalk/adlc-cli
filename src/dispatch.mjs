@@ -1,9 +1,10 @@
 // Command dispatch: parse args, route to skill/agent/version/help trees.
 
 import { AGENTS } from "./registry.mjs";
-import { cmdAdd, cmdUpgrade, cmdRemove, cmdStatus } from "./commands/skill.mjs";
+import { cmdAdd, cmdUpdate, cmdRemove, cmdStatus } from "./commands/skills.mjs";
+import { cmdTeamSetup, cmdTeamUpdate, cmdTeamRepair } from "./commands/team.mjs";
 import { cmdAgentRun, cmdAgentList } from "./commands/agent.mjs";
-import { printCliHelp, printSkillHelp, printAgentHelp, printHelp } from "./help.mjs";
+import { printCliHelp, printSkillsHelp, printTeamHelp, printAgentHelp, printHelp } from "./help.mjs";
 
 const VERSION = "1.0.2";
 
@@ -17,7 +18,7 @@ function runLegacyTree({ command, args, flags }) {
     case "add":
       return cmdAdd(args, flags);
     case "upgrade":
-      return cmdUpgrade(args, flags);
+      return cmdUpdate(args, flags);
     case "remove":
       return cmdRemove(args, flags);
     case "status":
@@ -33,24 +34,43 @@ function runLegacyTree({ command, args, flags }) {
 
 function runNewTree({ command, args, flags }, argv) {
   switch (command) {
-    case "skill": {
-      const sub = args[0] ?? "help";
+    case "skills": {
+      const sub = args[0] ?? "status";
       const rest = args.slice(1);
       switch (sub) {
         case "add":
           return cmdAdd(rest, flags);
-        case "upgrade":
-          return cmdUpgrade(rest, flags);
+        case "update":
+          return cmdUpdate(rest, flags);
         case "remove":
           return cmdRemove(rest, flags);
         case "status":
           return cmdStatus(rest, flags);
         case "help":
-          printSkillHelp();
+          printSkillsHelp();
           return 0;
         default:
-          console.error(`Unknown skill command: "${sub}"`);
-          printSkillHelp();
+          console.error(`Unknown skills command: "${sub}"`);
+          printSkillsHelp();
+          return 1;
+      }
+    }
+    case "team": {
+      const sub = args[0] ?? "help";
+      const rest = args.slice(1);
+      switch (sub) {
+        case "setup":
+          return cmdTeamSetup(rest, flags);
+        case "update":
+          return cmdTeamUpdate(rest, flags);
+        case "repair":
+          return cmdTeamRepair(rest, flags);
+        case "help":
+          printTeamHelp();
+          return 0;
+        default:
+          console.error(`Unknown team command: "${sub}"`);
+          printTeamHelp();
           return 1;
       }
     }
@@ -109,6 +129,14 @@ function parseArgs(argv) {
       flags.pull = true;
     } else if (arg === "-y" || arg === "--yes") {
       flags.yes = true;
+    } else if (arg === "--skip-skills") {
+      flags.skipSkills = true;
+    } else if (arg === "--update-confidence") {
+      flags.updateConfidence = true;
+    } else if (arg === "--build-to-delete") {
+      flags.buildToDelete = true;
+    } else if (arg === "--validate-drafts") {
+      flags.validateDrafts = true;
     } else if (arg === "--commands-dir") {
       flags.commandsDir = rest[++i];
     } else if (!arg.startsWith("-")) {
