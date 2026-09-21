@@ -10,11 +10,11 @@ Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-te
 
 ```bash
 # Install skills + generate commands + wire events
-npx adlc-cli skill add tikalk/adlc-team-skills -a opencode
+npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
 
 # Works with any skills repo — events auto-skip if no .events.json
-npx adlc-cli skill add mattpocock/skills -a claude-code --no-events
-npx adlc-cli skill add addyosmani/agent-skills -a opencode -a cursor
+npx adlc-cli skills add mattpocock/skills -a claude-code --no-events
+npx adlc-cli skills add addyosmani/agent-skills -a opencode -a cursor
 
 # Run a coding agent headlessly with a task
 npx adlc-cli agent run "Fix the failing auth test" -a opencode
@@ -33,9 +33,9 @@ npx adlc-cli version
 | Command | Description |
 |---------|-------------|
 | `skill add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire events |
-| `skill upgrade [-a <agent>]` | Re-generate commands from installed skills; `--pull` re-installs from source |
-| `skill remove [-a <agent>]` | Remove generated commands + event configs; cleans dispatcher + `.events.json` |
-| `skill status [-a <agent>]` | Show what's installed per agent + dispatcher + event status |
+| `skills update [-a <agent>]` | Re-generate commands from installed skills; `--pull` re-installs from source |
+| `skills remove [-a <agent>]` | Remove generated commands + event configs; cleans dispatcher + `.events.json` |
+| `skills [-a <agent>]` | Show what's installed per agent + dispatcher + event status |
 
 ### Agent execution
 
@@ -98,7 +98,7 @@ adlc-cli agent run "deploy to staging" -a opencode --require-approval Bash,Write
 ## How skill installation works
 
 ```
-adlc-cli skill add <source> -a <agent>
+adlc-cli skills add <source> -a <agent>
   │
   ├─ 1. npx skills add <source> -a <npx_agent>     ← installs SKILL.md files
   │
@@ -197,11 +197,11 @@ User-invoked skills (`disable-model-invocation: true` in frontmatter) are meant 
 
 ```bash
 # One-off (no install needed)
-npx adlc-cli skill add tikalk/adlc-team-skills -a opencode
+npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
 
 # Install as global binary
 npm install -g adlc-cli
-adlc-cli skill add tikalk/adlc-team-skills -a opencode
+adlc-cli skills add tikalk/adlc-team-skills -a opencode
 ```
 
 ## Events: lifecycle hooks
@@ -293,7 +293,7 @@ npm test
 # Run the CLI locally
 node bin/adlc-cli.mjs help
 node bin/adlc-cli.mjs agent list
-node bin/adlc-cli.mjs skill status -a opencode
+node bin/adlc-cli.mjs skills -a opencode
 
 # Run a task locally
 node bin/adlc-cli.mjs agent run "say hello" -a opencode --format text

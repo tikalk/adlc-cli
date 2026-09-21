@@ -1,4 +1,4 @@
-// New-tree (adlc-cli) dispatch contract: `skill <sub>` commands, dual-mode help.
+// New-tree (adlc-cli) dispatch contract: skills subcommands, team subcommands, dual-mode help.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -12,28 +12,41 @@ test("new bin: agent list lists agents", async () => {
   assert.match(r.stdout, /OpenCode/);
 });
 
-test("new bin: bare skill prints skill subcommand help", async () => {
-  const r = await run("adlc-cli", ["skill"]);
-  assert.match(r.stdout, /add <source>/);
-  assert.match(r.stdout, /upgrade/);
+test("new bin: bare skills shows status (default)", async () => {
+  const r = await run("adlc-cli", ["skills"]);
+  assert.match(r.stdout, /Project:|ADLC:|Dispatcher:/);
 });
 
-test("new bin: unknown skill subcommand exits 1 with usage", async () => {
-  const r = await run("adlc-cli", ["skill", "bogus"]);
-  assert.match(String(r.message ?? r.stdout), /Unknown skill command|usage/i);
+test("new bin: skills help prints subcommand help", async () => {
+  const r = await run("adlc-cli", ["skills", "help"]);
+  assert.match(r.stdout, /add <source>/);
+  assert.match(r.stdout, /update/);
+});
+
+test("new bin: unknown skills subcommand exits 1 with usage", async () => {
+  const r = await run("adlc-cli", ["skills", "bogus"]);
+  assert.match(String(r.message ?? r.stdout), /Unknown skills command|usage/i);
   assert.equal(r.code ?? r.exitCode, 1);
 });
 
-test("new bin: default help is dual-mode (skill + run)", async () => {
+test("new bin: default help includes team + skills + agent", async () => {
   const r = await run("adlc-cli", []);
-  assert.match(r.stdout, /skill add/);
+  assert.match(r.stdout, /team setup/);
+  assert.match(r.stdout, /skills add/);
   assert.match(r.stdout, /agent run/);
+});
+
+test("new bin: team help shows setup, update, repair", async () => {
+  const r = await run("adlc-cli", ["team", "help"]);
+  assert.match(r.stdout, /setup/);
+  assert.match(r.stdout, /update/);
+  assert.match(r.stdout, /repair/);
 });
 
 test("legacy bin: old top-level help preserved", async () => {
   const r = await run("adlc-skills-cli", []);
   assert.match(r.stdout, /adlc-skills-cli add/);
-  assert.doesNotMatch(r.stdout, /adlc-cli skill/);
+  assert.doesNotMatch(r.stdout, /adlc-cli skills/);
 });
 
 test("legacy bin: add command surface still dispatches", async () => {
