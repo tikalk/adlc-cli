@@ -15,6 +15,7 @@ import {
   readLocalEventsManifest,
   resolveEvents,
 } from "../events.mjs";
+import { writeAgent, writeSkillsSource, readSkillsSource } from "../utils/init-options.mjs";
 
 // ── add ────────────────────────────────────────────────────────────────
 export async function cmdAdd(args, flags) {
@@ -128,11 +129,16 @@ export async function cmdAdd(args, flags) {
   }
 
   console.log("");
+  // Persist agent + source to init-options.json (merge, preserve existing)
+  for (const agentKey of agents) {
+    writeAgent(agentKey);
+  }
+  writeSkillsSource(source);
   return 0;
 }
 
 // ── upgrade ────────────────────────────────────────────────────────────
-export async function cmdUpgrade(args, flags) {
+export async function cmdUpdate(args, flags) {
   const projectRoot = process.cwd();
   const agents = flags.agents || Object.keys(AGENTS).filter((k) => k !== "generic");
   const prefix = flags.prefix || null;
@@ -151,6 +157,10 @@ export async function cmdUpgrade(args, flags) {
           if (entry?.source && !pullSource) pullSource = entry.source;
         }
       } catch {}
+    }
+    // Fallback: read from init-options.json
+    if (!pullSource) {
+      pullSource = readSkillsSource();
     }
     if (!pullSource) {
       console.error("│  ✗ --pull requires skills-lock.json with source info (run 'add' first)");
