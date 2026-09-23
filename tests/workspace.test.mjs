@@ -4,11 +4,12 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const exec = promisify(execFile);
-const BIN = new URL("../bin/adlc-cli.mjs", import.meta.url).pathname;
+const BIN = fileURLToPath(new URL("../bin/adlc-cli.mjs", import.meta.url));
 const run = (args, cwd) =>
   exec(process.execPath, [BIN, ...args], { cwd }).catch((e) => e);
 
