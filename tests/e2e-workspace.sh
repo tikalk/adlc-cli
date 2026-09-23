@@ -118,20 +118,14 @@ echo "$OUT" | grep -q "= backend (exists, skipping clone)" || { echo "$OUT"; fai
 echo "$OUT" | grep -q "= frontend (exists, skipping clone)" || { echo "$OUT"; fail "frontend not skipped on re-run"; }
 pass "existing modules skipped"
 
-# ── 3. Agent-led goal (real opencode run) ───────────────────────────────
+# ── 3. Post-setup goal: direct agent run (intent ≡ agent run arg) ───────
 if [ "$SKIP_AGENT" = "--skip-agent" ]; then
   echo; echo "== 3+4. skipped (--skip-agent) =="
 else
-  echo; echo "== 3. goal (agent-led, real opencode run) =="
-  cat > "$WS/.adlc/workspace-profile.yml" <<'EOF'
-schema_version: "1.0"
-name: "E2E Goal"
-version: "1.0.0"
-agent: opencode
-goal: "Reply with exactly: E2E-OK and nothing else."
-EOF
-  OUT="$( cd "$WS" && node "$BIN" workspace setup )" || { echo "$OUT"; fail "goal run exited non-zero"; }
-  echo "$OUT" | grep -q "E2E-OK" && pass "goal output contains E2E-OK" || { echo "$OUT"; fail "E2E-OK missing from goal output"; }
+  echo; echo "== 3. goal via direct agent run (real opencode) =="
+  OUT="$( cd "$WS" && node "$BIN" agent run "Reply with exactly: E2E-OK and nothing else." -a opencode )" \
+    || { echo "$OUT"; fail "agent run exited non-zero"; }
+  echo "$OUT" | grep -q "E2E-OK" && pass "agent run output contains E2E-OK" || { echo "$OUT"; fail "E2E-OK missing from agent run output"; }
 
   # ── 4. Agent-led workspace init (installed skill runs its bash script) ──
   echo; echo "== 4. workspace init (agent-led, /workspace skill) =="

@@ -3,7 +3,7 @@
 // agent-led steps (workspace init/link, goal — via agent run).
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseYaml } from "../utils/yaml.mjs";
 import { readAgent } from "../utils/init-options.mjs";
@@ -102,8 +102,29 @@ export async function cmdWorkspaceSetup(args, flags) {
     console.log(`└─ done`);
   }
 
-  // 6. workspace.init / workspace.link — agent-led (workspace skill)
+  // 5.5 workspace.dirs — deterministic empty-dir scaffolding (greenfield)
   const ws = profile.workspace || {};
+  const dirs = ws.dirs;
+  if (Array.isArray(dirs) && dirs.length > 0) {
+    console.log(`\n┌─ workspace.dirs (${dirs.length})`);
+    for (const dir of dirs) {
+      if (typeof dir !== "string" || !dir || dir.includes("..")) {
+        console.error(`│  ✗ invalid workspace.dirs entry: ${JSON.stringify(dir)}`);
+        console.log(`└─ failed`);
+        return 1;
+      }
+      const target = join(projectRoot, dir);
+      if (existsSync(target)) {
+        console.log(`│  = ${dir} (exists, skipping)`);
+        continue;
+      }
+      console.log(`│  mkdir -p ${dir}`);
+      if (!dryRun) mkdirSync(target, { recursive: true });
+    }
+    console.log(`└─ done`);
+  }
+
+  // 6. workspace.init / workspace.link — agent-led (workspace skill)
   if (ws.init) {
     const linkFlag = ws.link ? " --link" : "";
     console.log(`\n┌─ workspace init${ws.link ? " + link" : ""} (agent-led)`);
@@ -152,23 +173,8 @@ export async function cmdWorkspaceSetup(args, flags) {
     console.log(`└─ done`);
   }
 
-  // 9. goal — agent-led final setup
-  if (profile.goal) {
-    console.log(`\n┌─ goal (agent-led)`);
-    if (dryRun) {
-      console.log(`│  agent run -a ${agent} "${profile.goal}"`);
-    } else {
-      const code = await cmdAgentRun(["-a", agent, profile.goal]);
-      if (code !== 0) {
-        console.error("│  ✗ goal execution failed");
-        console.log(`└─ failed`);
-        return code || 1;
-      }
-    }
-    console.log(`└─ done`);
-  }
-
   console.log(`\nWorkspace setup complete.`);
+  console.log(`Next: adlc-cli agent run "<your goal>" -a ${agent}`);
   return 0;
 }
 

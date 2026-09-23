@@ -128,13 +128,15 @@ INIT FLAGS:
 
 PROFILE (.adlc/workspace-profile.yml):
   workspace.git[]     repos to clone (repo, path, branch, ref) — deterministic
+  workspace.dirs[]    empty directories to create (greenfield scaffolding) — deterministic
   workspace.init      create .adlc/ structure via /workspace skill — agent-led
   workspace.link      register cloned repos as submodules — agent-led
   skills.sources[]    skill sources installed via skills add — deterministic
   commands[]          sequential commands: skills add | team setup | agent run
-  goal                final agent-led setup instruction
 
   Source resolution: explicit arg > ADLC_WORKSPACE_PROFILE env > local file
+  Setup converges the environment only — run your goal via
+  'adlc-cli agent run "<prompt>"' after setup.
 
 EXAMPLES:
   adlc-cli workspace setup                          # use .adlc/workspace-profile.yml
