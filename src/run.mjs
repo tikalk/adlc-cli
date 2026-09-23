@@ -41,8 +41,14 @@ function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {
 export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }) {
   const { cmd, args, env } = buildCommandFromProfile(profile, prompt, { model, requireApproval });
 
+  const childCwd = cwd ?? process.cwd();
+  // Sync PWD with the spawn cwd — agents that resolve their project directory
+  // from env.PWD (e.g. opencode) would otherwise land in the parent's cwd
+  // (docker WORKDIR) instead of the requested workspace.
+  env.PWD = childCwd;
+
   const child = spawn(cmd, args, {
-    cwd: cwd ?? process.cwd(),
+    cwd: childCwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
