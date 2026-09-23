@@ -32,7 +32,7 @@ export async function cmdTeamSetup(args, flags) {
       if (skillsDir) {
         const skills = await findInstalledSkills(skillsDir, projectRoot);
         if (skills.length === 0) {
-          const code = await cmdAdd([source], { agents: [agentKey] });
+          const code = await cmdAdd([source], { agents: [agentKey], yes: flags.yes });
           if (code !== 0) {
             console.error("✗ Skills installation failed — aborting team setup");
             return code || 1;

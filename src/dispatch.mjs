@@ -4,7 +4,15 @@ import { AGENTS } from "./registry.mjs";
 import { cmdAdd, cmdUpdate, cmdRemove, cmdStatus } from "./commands/skills.mjs";
 import { cmdTeamSetup, cmdTeamUpdate, cmdTeamRepair } from "./commands/team.mjs";
 import { cmdAgentRun, cmdAgentList } from "./commands/agent.mjs";
-import { printCliHelp, printSkillsHelp, printTeamHelp, printAgentHelp, printHelp } from "./help.mjs";
+import { cmdWorkspaceSetup, cmdWorkspaceInit, cmdWorkspaceStatus } from "./commands/workspace.mjs";
+import {
+  printCliHelp,
+  printSkillsHelp,
+  printTeamHelp,
+  printAgentHelp,
+  printWorkspaceHelp,
+  printHelp,
+} from "./help.mjs";
 
 const VERSION = "1.0.2";
 
@@ -91,6 +99,28 @@ function runNewTree({ command, args, flags }, argv) {
           return 1;
       }
     }
+    // Top-level `run` — compat alias for `agent run` (runtime contract, ADR-368).
+    case "run":
+      return cmdAgentRun(argv.slice(1));
+    case "workspace": {
+      const sub = args[0] ?? "status";
+      const rest = args.slice(1);
+      switch (sub) {
+        case "setup":
+          return cmdWorkspaceSetup(rest, flags);
+        case "init":
+          return cmdWorkspaceInit(rest, flags);
+        case "status":
+          return cmdWorkspaceStatus(rest, flags);
+        case "help":
+          printWorkspaceHelp();
+          return 0;
+        default:
+          console.error(`Unknown workspace command: "${sub}"`);
+          printWorkspaceHelp();
+          return 1;
+      }
+    }
     case "version":
       console.log(`adlc-cli ${VERSION}`);
       return 0;
@@ -139,6 +169,12 @@ function parseArgs(argv) {
       flags.validateDrafts = true;
     } else if (arg === "--commands-dir") {
       flags.commandsDir = rest[++i];
+    } else if (arg === "--dry-run") {
+      flags.dryRun = true;
+    } else if (arg === "--link") {
+      flags.link = true;
+    } else if (arg === "--ignore-only") {
+      flags.ignoreOnly = true;
     } else if (!arg.startsWith("-")) {
       args.push(arg);
     }

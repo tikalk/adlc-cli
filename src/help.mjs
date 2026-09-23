@@ -17,6 +17,9 @@ COMMANDS:
   team repair                      Validate and repair team-ai-directives state
   agent run "<task>" [flags]       Run a coding agent headlessly with a task
   agent list                       List supported agents + run profiles
+  workspace setup [profile]        Apply workspace profile (git modules, skills, commands, goal)
+  workspace init [--link]          Brownfield init: .adlc/ structure + discover child repos
+  workspace status                 Audit workspace health (branch, dirty, unpushed, drift)
   version                           Print installed version
   help                              Show this help
 
@@ -37,6 +40,7 @@ EXAMPLES:
   adlc-cli skills add tikalk/adlc-team-skills -a opencode
   adlc-cli team setup tikalk/adlc-team-skills -a opencode
   adlc-cli agent run "Fix the failing auth test" -a opencode
+  adlc-cli workspace setup -a opencode --dry-run
   cat brief.md | adlc-cli agent run - --format json
 `);
 }
@@ -99,6 +103,45 @@ RUN FLAGS:
   --timeout <s>       Timeout in seconds
   --require-approval <tools>  Comma-separated tool list
   -                   Read task from stdin
+`);
+}
+
+export function printWorkspaceHelp() {
+  console.log(`
+USAGE:
+  adlc-cli workspace <command> [flags]
+
+COMMANDS:
+  setup [profile]     Apply workspace profile (.adlc/workspace-profile.yml, path, or URL)
+  init                Brownfield init: create .adlc/ structure, discover child repos
+  status              Audit workspace health (branch, dirty, unpushed, SHA drift)
+
+SETUP FLAGS:
+  -a <agent>          Agent key (default: profile agent, then init-options.json)
+  --dry-run           Print planned actions without executing
+
+INIT FLAGS:
+  -a <agent>          Agent key (default: from init-options.json)
+  --link              Register discovered child repos as submodules
+  --ignore-only       Add child repos to .gitignore instead of submodules
+  --dry-run           Preview without executing
+
+PROFILE (.adlc/workspace-profile.yml):
+  workspace.git[]     repos to clone (repo, path, branch, ref) — deterministic
+  workspace.dirs[]    empty directories to create (greenfield scaffolding) — deterministic
+  workspace.init      create .adlc/ structure via /workspace skill — agent-led
+  workspace.link      register cloned repos as submodules — agent-led
+  skills.sources[]    skill sources installed via skills add — deterministic
+  commands[]          sequential commands: skills add | team setup | agent run
+
+  Source resolution: explicit arg > ADLC_WORKSPACE_PROFILE env > local file
+  Setup converges the environment only — run your goal via
+  'adlc-cli agent run "<prompt>"' after setup.
+
+EXAMPLES:
+  adlc-cli workspace setup                          # use .adlc/workspace-profile.yml
+  adlc-cli workspace setup https://host/p.yml       # fetch profile over HTTP
+  adlc-cli workspace setup -a opencode --dry-run    # preview planned actions
 `);
 }
 

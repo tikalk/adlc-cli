@@ -1,0 +1,27 @@
+# E2E fixture profile — brownfield scenario (tests/e2e-profiles.sh).
+# NOT part of any source repo; lives only in the adlc-cli test suite.
+# Exercises: public HTTPS clone, workspace.dirs greenfield scaffolding,
+# agent-led init+link, remote GitHub skills source, team setup command.
+schema_version: "1.0"
+name: "Team AI Directives Demo Workspace"
+version: "1.0.0"
+description: "Demo workspace profile — shared brain + team skills bootstrap"
+agent: opencode
+
+workspace:
+  git:
+    - repo: https://github.com/tikalk/agentic-sdlc-team-ai-directives.git
+      path: agentic-sdlc-team-ai-directives
+  dirs:
+    # Greenfield scaffold — empty dir for the team to populate later;
+    # empty dirs are ignored by depth-1 repo discovery and linking.
+    - adlc-team-skills
+  init: true
+  link: true
+
+skills:
+  sources:
+    - tikalk/adlc-team-skills
+
+commands:
+  - team setup tikalk/adlc-team-skills

@@ -100,9 +100,16 @@ export async function cmdAdd(args, flags) {
       const manifest = await fetchEventsManifest(source);
       if (manifest && manifest.events) {
         const targetEventsPath = join(projectRoot, ".events.json");
+        // Persist the manifest to the project root so later commands
+        // (update/remove) can re-resolve events without re-fetching.
+        // Local sources: copy the file (preserves comments/ordering).
+        // Remote sources: write the fetched manifest (resolve() on a
+        // repo-id was never a valid path — the copy silently never ran).
         const sourceEventsPath = resolve(source, ".events.json");
         if (source !== "." && existsSync(sourceEventsPath)) {
           copyFileSync(sourceEventsPath, targetEventsPath);
+        } else if (!existsSync(targetEventsPath)) {
+          writeFileSync(targetEventsPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
         }
         const resolvedEvents = resolveEvents(manifest, agentEventConfig);
         const eventCount = Object.keys(resolvedEvents).length;

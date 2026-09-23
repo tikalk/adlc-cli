@@ -20,3 +20,6 @@ npm-debug.log*
 .opencode/
 .events.json
 skills-lock.json
+
+# graphify knowledge graph (generated)
+graphify-out/
