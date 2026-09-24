@@ -1,11 +1,12 @@
-# E2E fixture profile — brownfield scenario (tests/e2e-profiles.sh).
+# E2E fixture workspace file — brownfield scenario (tests/e2e-profiles.sh).
 # NOT part of any source repo; lives only in the adlc-cli test suite.
 # Exercises: public HTTPS clone, workspace.dirs greenfield scaffolding,
-# agent-led init+link, remote GitHub skills source, team setup command.
+# agent-led init+link, remote GitHub skills source, team setup command,
+# first-boot-only goal (runs on first assembly, skipped on re-run).
 schema_version: "1.0"
 name: "Team AI Directives Demo Workspace"
 version: "1.0.0"
-description: "Demo workspace profile — shared brain + team skills bootstrap"
+description: "Demo workspace — shared brain + team skills bootstrap"
 agent: opencode
 
 workspace:
@@ -25,3 +26,5 @@ skills:
 
 commands:
   - team setup tikalk/adlc-team-skills
+
+goal: "Reply with exactly: E2E-GOAL-OK and nothing else."
