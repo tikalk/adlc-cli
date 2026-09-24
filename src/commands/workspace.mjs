@@ -1,6 +1,8 @@
-// Workspace commands: setup (profile-driven), init (brownfield), status (audit).
-// Setup separates deterministic steps (git clone, skills add — no LLM) from
-// agent-led steps (workspace init/link, goal — via agent run).
+// Workspace commands: setup (workspace.yml-driven), init (brownfield), status (audit).
+// Setup separates deterministic steps (git clone, dirs, skills add — no LLM) from
+// agent-led steps (workspace init/link, commands, first-boot goal — via agent run).
+// The goal runs only when setup assembled something (clone or dir creation) —
+// AX-faithful first-boot workspace finishing; convergence re-runs skip it.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -8,61 +10,67 @@ import { join, resolve } from "node:path";
 import { parseYaml } from "../utils/yaml.mjs";
 import { readAgent } from "../utils/init-options.mjs";
 
-const PROFILE_PATH = ".adlc/workspace-profile.yml";
+const WORKSPACE_FILE = ".adlc/workspace.yml";
 
 // ── setup ──────────────────────────────────────────────────────────────
 export async function cmdWorkspaceSetup(args, flags) {
   const projectRoot = process.cwd();
 
-  // 1. Resolve profile source: explicit arg > ADLC_WORKSPACE_PROFILE env > local file
+  // 1. Resolve workspace file source: explicit arg > ADLC_WORKSPACE_FILE env > local file
   const explicit = args.find((a) => !a.startsWith("-"));
-  const envProfile = (process.env.ADLC_WORKSPACE_PROFILE || "").trim();
+  const envFile = (process.env.ADLC_WORKSPACE_FILE || "").trim();
   const source =
     explicit ||
-    (envProfile !== "" ? envProfile : null) ||
-    (existsSync(join(projectRoot, PROFILE_PATH)) ? PROFILE_PATH : null);
+    (envFile !== "" ? envFile : null) ||
+    (existsSync(join(projectRoot, WORKSPACE_FILE)) ? WORKSPACE_FILE : null);
 
   if (!source) {
     console.error(
-      "Error: no workspace profile found. Pass a path/URL, set ADLC_WORKSPACE_PROFILE, or create .adlc/workspace-profile.yml",
+      "Error: no workspace file found. Pass a path/URL, set ADLC_WORKSPACE_FILE, or create .adlc/workspace.yml",
     );
     return 1;
   }
 
-  // 2. Load profile (local file or HTTP)
-  const content = await loadProfile(source, projectRoot);
+  // 2. Load workspace file (local file or HTTP)
+  const content = await loadWorkspaceFile(source, projectRoot);
   if (content === null) return 1;
 
   // 3. Parse + validate
-  let profile;
+  let wsfile;
   try {
-    profile = parseYaml(content);
+    wsfile = parseYaml(content);
   } catch (err) {
-    console.error(`Error: invalid workspace profile: ${err.message}`);
+    console.error(`Error: invalid workspace file: ${err.message}`);
     return 1;
   }
-  if (!profile || typeof profile !== "object" || !profile.schema_version) {
-    console.error(`Error: workspace profile missing schema_version (${source})`);
+  if (!wsfile || typeof wsfile !== "object" || !wsfile.schema_version) {
+    console.error(`Error: workspace file missing schema_version (${source})`);
     return 1;
   }
 
-  // 4. Resolve agent: -a flag > profile.agent > init-options.json
-  const agent = (flags.agents && flags.agents[0]) || profile.agent || readAgent();
+  // 4. Resolve agent: -a flag > workspace agent: > init-options.json
+  const agent = (flags.agents && flags.agents[0]) || wsfile.agent || readAgent();
   if (!agent) {
-    console.error("Error: agent required (-a <agent>, profile agent:, or init-options.json)");
+    console.error("Error: agent required (-a <agent>, workspace agent:, or init-options.json)");
     return 1;
   }
 
   const dryRun = flags.dryRun || false;
-  console.log(`Workspace profile: ${profile.name || source}`);
+  console.log(`Workspace: ${wsfile.name || source}`);
   console.log(`Agent: ${agent}${dryRun ? "  [dry-run]" : ""}`);
 
   const { cmdAgentRun } = await import("./agent.mjs");
   const { cmdAdd } = await import("./skills.mjs");
   const { cmdTeamSetup } = await import("./team.mjs");
 
+  // First-boot signal: did this run actually assemble anything? The goal
+  // (agent-led workspace finishing) runs only when true — re-runs converge
+  // deterministically and skip it. init/skills/commands never count: init
+  // always runs when declared, so counting it would re-fire the goal every time.
+  let changed = false;
+
   // 5. workspace.git — deterministic clones (no LLM)
-  const gitModules = profile.workspace && profile.workspace.git;
+  const gitModules = wsfile.workspace && wsfile.workspace.git;
   if (Array.isArray(gitModules) && gitModules.length > 0) {
     console.log(`\n┌─ workspace.git (${gitModules.length} repo(s))`);
     for (const mod of gitModules) {
@@ -76,6 +84,7 @@ export async function cmdWorkspaceSetup(args, flags) {
         console.log(`│  = ${mod.path} (exists, skipping clone)`);
         continue;
       }
+      changed = true;
       const gitArgs = ["clone", mod.repo, mod.path];
       if (mod.branch) gitArgs.push("--branch", mod.branch);
       console.log(`│  $ git ${gitArgs.join(" ")}`);
@@ -103,7 +112,7 @@ export async function cmdWorkspaceSetup(args, flags) {
   }
 
   // 5.5 workspace.dirs — deterministic empty-dir scaffolding (greenfield)
-  const ws = profile.workspace || {};
+  const ws = wsfile.workspace || {};
   const dirs = ws.dirs;
   if (Array.isArray(dirs) && dirs.length > 0) {
     console.log(`\n┌─ workspace.dirs (${dirs.length})`);
@@ -118,6 +127,7 @@ export async function cmdWorkspaceSetup(args, flags) {
         console.log(`│  = ${dir} (exists, skipping)`);
         continue;
       }
+      changed = true;
       console.log(`│  mkdir -p ${dir}`);
       if (!dryRun) mkdirSync(target, { recursive: true });
     }
@@ -142,7 +152,7 @@ export async function cmdWorkspaceSetup(args, flags) {
   }
 
   // 7. skills.sources — deterministic install (no LLM); -y: setup is non-interactive
-  const sources = profile.skills && profile.skills.sources;
+  const sources = wsfile.skills && wsfile.skills.sources;
   if (Array.isArray(sources) && sources.length > 0) {
     console.log(`\n┌─ skills.sources (${sources.length} source(s))`);
     for (const src of sources) {
@@ -160,11 +170,11 @@ export async function cmdWorkspaceSetup(args, flags) {
   }
 
   // 8. commands — sequential, stop on first failure
-  const commands = profile.commands;
+  const commands = wsfile.commands;
   if (Array.isArray(commands) && commands.length > 0) {
     console.log(`\n┌─ commands (${commands.length})`);
     for (const command of commands) {
-      const code = await runProfileCommand(String(command), agent, cmdAgentRun, cmdAdd, cmdTeamSetup, dryRun);
+      const code = await runWorkspaceCommand(String(command), agent, cmdAgentRun, cmdAdd, cmdTeamSetup, dryRun);
       if (code !== 0) {
         console.log(`└─ failed`);
         return code || 1;
@@ -173,34 +183,62 @@ export async function cmdWorkspaceSetup(args, flags) {
     console.log(`└─ done`);
   }
 
+  // 9. goal — agent-led first-boot workspace finishing (AX binding model):
+  // a plain-language description of the environment state, handed to an agent
+  // once, when this run assembled the workspace. Re-runs skip it silently.
+  let goalRan = false;
+  if (wsfile.goal) {
+    if (!changed) {
+      console.log(`\n┌─ goal (first-boot only — nothing assembled this run, skipping)`);
+      console.log(`└─ done`);
+    } else {
+      console.log(`\n┌─ goal (agent-led, first boot)`);
+      if (dryRun) {
+        console.log(`│  agent run -a ${agent} "${wsfile.goal}"`);
+        goalRan = true;
+      } else {
+        const code = await cmdAgentRun(["-a", agent, wsfile.goal]);
+        if (code !== 0) {
+          console.error("│  ✗ goal execution failed");
+          console.log(`└─ failed`);
+          return code || 1;
+        }
+        goalRan = true;
+      }
+      console.log(`└─ done`);
+    }
+  }
+
   console.log(`\nWorkspace setup complete.`);
-  console.log(`Next: adlc-cli agent run "<your goal>" -a ${agent}`);
+  if (!goalRan) {
+    console.log(`Next: adlc-cli agent run "<your goal>" -a ${agent}`);
+  }
   return 0;
 }
 
-async function loadProfile(source, projectRoot) {
+async function loadWorkspaceFile(source, projectRoot) {
   if (/^https?:\/\//.test(source)) {
     try {
       const res = await fetch(source);
       if (!res.ok) {
-        console.error(`Error: failed to fetch profile from ${source} (HTTP ${res.status})`);
+        console.error(`Error: failed to fetch workspace file from ${source} (HTTP ${res.status})`);
         return null;
       }
       return await res.text();
     } catch (err) {
-      console.error(`Error: failed to fetch profile from ${source}: ${err.message}`);
+      console.error(`Error: failed to fetch workspace file from ${source}: ${err.message}`);
       return null;
     }
   }
   const path = resolve(projectRoot, source);
   if (!existsSync(path)) {
-    console.error(`Error: workspace profile not found at ${path}`);
+    console.error(`Error: workspace file not found at ${path}`);
     return null;
   }
   return readFileSync(path, "utf-8");
 }
 
-async function runProfileCommand(command, agent, cmdAgentRun, cmdAdd, cmdTeamSetup, dryRun) {
+async function runWorkspaceCommand(command, agent, cmdAgentRun, cmdAdd, cmdTeamSetup, dryRun) {
   const trimmed = command.trim();
 
   // agent run "<quoted prompt>" — prompts contain spaces/quotes

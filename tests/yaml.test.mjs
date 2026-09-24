@@ -1,4 +1,4 @@
-// YAML parser contract for workspace profiles.
+// YAML parser contract for workspace files (workspace.yml).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseYaml } from "../src/utils/yaml.mjs";
@@ -32,7 +32,7 @@ commands:
   - agent run "Fetch and follow instructions from https://example.com/INSTALL.md"
 `;
 
-test("parses a full workspace profile", () => {
+test("parses a full workspace file", () => {
   const p = parseYaml(PROFILE);
   assert.equal(p.schema_version, "1.0");
   assert.equal(p.name, "Tikal Default Workspace");

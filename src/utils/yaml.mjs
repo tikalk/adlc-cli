@@ -1,4 +1,4 @@
-// Minimal YAML parser for workspace profiles.
+// Minimal YAML parser for workspace files (.adlc/workspace.yml).
 // Supports: nested mappings, lists (scalar + mapping items), quoted strings,
 // booleans, numbers, null, folded block scalars ("|" / ">").
 // Zero dependencies — same constraint as frontmatter.mjs.

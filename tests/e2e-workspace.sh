@@ -67,7 +67,7 @@ EOF
 # workspace repo (mounted-workspace pattern)
 ( cd "$WS" && git init -q -b main && git config user.email e2e@test && git config user.name e2e )
 
-cat > "$WS/.adlc/workspace-profile.yml" <<EOF
+cat > "$WS/.adlc/workspace.yml" <<EOF
 schema_version: "1.0"
 name: "E2E Workspace"
 version: "1.0.0"

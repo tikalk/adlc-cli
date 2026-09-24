@@ -17,7 +17,7 @@ COMMANDS:
   team repair                      Validate and repair team-ai-directives state
   agent run "<task>" [flags]       Run a coding agent headlessly with a task
   agent list                       List supported agents + run profiles
-  workspace setup [profile]        Apply workspace profile (git modules, skills, commands, goal)
+  workspace setup [file]            Apply workspace file (git modules, skills, commands, goal)
   workspace init [--link]          Brownfield init: .adlc/ structure + discover child repos
   workspace status                 Audit workspace health (branch, dirty, unpushed, drift)
   version                           Print installed version
@@ -112,12 +112,12 @@ USAGE:
   adlc-cli workspace <command> [flags]
 
 COMMANDS:
-  setup [profile]     Apply workspace profile (.adlc/workspace-profile.yml, path, or URL)
+  setup [file]        Apply workspace file (.adlc/workspace.yml, path, or URL)
   init                Brownfield init: create .adlc/ structure, discover child repos
   status              Audit workspace health (branch, dirty, unpushed, SHA drift)
 
 SETUP FLAGS:
-  -a <agent>          Agent key (default: profile agent, then init-options.json)
+  -a <agent>          Agent key (default: workspace agent:, then init-options.json)
   --dry-run           Print planned actions without executing
 
 INIT FLAGS:
@@ -126,21 +126,24 @@ INIT FLAGS:
   --ignore-only       Add child repos to .gitignore instead of submodules
   --dry-run           Preview without executing
 
-PROFILE (.adlc/workspace-profile.yml):
+WORKSPACE FILE (.adlc/workspace.yml):
   workspace.git[]     repos to clone (repo, path, branch, ref) — deterministic
   workspace.dirs[]    empty directories to create (greenfield scaffolding) — deterministic
   workspace.init      create .adlc/ structure via /workspace skill — agent-led
   workspace.link      register cloned repos as submodules — agent-led
   skills.sources[]    skill sources installed via skills add — deterministic
   commands[]          sequential commands: skills add | team setup | agent run
+  goal                first-boot workspace-finishing prompt — agent-led, runs
+                      ONLY when this run assembled the workspace (cloned a repo
+                      or created a dir). Re-runs converge and skip it silently.
 
-  Source resolution: explicit arg > ADLC_WORKSPACE_PROFILE env > local file
-  Setup converges the environment only — run your goal via
+  Source resolution: explicit arg > ADLC_WORKSPACE_FILE env > local file
+  When the goal is absent or skipped, run your intent via
   'adlc-cli agent run "<prompt>"' after setup.
 
 EXAMPLES:
-  adlc-cli workspace setup                          # use .adlc/workspace-profile.yml
-  adlc-cli workspace setup https://host/p.yml       # fetch profile over HTTP
+  adlc-cli workspace setup                          # use .adlc/workspace.yml
+  adlc-cli workspace setup https://host/w.yml       # fetch workspace file over HTTP
   adlc-cli workspace setup -a opencode --dry-run    # preview planned actions
 `);
 }
