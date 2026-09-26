@@ -20,6 +20,11 @@ COMMANDS:
   workspace setup [file]            Apply workspace file (git modules, skills, commands, goal)
   workspace init [--link]          Brownfield init: .adlc/ structure + discover child repos
   workspace status                 Audit workspace health (branch, dirty, unpushed, drift)
+  workflow run <src> --input k=v   Execute a workflow (gates pause+resume; --format json streams events)
+  workflow resume <run_id>         Resume a paused/failed run (optionally with --input)
+  workflow status [run_id]         List runs / show one run's step states
+  workflow validate <src>          Validate a workflow definition (--headless checks gate verdicts)
+  workflow state …                 LLM-executor helpers: start/advance/pause/fail/show
   version                           Print installed version
   help                              Show this help
 
@@ -185,5 +190,59 @@ EXAMPLES:
   adlc-skills-cli add tikalk/adlc-team-skills -a opencode
   adlc-skills-cli status
   adlc-skills-cli agents
+`);
+}
+
+export function printWorkflowHelp() {
+  console.log(`
+USAGE:
+  adlc-cli workflow <command> [flags]
+
+COMMANDS:
+  run <source>           Execute a workflow (YAML path, installed ID, or built-in
+                         like 'factory' — the outer loop)
+  resume <run_id>        Resume a paused/failed run (gates re-prompt)
+  status [run_id]        List all runs / show one run's step states
+  validate <source>      Validate a workflow definition
+  state <command>        LLM-executor helpers (see below)
+  help                   Show this help
+
+FLAGS:
+  --input key=value      Provide/repeat workflow inputs (run + resume + state start)
+  --format json          JSONL lifecycle events on stdout
+                         (run_started/step_started/step_completed/gate_paused/
+                          permission_request/run_paused/run_completed/run_failed)
+  --headless             validate/run: require every gate to declare verdict_input
+
+RUN STATE (namespace v3 — ADR-391-amendment):
+  .adlc/workflows/runs/<run_id>/   state.json, inputs.json, log.jsonl,
+                                   workflow.yml (frozen copy), lease.json,
+                                   brief.md, mission.yml, scratchpads/…
+  .adlc/workflows/<id>/workflow.yml  installed definitions
+  refs/factory-runs/<run_id>          git-refs Tier-3 (ADR-393)
+
+GATES:
+  Interactive terminals prompt for a choice; non-interactive runs PAUSE and
+  exit. Resume headlessly by binding a gate's verdict_input:
+    adlc-cli workflow resume <run_id> --input verdict=approve
+
+STATE HELPERS (ADR-395 — the LLM executor writes state ONLY through these):
+  adlc-cli workflow state start --workflow <src> [--run-id <id>] [--input k=v]
+  adlc-cli workflow state advance <run_id> --step <id> --status completed|failed \
+      [--output-file <path> | --output-json <json>] [--error <msg>]
+  adlc-cli workflow state pause <run_id> --step <id>
+  adlc-cli workflow state fail <run_id> --error <msg>
+  adlc-cli workflow state show <run_id>
+
+STEP TYPES:
+  command | prompt | shell | gate | if | switch | while | do-while |
+  fan-out (max_concurrency) | fan-in | slot
+
+EXAMPLES:
+  adlc-cli workflow run .adlc/workflows/mission/workflow.yml --input spec="Fix auth"
+  adlc-cli workflow run factory                       # bundled outer loop
+  adlc-cli workflow run deploy --format json          # CI: stream events
+  adlc-cli workflow resume abc12345 --input verdict=approve
+  adlc-cli workflow validate factory --headless
 `);
 }
