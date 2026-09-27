@@ -325,7 +325,12 @@ function buildJsonNestedHooks(resolvedEvents, skillsDir, agentConfig, agentKey) 
       if (h.matcher) entry.matcher = h.matcher;
       entries.push(entry);
     }
-    if (entries.length > 0) result[nativeEvent] = entries;
+    if (entries.length > 0) {
+      // Two canonical events can share one native event (file_edited and
+      // post_tool_use both → PostToolUse) — accumulate, don't overwrite.
+      if (!result[nativeEvent]) result[nativeEvent] = [];
+      result[nativeEvent].push(...entries);
+    }
   }
   return result;
 }
@@ -426,7 +431,12 @@ function buildCopilotHooks(resolvedEvents, skillsDir, agentConfig) {
         [EVENT_MARKER]: true,
       });
     }
-    if (entries.length > 0) result[nativeEvent] = entries;
+    if (entries.length > 0) {
+      // Two canonical events can share one native event (file_edited and
+      // post_tool_use both → PostToolUse) — accumulate, don't overwrite.
+      if (!result[nativeEvent]) result[nativeEvent] = [];
+      result[nativeEvent].push(...entries);
+    }
   }
   return result;
 }
