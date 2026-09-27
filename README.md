@@ -158,7 +158,7 @@ adlc-cli skills add <source> -a <agent>
   │
   └─ 4. Wire events (if .events.json in source)     ← lifecycle hooks
         .agents/dispatcher.mjs                        generic dispatcher (shipped)
-        .opencode/plugin/adlc-skills-events.ts        agent-native hook config
+        .opencode/plugins/adlc-skills-events.ts       agent-native hook config
 ```
 
 ## Skill flags
@@ -289,23 +289,36 @@ A generic dispatcher (`.agents/dispatcher.mjs`) is shipped to the project. When 
 
 Both paths feed the **stdout → context injection** pipeline.
 
-### 7 canonical events
+### 8 canonical events
 
 | Event | Fires when | Body path? | Script path? |
 |-------|-----------|-----------|-------------|
 | `session_start` | Agent session begins | yes | yes |
 | `session_compact` | Harness compacts history | yes | yes |
-| `user_prompt_submit` | User sends a prompt | yes | yes |
-| `pre_tool_use` | Before a tool call | no | yes |
-| `post_tool_use` | After a tool call | no | yes |
+| `user_prompt_submit` | User sends prompt | yes | yes |
+| `pre_tool_use` | Before tool call | no | yes |
+| `post_tool_use` | After tool call | no | yes |
+| `file_edited` | A file was edited (e.g. decision drafts) | no | yes |
 | `session_end` | Session ends | no | yes |
 | `stop` | Agent stops | no | yes |
+
+#### `file_edited` per-agent delivery
+
+| Agent | Native hook | Delivery |
+|-------|------------|----------|
+| opencode | `file.edited` (generic `event` subscription) | script stdout stashed → injected into the last user message on the next `messages.transform` pass (before the session-start dedup guard) |
+| claude-code | `PostToolUse` (+ `matcher` e.g. `Edit\|Write`) | `hookSpecificOutput.additionalContext` — direct context injection |
+| codex | `PostToolUse` | envelope suppressed (tool-hook output sink unverified — safe no-op) |
+| cursor | `postToolUse` | envelope suppressed (tool-hook output sink unverified — safe no-op) |
+| others | — | `null` mapping until a native surface is documented |
+
+Skill scripts see `ADLC_EVENT` in their environment and the event payload on stdin.
 
 ### Per-agent native hook configuration
 
 | Agent | Config file | Format | Timeout unit |
 |-------|------------|--------|-------------|
-| opencode | `.opencode/plugin/adlc-skills-events.ts` | TS plugin | seconds |
+| opencode | `.opencode/plugins/adlc-skills-events.ts` | TS plugin | seconds |
 | claude-code | `.claude/settings.json` (merged) | JSON nested | seconds |
 | cursor | `.cursor/hooks.json` (merged) | JSON nested | seconds |
 | github-copilot | `.github/hooks/adlc-skills.json` | JSON | seconds |

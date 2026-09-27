@@ -409,6 +409,7 @@ export const CANONICAL_EVENTS = [
   "session_compact",
   "pre_tool_use",
   "post_tool_use",
+  "file_edited",
   "session_end",
   "user_prompt_submit",
   "stop",
@@ -463,7 +464,7 @@ export function resolveEnvelope(agentConfig, canonicalEvent) {
 // canonical_to_native (event name translation), timeout_unit (s or ms).
 export const EVENT_AGENTS = {
   opencode: {
-    config_file: ".opencode/plugin/adlc-skills-events.ts",
+    config_file: ".opencode/plugins/adlc-skills-events.ts",
     format: "ts-plugin",
     // opencode doesn't have lifecycle event hooks (session.start, etc.).
     // Instead it has fixed hook keys. Map canonical events to opencode hooks:
@@ -480,6 +481,10 @@ export const EVENT_AGENTS = {
       session_end: null,
       user_prompt_submit: "chat.message",
       stop: null,
+      // file.edited has no named hook key in the plugin API (generic event
+      // subscription) — generator emits an `event` handler for it and stashes
+      // non-empty stdout as a pending nudge drained by messages.transform.
+      file_edited: "file.edited",
     },
     timeout_unit: "s",
   },
@@ -495,8 +500,16 @@ export const EVENT_AGENTS = {
       session_end: "SessionEnd",
       user_prompt_submit: "UserPromptSubmit",
       stop: "Stop",
+      // Shares PostToolUse with post_tool_use; builder must accumulate both.
+      // Envelope: plain stdout on PostToolUse is ignored — additionalContext
+      // is the documented context-injection field.
+      file_edited: "PostToolUse",
     },
     timeout_unit: "s",
+    context_envelope: {
+      // No "*" key: every other event keeps plain passthrough (unchanged).
+      file_edited: "hookSpecificOutput",
+    },
   },
   cursor: {
     config_file: ".cursor/hooks.json",
@@ -510,6 +523,10 @@ export const EVENT_AGENTS = {
       session_end: "sessionEnd",
       user_prompt_submit: "beforeSubmitPrompt",
       stop: "stop",
+      // postToolUse output surface unverified for tool hooks — inherits the
+      // "*": "suppress" envelope, so file_edited stays a safe no-op until
+      // Cursor documents a context-injection field on tool hooks.
+      file_edited: "postToolUse",
     },
     timeout_unit: "s",
     // Cursor sessionStart: {"additional_context": ...} (top-level, snake_case).
@@ -531,6 +548,8 @@ export const EVENT_AGENTS = {
       session_end: "sessionEnd",
       user_prompt_submit: "userPromptSubmitted",
       stop: "agentStop",
+      // No documented file-edit event surface yet.
+      file_edited: null,
     },
     timeout_unit: "s",
     // Copilot sessionStart: {"additionalContext": ...} (top-level).
@@ -551,8 +570,17 @@ export const EVENT_AGENTS = {
       session_end: "SessionEnd",
       user_prompt_submit: "UserPromptSubmit",
       stop: "Stop",
+      // Codex Desktop rejects hookSpecificOutput on PreToolUse-class hooks
+      // (graphify's lesson: its tool hooks are deliberate no-ops). Same
+      // caution applies to PostToolUse — suppress the envelope so the
+      // dispatcher emits nothing rather than breaking the tool call.
+      file_edited: "PostToolUse",
     },
     timeout_unit: "s",
+    context_envelope: {
+      // No "*" key: every other event keeps plain passthrough (unchanged).
+      file_edited: "suppress",
+    },
   },
   "gemini-cli": {
     config_file: ".gemini/settings.json",
@@ -566,6 +594,8 @@ export const EVENT_AGENTS = {
       session_end: "SessionEnd",
       user_prompt_submit: "BeforeAgent",
       stop: "AfterAgent",
+      // No documented file-edit event surface yet.
+      file_edited: null,
     },
     timeout_unit: "ms",
     // Gemini mandates JSON-only stdout ("silence is mandatory"): plain text
@@ -589,6 +619,8 @@ export const EVENT_AGENTS = {
       session_end: "SessionEnd",
       user_prompt_submit: "UserPromptSubmit",
       stop: "Stop",
+      // No documented file-edit event surface yet.
+      file_edited: null,
     },
     timeout_unit: "ms",
     // Qwen hooks are a JSON stdin/stdout protocol (Gemini-derived).
@@ -609,6 +641,8 @@ export const EVENT_AGENTS = {
       session_end: "SessionEnd",
       user_prompt_submit: "UserPromptSubmit",
       stop: "Stop",
+      // No documented file-edit event surface yet.
+      file_edited: null,
     },
     timeout_unit: "s",
     // Devin hooks.v1.json: JSON stdout protocol; additionalContext is the
@@ -631,6 +665,8 @@ export const EVENT_AGENTS = {
       session_end: "SessionEnd",
       user_prompt_submit: "BeforeAgent",
       stop: "AfterAgent",
+      // No documented file-edit event surface yet.
+      file_edited: null,
     },
     timeout_unit: "ms",
     // Tabnine is Gemini-hooks-compatible (JSON-only stdout).
