@@ -19,7 +19,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseYaml } from "./yaml.mjs";
 import { RunStatus, StepStatus, StepContext, typeName, repr } from "./base.mjs";
@@ -599,7 +599,9 @@ export class RunState {
 }
 
 function atomicWriteJson(path, data) {
-  const tmp = join(dirname(path), `.${(path.split("/").pop())}.${process.pid}.${Date.now()}.tmp`);
+  // basename() is platform-aware — a manual split("/") leaves the full
+  // Windows path (backslashes) in the name and the write fails (CI: win32).
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
   writeFileSync(tmp, JSON.stringify(data, null, 2));
   try {
     renameSync(tmp, path);

@@ -186,7 +186,7 @@ workflow:
 steps:
   - id: emit
     type: shell
-    run: "echo '[1, 2, 3]'"
+    run: "node -p [1,2,3]"
     output_format: json
   - id: work
     type: fan-out
@@ -227,7 +227,7 @@ workflow:
 steps:
   - id: emit
     type: shell
-    run: "echo '[10, 20, 30, 40, 50, 60]'"
+    run: "node -p [10,20,30,40,50,60]"
     output_format: json
   - id: work
     type: fan-out
@@ -300,7 +300,7 @@ inputs:
 steps:
   - id: emit
     type: shell
-    run: "echo '{{ inputs.mode }}'"
+    run: "node -p \\"'{{ inputs.mode }}'\\""
   - id: route
     type: switch
     expression: "{{ steps.emit.output.stdout | default('') }}"
