@@ -1,5 +1,6 @@
 // Command dispatch: parse args, route to skill/agent/version/help trees.
 
+import { createRequire } from "node:module";
 import { AGENTS } from "./registry.mjs";
 import { cmdAdd, cmdUpdate, cmdRemove, cmdStatus } from "./commands/skills.mjs";
 import { cmdTeamSetup, cmdTeamUpdate, cmdTeamRepair } from "./commands/team.mjs";
@@ -16,7 +17,10 @@ import {
   printHelp,
 } from "./help.mjs";
 
-const VERSION = "2.0.0";
+// Single source of truth: package.json (drifts when hard-coded — v2.1.0
+// shipped printing "2.0.0"). dispatch.mjs lives in src/, so ../package.json
+// resolves the repo root both in-repo and when installed.
+const { version: VERSION } = createRequire(import.meta.url)("../package.json");
 
 export async function dispatch(argv, mode = "legacy") {
   const parsed = parseArgs(argv);

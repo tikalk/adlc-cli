@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readFileSync } from "node:fs";
 
 const exec = promisify(execFile);
 
@@ -19,4 +20,10 @@ test("both bins execute; helps diverge by design (new = dual-mode, legacy = froz
 test("legacy bin still dispatches the add command surface", async () => {
   const { stdout } = await exec(process.execPath, ["bin/adlc-skills-cli.mjs", "agents"]);
   assert.match(stdout, /OpenCode/);
+});
+
+test("version output matches package.json (no drift)", async () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8"));
+  const { stdout } = await exec(process.execPath, ["bin/adlc-cli.mjs", "version"]);
+  assert.equal(stdout.trim(), `adlc-cli ${pkg.version}`);
 });
