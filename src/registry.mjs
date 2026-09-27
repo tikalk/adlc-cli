@@ -463,7 +463,7 @@ export function resolveEnvelope(agentConfig, canonicalEvent) {
 // canonical_to_native (event name translation), timeout_unit (s or ms).
 export const EVENT_AGENTS = {
   opencode: {
-    config_file: ".opencode/plugin/adlc-skills-events.ts",
+    config_file: ".opencode/plugins/adlc-skills-events.ts",
     format: "ts-plugin",
     // opencode doesn't have lifecycle event hooks (session.start, etc.).
     // Instead it has fixed hook keys. Map canonical events to opencode hooks:

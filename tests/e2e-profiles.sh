@@ -82,7 +82,7 @@ assert_exists "$WS/.agents/skills/team-boot/SKILL.md"
 assert_exists "$WS/.opencode/commands/team-boot.md"
 assert_exists "$WS/.events.json"
 assert_exists "$WS/.agents/dispatcher.mjs"
-assert_exists "$WS/.opencode/plugin/adlc-skills-events.ts"
+assert_exists "$WS/.opencode/plugins/adlc-skills-events.ts"
 pass "skills installed from remote GitHub source + events wired"
 
 # team setup command ran — deterministic part (agent + skills_source) configured.

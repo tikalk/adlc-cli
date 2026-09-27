@@ -158,7 +158,7 @@ adlc-cli skills add <source> -a <agent>
   │
   └─ 4. Wire events (if .events.json in source)     ← lifecycle hooks
         .agents/dispatcher.mjs                        generic dispatcher (shipped)
-        .opencode/plugin/adlc-skills-events.ts        agent-native hook config
+        .opencode/plugins/adlc-skills-events.ts       agent-native hook config
 ```
 
 ## Skill flags
@@ -305,7 +305,7 @@ Both paths feed the **stdout → context injection** pipeline.
 
 | Agent | Config file | Format | Timeout unit |
 |-------|------------|--------|-------------|
-| opencode | `.opencode/plugin/adlc-skills-events.ts` | TS plugin | seconds |
+| opencode | `.opencode/plugins/adlc-skills-events.ts` | TS plugin | seconds |
 | claude-code | `.claude/settings.json` (merged) | JSON nested | seconds |
 | cursor | `.cursor/hooks.json` (merged) | JSON nested | seconds |
 | github-copilot | `.github/hooks/adlc-skills.json` | JSON | seconds |
