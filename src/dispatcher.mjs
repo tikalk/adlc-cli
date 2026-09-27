@@ -84,6 +84,9 @@ function main() {
           encoding: "utf-8",
           timeout: timeout * 1000,
           cwd: projectRoot,
+          // Tell skill scripts which canonical event fired so multi-mode
+          // scripts (e.g. team-boot) can branch without payload sniffing.
+          env: { ...process.env, ADLC_EVENT: event },
         });
         if (result.stdout) writeOutput(result.stdout, envelope);
         if (result.status !== 0 && result.stderr) {

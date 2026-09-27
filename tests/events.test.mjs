@@ -204,6 +204,127 @@ describe("Events: opencode plugin generation", () => {
     }
   });
 
+  it("file_edited → generic event handler + nudge stash + pre-guard drain (opencode)", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = {
+        events: {
+          session_start: [{ skill: "team-boot", description: "Bootstrap", timeout: 60 }],
+          file_edited: [{ skill: "team-boot", description: "Draft nudge", timeout: 10 }],
+        },
+      };
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      // Generic event subscription (file.edited has no named hook key).
+      const eventHandler = content.match(/"event": async \(\{ event \}\) => \{([\s\S]*?)\n    \}/);
+      assert.ok(eventHandler, "generic event handler present");
+      assert.ok(eventHandler[1].includes('event.type !== "file.edited"'), "guards on file.edited type");
+      assert.ok(eventHandler[1].includes('"file_edited"'), "dispatches canonical file_edited");
+      assert.ok(eventHandler[1].includes("JSON.stringify(event)"), "payload passed to dispatcher");
+
+      // Stash mechanism.
+      assert.ok(content.includes("let _pendingNudge = \"\""), "nudge stash declared");
+      assert.ok(content.includes("_pendingNudge = nudge"), "nudge stashed on non-empty stdout");
+
+      // Drain runs inside messages.transform BEFORE the EXTREMELY_IMPORTANT guard.
+      const transform = content.match(/"experimental\.chat\.messages\.transform": async \(_input, output\) => \{([\s\S]*?)\n    \}/);
+      assert.ok(transform, "messages.transform handler present");
+      assert.ok(transform[1].includes("_drainPendingNudge(output)"), "drain call in transform");
+      const drainPos = transform[1].indexOf("_drainPendingNudge(output)");
+      const guardPos = transform[1].indexOf("EXTREMELY_IMPORTANT");
+      assert.ok(drainPos !== -1 && (guardPos === -1 || drainPos < guardPos), "drain precedes dedup guard");
+
+      // runEvent gained a payload param wired to stdin.
+      assert.ok(content.includes("payload: string = \"\""), "runEvent payload param");
+      assert.ok(content.includes("input: payload"), "payload sent as dispatcher stdin");
+
+      // No standalone drainer needed (session_start present).
+      const drainers = content.match(/"experimental\.chat\.messages\.transform":/g) || [];
+      assert.equal(drainers.length, 1, "single transform entry — session_start covers the drain");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("file_edited without session_start → standalone transform drainer (opencode)", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = { events: { file_edited: [{ skill: "team-boot", timeout: 10 }] } };
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      assert.ok(content.includes('"event": async ({ event }) =>'), "generic event handler present");
+      assert.ok(content.includes('"experimental.chat.messages.transform":'), "standalone drainer emitted");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("claude-code: file_edited + post_tool_use accumulate under PostToolUse; file_edited gets hookSpecificOutput envelope", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = {
+        events: {
+          post_tool_use: [{ skill: "some-skill", timeout: 30 }],
+          file_edited: [{ skill: "team-boot", timeout: 10, matcher: "Edit|Write" }],
+        },
+      };
+      const agentConfig = getEventAgentConfig("claude-code");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("claude-code", projectRoot, resolved, ".agents/skills");
+      const settings = JSON.parse(readFileSync(join(projectRoot, ".claude/settings.json"), "utf-8"));
+      const post = settings.hooks.PostToolUse;
+      assert.ok(Array.isArray(post), "PostToolUse array exists");
+      assert.equal(post.length, 2, "both entries accumulated (regression: assignment overwrote)");
+      const fe = post.find((h) => h.command.includes("file_edited"));
+      assert.ok(fe, "file_edited entry present");
+      assert.ok(fe.command.endsWith("hookSpecificOutput"), "file_edited uses hookSpecificOutput envelope");
+      assert.equal(fe.matcher, "Edit|Write", "matcher passthrough");
+      const ptu = post.find((h) => h.command.includes("post_tool_use"));
+      assert.ok(ptu, "post_tool_use entry survives");
+      assert.ok(!ptu.command.includes("hookSpecificOutput"), "post_tool_use stays plain (unchanged)");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("codex + cursor: file_edited envelope suppressed (safe no-op)", () => {
+    const manifest = { events: { file_edited: [{ skill: "team-boot", timeout: 10 }] } };
+    for (const agentKey of ["codex", "cursor"]) {
+      const projectRoot = createTestProject(false);
+      try {
+        const agentConfig = getEventAgentConfig(agentKey);
+        const resolved = resolveEvents(manifest, agentConfig);
+        assert.ok(resolved.file_edited, `${agentKey}: file_edited resolved`);
+        const out = installEvents(agentKey, projectRoot, resolved, ".agents/skills");
+        assert.ok(out && out.path, `${agentKey}: config written to ${out.path}`);
+        let content;
+        if (agentKey === "codex") {
+          content = readFileSync(join(projectRoot, ".codex/config.toml"), "utf-8");
+        } else {
+          content = readFileSync(join(projectRoot, ".cursor/hooks.json"), "utf-8");
+        }
+        assert.ok(content.includes("file_edited"), `${agentKey}: file_edited entry written`);
+        assert.ok(content.includes(" suppress") || content.includes('"suppress"'), `${agentKey}: suppress envelope (dispatcher emits nothing)`);
+      } finally {
+        rmSync(projectRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("agents without a file_edited mapping skip it (resolveEvents)", () => {
+    const manifest = { events: { file_edited: [{ skill: "team-boot", timeout: 10 }] } };
+    for (const agentKey of ["gemini-cli", "qwen-code", "github-copilot", "devin", "tabnine-cli"]) {
+      const agentConfig = getEventAgentConfig(agentKey);
+      const resolved = resolveEvents(manifest, agentConfig);
+      assert.equal(resolved.file_edited, undefined, `${agentKey}: no file_edited (no mapping yet)`);
+    }
+  });
+
   it("chat.message builds a schema-valid TextPart (id/sessionID/messageID)", () => {
     const projectRoot = createTestProject(false);
     try {
@@ -1196,13 +1317,14 @@ Body should NOT be injected when file is unreadable.`,
 });
 
 describe("Registry: events data", () => {
-  it("has 7 canonical events", () => {
-    assert.equal(CANONICAL_EVENTS.length, 7);
+  it("has 8 canonical events", () => {
+    assert.equal(CANONICAL_EVENTS.length, 8);
     assert.ok(CANONICAL_EVENTS.includes("session_start"));
     assert.ok(CANONICAL_EVENTS.includes("session_compact"));
     assert.ok(CANONICAL_EVENTS.includes("user_prompt_submit"));
     assert.ok(CANONICAL_EVENTS.includes("pre_tool_use"));
     assert.ok(CANONICAL_EVENTS.includes("post_tool_use"));
+    assert.ok(CANONICAL_EVENTS.includes("file_edited"));
     assert.ok(CANONICAL_EVENTS.includes("session_end"));
     assert.ok(CANONICAL_EVENTS.includes("stop"));
   });

@@ -183,10 +183,15 @@ const _sessionStartCache: Record<string, string> = {}
 // creates/modifies/deletes the config (e.g., unconfigured → configured).
 let _sessionStartState: { exists: boolean; mtime: number } = { exists: false, mtime: 0 }
 
-function runEvent(command: string, event: string, timeoutSec: number): string {
+// Pending file.edited nudge (e.g. a clarify-skill suggestion after a decision
+// draft was written). Stashed by the generic event handler, drained into the
+// last user message by the next messages.transform pass.
+let _pendingNudge = ""
+
+function runEvent(command: string, event: string, timeoutSec: number, payload: string = ""): string {
   try {
     const result = execFileSync("node", [DISPATCHER, event, command, SKILLS_DIR, String(timeoutSec)], {
-      input: "",
+      input: payload,
       encoding: "utf-8",
       timeout: (timeoutSec + 5) * 1000,
     })
@@ -194,6 +199,24 @@ function runEvent(command: string, event: string, timeoutSec: number): string {
   } catch (e) {
     throw new Error("adlc event " + command + " (" + event + ") failed: " + (e as Error).message)
   }
+}
+
+// Drain the pending nudge into the last user message. Called at the TOP of
+// messages.transform — before the session_start early-return guard, which
+// returns on every step after the first injection and would otherwise strand
+// a mid-session nudge forever.
+function _drainPendingNudge(output: { messages: any[] }): void {
+  if (!_pendingNudge) return
+  const nudge = _pendingNudge
+  _pendingNudge = ""
+  let lastUser: any = undefined
+  for (const m of output.messages) {
+    if (m.info && m.info.role === "user") lastUser = m
+  }
+  if (!lastUser || !lastUser.parts.length) return
+  if (lastUser.parts.some((p: any) => p.type === "text" && p.text.includes("[pending-drafts]"))) return
+  const ref = lastUser.parts[0]
+  lastUser.parts.unshift({ ...ref, type: "text", text: nudge })
 }
 
 export const AdlcEventsPlugin: Plugin = async ({ directory }) => {
@@ -213,6 +236,8 @@ ${hookEntries}
 
 function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
   const entries = [];
+  const fileEditedRuns = [];
+  let hasTransform = false;
   for (const [canonicalEvent, handlers] of Object.entries(resolvedEvents)) {
     const nativeEvent = agentConfig.canonical_to_native[canonicalEvent];
     for (const h of handlers) {
@@ -223,8 +248,10 @@ function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
       // Every handler degrades gracefully: runEvent failures are caught and
       // logged, never rethrown, so a broken event can't crash the session.
       if (nativeEvent === "experimental.chat.messages.transform") {
+        hasTransform = true;
         entries.push(`    "${nativeEvent}": async (_input, output) => {
       try {
+        _drainPendingNudge(output)
         // Invalidate cache when .adlc/init-options.json changes (team-setup ran)
         let _exists = false, _mtime = 0
         try { const st = statSync(".adlc/init-options.json"); _exists = true; _mtime = st.mtimeMs } catch {}
@@ -264,6 +291,17 @@ function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
         console.error("adlc chat.message hook failed:", (e as Error).message)
       }
     }`);
+      } else if (nativeEvent === "file.edited") {
+        // file.edited has no named hook key in opencode's plugin API — it is
+        // subscribed via the generic `event` handler (plugin dist index.d.ts
+        // Hooks.event). Non-empty stdout is stashed in _pendingNudge and
+        // drained into the next user message by messages.transform.
+        fileEditedRuns.push(`      try {
+        const nudge = runEvent(${JSON.stringify(h.skill)}, ${JSON.stringify(canonicalEvent)}, ${h.timeout}, JSON.stringify(event))
+        if (nudge) _pendingNudge = nudge
+      } catch (e) {
+        console.error("adlc file.edited hook failed:", (e as Error).message)
+      }`);
       } else {
         // Generic fallback for tool.execute.before/after etc.
         entries.push(`    "${nativeEvent}": async (_input, output) => {
@@ -277,6 +315,25 @@ function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
       }
     }
   }
+
+  if (fileEditedRuns.length > 0) {
+    entries.push(`    "event": async ({ event }) => {
+      if (event.type !== "file.edited") return
+${fileEditedRuns.join("\n")}
+    }`);
+    if (!hasTransform) {
+      // No session_start handler declared — without a messages.transform
+      // entry nothing would ever drain the nudge. Emit a standalone drainer.
+      entries.push(`    "experimental.chat.messages.transform": async (_input, output) => {
+      try {
+        _drainPendingNudge(output)
+      } catch (e) {
+        console.error("adlc messages.transform hook failed:", (e as Error).message)
+      }
+    }`);
+    }
+  }
+
   return entries.join(",\n");
 }
 
