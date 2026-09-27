@@ -44,6 +44,54 @@ npx adlc-cli version
 | `agent run "<task>" [flags]` | Run a coding agent headlessly with a task |
 | `agent list` | List supported agents, command formats, event support, and run profiles |
 
+### Workflows
+
+| Command | Description |
+|---------|-------------|
+| `workflow run <source>` | Execute a workflow — YAML path, installed ID, or built-in (`factory` = the outer loop) |
+| `workflow resume <run_id>` | Resume a paused/failed run; gates re-prompt (or bind a `verdict_input` via `--input`) |
+| `workflow status [run_id]` | List runs / show one run's step states |
+| `workflow validate <source>` | Validate a definition; `--headless` requires gates to declare `verdict_input` |
+| `workflow state …` | LLM-executor helpers: `start/advance/pause/fail/show` (ADR-395) |
+
+Full JS port of the upstream `github/spec-kit` workflow engine (zero Python —
+ADR-390 + amendments). **Dual-executor architecture (ADR-395):** the same
+`workflow.yml` + `state.json` run either in-session (skills via the `state`
+helpers) or headless (the CLI engine) — a run parked at a gate by one
+executor resumes on the other. Step types: `command`, `prompt`, `shell`,
+`gate`, `if`, `switch`, `while`, `do-while`, `fan-out` (with
+`max_concurrency`), `fan-in`, `slot`.
+
+```
+.adlc/workflows/<id>/workflow.yml      definitions (installed · curated · generated)
+.adlc/workflows/runs/<run_id>/         run state: state.json, inputs.json, log.jsonl,
+                                       frozen workflow.yml, lease.json, brief.md, …
+refs/factory-runs/<run_id>             git-refs Tier-3 (ADR-393)
+```
+
+```bash
+# Run → gate pauses (non-TTY) → resume headlessly
+adlc-cli workflow run mission --input spec="Fix auth"
+adlc-cli workflow resume <run_id> --input verdict=approve
+
+# The bundled outer loop (stages = command steps + gates)
+adlc-cli workflow run factory --input verdict=approve
+
+# CI: JSONL lifecycle events (run_started/step_*/gate_paused/…/run_completed)
+adlc-cli workflow run factory --format json
+
+# LLM executor drives state via helpers (set ADLC_WORKFLOW_SESSION per session)
+export ADLC_WORKFLOW_SESSION=my-session
+adlc-cli workflow state start --workflow mission --input spec="Fix auth"
+adlc-cli workflow state advance <run_id> --step specify --status completed
+adlc-cli workflow state pause <run_id> --step review      # gate → human
+```
+
+Known constraint (inherited upstream): a gate nested inside
+`if`/`switch`/`while` bodies that pauses will re-run the parent control-flow
+step and its nested body on resume. Keep gates at the top level, or bind a
+`verdict_input` on the gate.
+
 ### Top-level
 
 | Command | Description |

@@ -5,16 +5,18 @@ import { cmdAdd, cmdUpdate, cmdRemove, cmdStatus } from "./commands/skills.mjs";
 import { cmdTeamSetup, cmdTeamUpdate, cmdTeamRepair } from "./commands/team.mjs";
 import { cmdAgentRun, cmdAgentList } from "./commands/agent.mjs";
 import { cmdWorkspaceSetup, cmdWorkspaceInit, cmdWorkspaceStatus } from "./commands/workspace.mjs";
+import { cmdWorkflow } from "./commands/workflow.mjs";
 import {
   printCliHelp,
   printSkillsHelp,
   printTeamHelp,
   printAgentHelp,
   printWorkspaceHelp,
+  printWorkflowHelp,
   printHelp,
 } from "./help.mjs";
 
-const VERSION = "1.0.2";
+const VERSION = "2.0.0";
 
 export async function dispatch(argv, mode = "legacy") {
   const parsed = parseArgs(argv);
@@ -118,6 +120,27 @@ function runNewTree({ command, args, flags }, argv) {
         default:
           console.error(`Unknown workspace command: "${sub}"`);
           printWorkspaceHelp();
+          return 1;
+      }
+    }
+    case "workflow": {
+      const sub = args[0] ?? "help";
+      const rest = args.slice(1);
+      // Raw argv for repeatable --input parsing (agent.mjs precedent).
+      const workflowArgv = argv.slice(argv.indexOf("workflow") + 1);
+      switch (sub) {
+        case "run":
+        case "resume":
+        case "status":
+        case "validate":
+        case "state":
+          return cmdWorkflow([sub, ...rest], flags, workflowArgv);
+        case "help":
+          printWorkflowHelp();
+          return 0;
+        default:
+          console.error(`Unknown workflow command: "${sub}"`);
+          printWorkflowHelp();
           return 1;
       }
     }
