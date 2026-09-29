@@ -12,6 +12,8 @@ import {
   installEvents,
   removeEvents,
   fetchEventsManifest,
+  fetchSkillsDeps,
+  expandSkillSelection,
   readLocalEventsManifest,
   resolveEvents,
 } from "../events.mjs";
@@ -39,6 +41,12 @@ export async function cmdAdd(args, flags) {
   const skillFilter = flags.skill || null;
   const npxYes = flags.yes || false;
 
+  // Resolve the selective-install closure once (shared across agents).
+  let selectedSkills = null;
+  if (skillFilter && skillFilter !== "*") {
+    selectedSkills = expandSkillSelection(await fetchSkillsDeps(source), skillFilter);
+  }
+
   for (const agentKey of agents) {
     const agent = getAgent(agentKey);
     if (!agent) {
@@ -51,9 +59,18 @@ export async function cmdAdd(args, flags) {
     const npxAgent = resolveNpxAgent(agentKey);
     const npxArgs = ["skills", "add", source, "-a", npxAgent];
     if (isGlobal) npxArgs.push("-g");
+    // Selective installs expand through .skills-deps.json closure: borrowers
+    // pull their canonical homes (npx accepts repeated --skill flags).
+    // No manifest or no match → the plain selection (fail-open).
     if (skillFilter) {
-      if (skillFilter === "*") npxArgs.push("--skill", "*");
-      else npxArgs.push("--skill", skillFilter);
+      if (skillFilter === "*") {
+        npxArgs.push("--skill", "*");
+      } else {
+        for (const name of selectedSkills) npxArgs.push("--skill", name);
+        if (selectedSkills.length > 1) {
+          console.log(`│  --skill expanded via .skills-deps.json: ${selectedSkills.join(", ")}`);
+        }
+      }
     }
     if (flags.copy) npxArgs.push("--copy");
     if (npxYes) npxArgs.push("-y");
@@ -72,7 +89,7 @@ export async function cmdAdd(args, flags) {
     }
 
     const skills = await findInstalledSkills(skillsDir, projectRoot);
-    const filtered = skillFilter && skillFilter !== "*" ? skills.filter((s) => s.name === skillFilter) : skills;
+    const filtered = selectedSkills ? skills.filter((s) => selectedSkills.includes(s.name)) : skills;
 
     console.log(`│  Found ${filtered.length} skill(s) in ${skillsDir}`);
 
@@ -173,10 +190,17 @@ export async function cmdUpdate(args, flags) {
       console.error("│  ✗ --pull requires skills-lock.json with source info (run 'add' first)");
       return 1;
     }
+    // Resolve the selective-install closure once (shared across agents).
+    let pullSelected = null;
+    if (flags.skill && flags.skill !== "*") {
+      pullSelected = expandSkillSelection(await fetchSkillsDeps(pullSource), flags.skill);
+    }
     for (const agentKey of agents) {
       const npxAgent = resolveNpxAgent(agentKey);
       const npxArgs = ["skills", "add", pullSource, "-a", npxAgent, "--copy"];
-      if (flags.skill && flags.skill !== "*") { npxArgs.push("-s", flags.skill); }
+      if (pullSelected) {
+        for (const name of pullSelected) npxArgs.push("-s", name);
+      }
       npxArgs.push("-y");
       console.log(`Pulling latest skills from ${pullSource} for ${agentKey}...`);
       const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot });

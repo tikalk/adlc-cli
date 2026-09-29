@@ -110,6 +110,73 @@ async function fetchGitHubRaw(ownerRepo, ref, file) {
   }
 }
 
+// ── Skill dependency closure (.skills-deps.json) ────────────────────────────
+// Selective installs (`--skill X`) install exactly X. Borrowers that reference
+// a canonical helper in another skill declare it in the source repo's
+// .skills-deps.json so installers can auto-include the closure:
+//   { "requires": { "architect-implement": ["architect-clarify"], ... } }
+// Unknown skills, missing manifests, and cycles all degrade to the plain
+// selection (fail-open); callers always get a usable list or null (all).
+
+export async function fetchSkillsDeps(source) {
+  const FILENAME = ".skills-deps.json";
+  const parse = (raw) => {
+    try {
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  };
+  // Mirror fetchEventsManifest source handling: local path, GitHub
+  // shorthand, full GitHub URL, bare local directory name.
+  if (source === "." || source.startsWith("./") || source.startsWith("/") || source.startsWith("../")) {
+    try {
+      return parse(readFileSync(join(source, FILENAME), "utf-8"));
+    } catch {
+      return null;
+    }
+  }
+  if (/^[\w.-]+\/[\w.-]+$/.test(source)) {
+    return await fetchGitHubRaw(source, "HEAD", FILENAME);
+  }
+  const ghMatch = source.match(/^https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)/);
+  if (ghMatch) {
+    return await fetchGitHubRaw(ghMatch[1], "HEAD", FILENAME);
+  }
+  try {
+    if (existsSync(source)) {
+      return parse(readFileSync(join(source, FILENAME), "utf-8"));
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function expandSkillSelection(depsManifest, skillFilter) {
+  if (!skillFilter || skillFilter === "*") return null;
+  const selected = Array.isArray(skillFilter) ? [...skillFilter] : [skillFilter];
+  const requires = (depsManifest && depsManifest.requires) || {};
+  const seen = new Set();
+  const out = [];
+  const queue = [...selected];
+  while (queue.length > 0) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+    const deps = requires[name];
+    if (Array.isArray(deps)) {
+      for (const dep of deps) {
+        if (typeof dep === "string" && !seen.has(dep)) queue.push(dep);
+      }
+    }
+  }
+  return out;
+}
+
 // ── Event resolution ────────────────────────────────────────────────────
 
 export function resolveEvents(manifest, agentConfig) {
