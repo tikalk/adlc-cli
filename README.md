@@ -1,8 +1,17 @@
 # adlc-cli
 
-A dual-mode CLI for coding agents: **skill management** (install skills, generate slash commands, wire lifecycle event hooks) + **agent execution** (run any coding agent headlessly with a task — the invocation layer the [Agentic Container](https://github.com/tikalk/agentic-container) delegates to).
+The CLI layer of the ADLC toolchain for coding agents: **skill management**
+(install skills, generate slash commands, wire lifecycle event hooks),
+**team directives** (configure and maintain a team-ai-directives repo),
+**workspaces** (multi-repo bootstrap), **agent execution** (run any coding
+agent headlessly with a task — the invocation layer the
+[Agentic Container](https://github.com/tikalk/agentic-container) delegates to),
+and a **workflow engine** (a full JS port of the `github/spec-kit` workflow
+engine — ADR-390 + amendments).
 
-> **Renamed from** `adlc-skills-cli` in v1.0.0. The old command surface still works via the deprecated `adlc-skills-cli` alias bin + npm shim during 1.x.
+> **Renamed from** `adlc-skills-cli`. The deprecated `adlc-skills-cli` bin
+> still ships (the legacy `add`/`upgrade`/`remove`/`status`/`agents` surface),
+> along with the `shim/adlc-skills-cli` npm package forwarding to it.
 
 Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-team-skills), [mattpocock/skills](https://github.com/mattpocock/skills), [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), [obra/superpowers](https://github.com/obra/superpowers), or your own.
 
@@ -11,6 +20,9 @@ Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-te
 ```bash
 # Install skills + generate commands + wire events
 npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
+
+# Install skills AND configure team-ai-directives (runs /team-setup headlessly)
+npx adlc-cli team setup tikalk/adlc-team-skills -a opencode
 
 # Works with any skills repo — events auto-skip if no .events.json
 npx adlc-cli skills add mattpocock/skills -a claude-code --no-events
@@ -32,22 +44,49 @@ npx adlc-cli version
 
 | Command | Description |
 |---------|-------------|
-| `skill add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire events |
+| `skills add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire events |
 | `skills update [-a <agent>]` | Re-generate commands from installed skills; `--pull` re-installs from source |
 | `skills remove [-a <agent>]` | Remove generated commands + event configs; cleans dispatcher + `.events.json` |
 | `skills [-a <agent>]` | Show what's installed per agent + dispatcher + event status |
 
+### Team directives
+
+| Command | Description |
+|----------|-------------|
+| `team setup <source> -a <agent>` | Install skills + write `.adlc/init-options.json` + run `/team-setup` headlessly (`--skip-skills` to skip installation) |
+| `team update` | `git pull` the team-ai-directives repo + re-install skills from source + `team repair --update-confidence` |
+| `team repair [--update-confidence\|--validate-drafts\|--build-to-delete]` | Run `/team-repair` headlessly (agent-driven), or the deterministic `setup-team.sh` path for `--update-confidence` / `--validate-drafts` |
+
+The `team` tree reads its targets from `.adlc/init-options.json` (see below);
+`-a` defaults to the configured agent.
+
+### Workspace
+
+| Command | Description |
+|----------|-------------|
+| `workspace setup [file]` | Apply a workspace file: clone `git:` modules, create `dirs:`, install skills, generate commands, run `/workspace --init`, and (first boot only) hand the agent the workspace `goal` |
+| `workspace init [--link\|--ignore-only]` | Run `/workspace --init` headlessly (`.adlc/` structure, discover/link child repos) |
+| `workspace status` | Run `/workspace --status` headlessly (audit branch, dirty, unpushed, SHA drift) |
+
+Workspace file resolution: explicit argument → `ADLC_WORKSPACE_FILE` env →
+`.adlc/workspace.yml`. Schema requires `schema_version` plus any of
+`workspace.git[]` (repo/path/branch/ref), `workspace.dirs[]`, `workspace.init`,
+`workspace.link`, `skills.sources[]`, `commands[]`, `goal`. Deterministic
+steps (git, dirs) run directly; agent-led steps go through `agent run`.
+`--dry-run` prints the plan without executing.
+
 ### Agent execution
 
 | Command | Description |
-|---------|-------------|
+|----------|-------------|
 | `agent run "<task>" [flags]` | Run a coding agent headlessly with a task |
 | `agent list` | List supported agents, command formats, event support, and run profiles |
+| `run "<task>" [flags]` | Top-level alias for `agent run` (runtime contract, ADR-368) |
 
 ### Workflows
 
 | Command | Description |
-|---------|-------------|
+|----------|-------------|
 | `workflow run <source>` | Execute a workflow — YAML path, installed ID, or built-in (`factory` = the outer loop) |
 | `workflow resume <run_id>` | Resume a paused/failed run; gates re-prompt (or bind a `verdict_input` via `--input`) |
 | `workflow status [run_id]` | List runs / show one run's step states |
@@ -63,9 +102,11 @@ executor resumes on the other. Step types: `command`, `prompt`, `shell`,
 `max_concurrency`), `fan-in`, `slot`.
 
 ```
-.adlc/workflows/<id>/workflow.yml      definitions (installed · curated · generated)
+.adlc/workflows/<id>/workflow.yml      installed · curated definitions
+.adlc/workflows/<run_id>/workflow.yml  generated-by-slug definitions (ADR-391-amendment)
 .adlc/workflows/runs/<run_id>/         run state: state.json, inputs.json, log.jsonl,
-                                       frozen workflow.yml, lease.json, brief.md, …
+                                       frozen workflow.yml, lease.json + mission
+                                       artifacts (brief.md, mission.yml, scratchpads/…)
 refs/factory-runs/<run_id>             git-refs Tier-3 (ADR-393)
 ```
 
@@ -87,6 +128,18 @@ adlc-cli workflow state advance <run_id> --step specify --status completed
 adlc-cli workflow state pause <run_id> --step review      # gate → human
 ```
 
+**Environment variables:**
+
+| Variable | Meaning |
+|----------|---------|
+| `ADLC_WORKFLOW_SESSION` | Session id — makes the run lease persist across sequential CLI invocations instead of per-command |
+| `ADLC_WORKFLOW_RUN_ID` | Set for step processes so nested commands address their own run |
+| `ADLC_WORKFLOW_LEASE_TTL` | Lease TTL in seconds (default 900) |
+| `ADLC_WORKSPACE_FILE` | Workspace file path override for `workspace setup` |
+
+SIGINT/SIGTERM trigger a clean pause (resumable) rather than a corrupt
+partial state.
+
 Known constraint (inherited upstream): a gate nested inside
 `if`/`switch`/`while` bodies that pauses will re-run the parent control-flow
 step and its nested body on resume. Keep gates at the top level, or bind a
@@ -99,11 +152,27 @@ step and its nested body on resume. Keep gates at the top level, or bind a
 | `version` | Print installed version |
 | `help` | Show full help |
 
+## `.adlc/init-options.json`
+
+Written by `team setup` (and by the `/team-setup` skill), read by the `team`
+and `workspace` trees to resolve defaults:
+
+```json
+{
+  "agent": "opencode",
+  "skills_source": "tikalk/adlc-team-skills",
+  "team_ai_directives": "./tikal-team-ai-directives"
+}
+```
+
+`agent` and `skills_source` default every later `-a` / re-install;
+`team_ai_directives` is where `team update` pulls and `team repair` indexes.
+
 ## `agent run` flags
 
 | Flag | Description |
 |------|-------------|
-| `-a <agent>` | Agent: `opencode` \| `claude-code` \| `goose` \| `gemini` (default: `opencode`) |
+| `-a <agent>` | Run profile: `opencode` \| `claude-code` \| `goose` \| `gemini` (default: `opencode`) |
 | `--model <id>` | Model id passed to the agent CLI (optional — agent picks its own if absent) |
 | `--format <fmt>` | Output: `text` (default, human-readable) \| `json` (normalized JSONL for container/CI) |
 | `--cwd <path>` | Working directory (default: current directory) |
@@ -170,20 +239,28 @@ adlc-cli skills add <source> -a <agent>
 | `--no-events` | Skip event config generation |
 | `--prefix <str>` | Namespace command filenames (e.g., `adlc.team-setup.md`) |
 | `--mode <mode>` | `inline` (embeds full skill body) or `wrapper` (references skill by name) |
-| `--skill, -s <name>` | Install/generate for one skill only (use `'*'` for all). Selective installs expand through the source's `.skills-deps.json` closure: borrowers auto-pull their canonical homes (e.g. `--skill architect-implement` also installs `architect-clarify`); repeated `--skill` flags pass through to `npx skills` |
+| `--skill, -s <name>` | Install/generate for one skill only (use `'*'` for all). The selection is expanded through the source's `.skills-deps.json` closure: borrowers auto-pull their canonical homes (e.g. `--skill architect-implement` also installs `architect-clarify`) |
 | `--copy` | Copy files instead of symlinking (passthrough to `npx skills`) |
+| `--pull` | (`update`) re-install from the locked source |
 | `-y, --yes` | Skip confirmation prompts |
 
 ## Supported agents
 
-24 agents across 3 command formats. 9 agents support event hooks. 4 agents support `agent run`.
+24 command agents across 3 command formats (plus a `generic` fallback), 9
+agents with event hooks, 4 run profiles.
+
+> **Gemini key split (current behavior):** the agent registry key is
+> `gemini-cli` (skills/commands/events), but the run profile is keyed
+> `gemini`. So: `skills add -a gemini-cli`, but `agent run -a gemini` — and
+> `agent list` shows gemini-cli without a run profile. Use the two keys as
+> shown.
 
 | Agent | Commands dir | Format | Events | Run |
 |-------|-------------|--------|--------|-----|
 | opencode | `.opencode/commands/` | markdown | yes | yes |
 | claude-code | `.claude/commands/` | markdown | yes | yes |
 | goose | `.goose/recipes/` | yaml | no | yes |
-| gemini | `.gemini/commands/` | toml | yes | yes |
+| gemini-cli | `.gemini/commands/` | toml | yes | `agent run -a gemini` |
 | ...and 20 more | | | | |
 
 Run `adlc-cli agent list` for the full table.
@@ -240,17 +317,6 @@ User-invoked skills (`disable-model-invocation: true` in frontmatter) are meant 
 |------|---------|-----|
 | `wrapper` | opencode | Ignores `disable-model-invocation` — skill stays available, model calls `skill({name})` |
 | `execution` | claude-code, cursor, copilot, codex | Respects `disable-model-invocation` — skill hidden, body must be inlined |
-
-## Install
-
-```bash
-# One-off (no install needed)
-npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
-
-# Install as global binary
-npm install -g adlc-cli
-adlc-cli skills add tikalk/adlc-team-skills -a opencode
-```
 
 ## Events: lifecycle hooks
 
@@ -323,10 +389,10 @@ Skill scripts see `ADLC_EVENT` in their environment and the event payload on std
 | cursor | `.cursor/hooks.json` (merged) | JSON nested | seconds |
 | github-copilot | `.github/hooks/adlc-skills.json` | JSON | seconds |
 | codex | `.codex/config.toml` (merged) | TOML | seconds |
-| gemini | `.gemini/settings.json` (merged) | JSON nested | milliseconds |
+| gemini-cli | `.gemini/settings.json` (merged) | JSON nested | milliseconds |
 | qwen-code | `.qwen/settings.json` (merged) | JSON nested | milliseconds |
 | devin | `.devin/hooks.v1.json` (merged) | JSON root-nested | seconds |
-| tabnine | `.tabnine/agent/settings.json` (merged) | JSON nested | milliseconds |
+| tabnine-cli | `.tabnine/agent/settings.json` (merged) | JSON nested | milliseconds |
 
 ### Safety patterns (ported from spec-kit)
 
@@ -345,10 +411,21 @@ Every generated file includes a `<!-- generated by adlc-cli -->` header. Event h
 
 No manifest database or state file needed.
 
+## Install
+
+```bash
+# One-off (no install needed)
+npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
+
+# Install as global binary
+npm install -g adlc-cli
+adlc-cli skills add tikalk/adlc-team-skills -a opencode
+```
+
 ## Development
 
 ```bash
-# Run tests
+# Run tests (300+ tests via node --test)
 npm test
 
 # Run the CLI locally
