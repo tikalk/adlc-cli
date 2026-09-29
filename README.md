@@ -170,7 +170,7 @@ adlc-cli skills add <source> -a <agent>
 | `--no-events` | Skip event config generation |
 | `--prefix <str>` | Namespace command filenames (e.g., `adlc.team-setup.md`) |
 | `--mode <mode>` | `inline` (embeds full skill body) or `wrapper` (references skill by name) |
-| `--skill, -s <name>` | Install/generate for one skill only (use `'*'` for all) |
+| `--skill, -s <name>` | Install/generate for one skill only (use `'*'` for all). Selective installs expand through the source's `.skills-deps.json` closure: borrowers auto-pull their canonical homes (e.g. `--skill architect-implement` also installs `architect-clarify`); repeated `--skill` flags pass through to `npx skills` |
 | `--copy` | Copy files instead of symlinking (passthrough to `npx skills`) |
 | `-y, --yes` | Skip confirmation prompts |
 
