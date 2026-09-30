@@ -40,9 +40,12 @@ function runLegacyTree({ command, args, flags }) {
     case "agents":
       return cmdAgentList();
     case "help":
-    default:
       printHelp();
       return 0;
+    default:
+      console.error(`Unknown command: "${command}"`);
+      printHelp();
+      return 1;
   }
 }
 
@@ -155,6 +158,7 @@ function runNewTree({ command, args, flags }, argv) {
       printCliHelp();
       return 0;
     default:
+      console.error(`Unknown command: "${command}"`);
       printCliHelp();
       return 1;
   }
