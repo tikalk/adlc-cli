@@ -21,6 +21,7 @@ import {
   stateShow,
 } from "../factory/state.mjs";
 import { printWorkflowHelp } from "../help.mjs";
+import { classifyWorkflowStatus } from "../exit-codes.mjs";
 
 const RUNS_DIR = ".adlc/workflows/runs";
 
@@ -171,7 +172,10 @@ async function cmdWorkflowRun(rest, rawArgv) {
     if (state.status === RunStatus.PAUSED) {
       console.log(`\nPaused at gate. Resume with: adlc-cli workflow resume ${state.runId} --input <verdict>=<choice>`);
     }
-    return state.status === RunStatus.COMPLETED ? 0 : 1;
+    // Lane contract: PAUSED exits 3 so the Argo expression
+    // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
+    // excludes it from retries.
+    return classifyWorkflowStatus(state.status).exitCode;
   } catch (exc) {
     if (exc instanceof LeaseHeldError) {
       console.error(`Error: ${exc.message}`);
@@ -212,7 +216,10 @@ async function cmdWorkflowResume(rest, rawArgv) {
     if (state.status === RunStatus.PAUSED) {
       console.log(`\nStill paused. Resume with: adlc-cli workflow resume ${state.runId} --input <verdict>=<choice>`);
     }
-    return state.status === RunStatus.COMPLETED ? 0 : 1;
+    // Lane contract: PAUSED exits 3 so the Argo expression
+    // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
+    // excludes it from retries.
+    return classifyWorkflowStatus(state.status).exitCode;
   } catch (exc) {
     if (exc instanceof LeaseHeldError) {
       console.error(`Error: ${exc.message}`);

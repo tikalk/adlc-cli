@@ -1,6 +1,7 @@
 // Agent commands: run a coding agent headlessly + list supported agents.
 
 import { getRunProfile, AGENTS, RUN_PROFILES } from "../registry.mjs";
+import { classifyAgentExit } from "../exit-codes.mjs";
 import { runTask } from "../run.mjs";
 import { normalizeLine } from "../run-events.mjs";
 import { renderTextEvent, handleInlineHitl } from "../render.mjs";
@@ -61,7 +62,7 @@ export async function cmdAgentRun(runArgs) {
 
   const { code, signal } = await promise;
   if (timeoutHandle) clearTimeout(timeoutHandle);
-  return code ?? (signal ? 130 : 1);
+  return classifyAgentExit({ code, signal }).exitCode;
 }
 
 function parseRunArgs(argv) {
