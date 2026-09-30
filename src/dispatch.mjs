@@ -152,9 +152,11 @@ function runNewTree({ command, args, flags }, argv) {
       console.log(`adlc-cli ${VERSION}`);
       return 0;
     case "help":
-    default:
       printCliHelp();
       return 0;
+    default:
+      printCliHelp();
+      return 1;
   }
 }
 
