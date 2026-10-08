@@ -7,7 +7,7 @@ import {
   conditionIsNeverEvaluated,
   conditionHasMalformedExpressionBlock,
   conditionIsInterpolatedToText,
-} from "../src/factory/expressions.mjs";
+} from "../src/workflow/expressions.mjs";
 
 const ctx = (fields = {}) => ({
   inputs: { name: "auth", count: 3, ready: false, text: "hello world", tags: ["a", "b"] },

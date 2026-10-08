@@ -11,15 +11,15 @@ import {
   headlessGateErrors,
   RunStatus,
   LeaseHeldError,
-} from "../factory/engine.mjs";
-import { STEP_REGISTRY } from "../factory/registry.mjs";
+} from "../workflow/engine.mjs";
+import { STEP_REGISTRY } from "../workflow/registry.mjs";
 import {
   stateStart,
   stateAdvance,
   statePause,
   stateFail,
   stateShow,
-} from "../factory/state.mjs";
+} from "../workflow/state.mjs";
 import { printWorkflowHelp } from "../help.mjs";
 import { classifyWorkflowStatus } from "../exit-codes.mjs";
 

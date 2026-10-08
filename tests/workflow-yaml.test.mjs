@@ -1,7 +1,7 @@
 // YAML subset parser tests for factory workflow files.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseYaml } from "../src/factory/yaml.mjs";
+import { parseYaml } from "../src/workflow/yaml.mjs";
 
 test("workflow-shaped document parses fully", () => {
   const doc = parseYaml(`

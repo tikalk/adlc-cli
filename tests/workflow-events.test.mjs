@@ -14,9 +14,9 @@ import {
   validateWorkflow,
   headlessGateErrors,
   RunStatus,
-} from "../src/factory/engine.mjs";
-import { STEP_REGISTRY } from "../src/factory/registry.mjs";
-import { BUILTIN_WORKFLOWS } from "../src/factory/builtins.mjs";
+} from "../src/workflow/engine.mjs";
+import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
+import { BUILTIN_WORKFLOWS } from "../src/workflow/builtins.mjs";
 
 function makeProject({ git = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "wf-events-"));
