@@ -15,6 +15,7 @@ COMMANDS:
   team setup <source> -a <agent>   Install skills + configure team-ai-directives
   team update                      Git pull + skills update + confidence update
   team repair                      Validate and repair team-ai-directives state
+  factory setup [--provider <p>] -a <agent>   Configure factory tracker provider
   agent run "<task>" [flags]       Run a coding agent headlessly with a task
   agent list                       List supported agents + run profiles
   workspace setup [file]            Apply workspace file (git modules, skills, commands, goal)
@@ -86,6 +87,23 @@ REPAIR FLAGS:
 SETUP FLAGS:
   --skip-skills               Skip skill installation (just configure directives)
   -a <agent>                  Agent key (default: from init-options.json)
+
+Run 'adlc-cli help' for the full list.
+`);
+}
+
+export function printFactoryHelp() {
+  console.log(`
+USAGE:
+  adlc-cli factory <command> [flags]
+
+COMMANDS:
+  setup [--provider <p>] -a <agent>   Configure factory tracker provider (.adlc/issues-provider.yml)
+  help                                Show this help
+
+SETUP FLAGS:
+  --provider <p>            Preselect provider: github | gitlab | linear | jira (skips the question, headless-safe)
+  -a <agent>                Agent key (default: from init-options.json)
 
 Run 'adlc-cli help' for the full list.
 `);
