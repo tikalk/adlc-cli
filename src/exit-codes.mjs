@@ -10,15 +10,24 @@ export function classifyAgentExit({ code, signal } = {}) {
   return { exitCode: 10 };
 }
 
+// Deliberately no import of RunStatus (src/factory/base.mjs) to keep this
+// file import-free per the header contract — but that means these case
+// labels must be hand-kept in sync with RunStatus's actual *lowercase*
+// values ("completed", "paused", "failed", "aborted"). They previously
+// used the uppercase enum KEY names instead of the VALUES, so every real
+// status silently fell through to the `default` 1 — confirmed empirically:
+// classifyWorkflowStatus("completed") returned exitCode 1, not 0, breaking
+// the Argo retry-gate contract documented in workflow.mjs
+// (`asInt(lastRetry.exitCode) != 10 && != 3` was always true).
 export function classifyWorkflowStatus(status) {
   switch (status) {
-    case "COMPLETED":
+    case "completed":
       return { exitCode: 0 };
-    case "PAUSED":
+    case "paused":
       return { exitCode: 3 };
-    case "FAILED":
+    case "failed":
       return { exitCode: 10 };
-    case "ABORTED":
+    case "aborted":
       return { exitCode: 1 };
     default:
       return { exitCode: 1 };

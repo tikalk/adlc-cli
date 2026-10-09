@@ -98,20 +98,20 @@ test("M2: classifyAgentExit maps SIGKILL kill to 130", async () => {
 
 test("M2: classifyWorkflowStatus maps COMPLETED to 0", async () => {
   const { classifyWorkflowStatus } = await loadExitCodes();
-  assert.equal(classifyWorkflowStatus("COMPLETED").exitCode, 0);
+  assert.equal(classifyWorkflowStatus("completed").exitCode, 0);
 });
 
 test("M2: classifyWorkflowStatus maps PAUSED to 3", async () => {
   const { classifyWorkflowStatus } = await loadExitCodes();
-  assert.equal(classifyWorkflowStatus("PAUSED").exitCode, 3);
+  assert.equal(classifyWorkflowStatus("paused").exitCode, 3);
 });
 
 test("M2: classifyWorkflowStatus maps FAILED to 10", async () => {
   const { classifyWorkflowStatus } = await loadExitCodes();
-  assert.equal(classifyWorkflowStatus("FAILED").exitCode, 10);
+  assert.equal(classifyWorkflowStatus("failed").exitCode, 10);
 });
 
 test("M2: classifyWorkflowStatus maps ABORTED to 1", async () => {
   const { classifyWorkflowStatus } = await loadExitCodes();
-  assert.equal(classifyWorkflowStatus("ABORTED").exitCode, 1);
+  assert.equal(classifyWorkflowStatus("aborted").exitCode, 1);
 });
