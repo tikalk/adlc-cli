@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { AGENTS } from "./registry.mjs";
 import { cmdAdd, cmdUpdate, cmdRemove, cmdStatus } from "./commands/skills.mjs";
 import { cmdTeamSetup, cmdTeamUpdate, cmdTeamRepair } from "./commands/team.mjs";
+import { cmdFactorySetup } from "./commands/factory.mjs";
 import { cmdAgentRun, cmdAgentList } from "./commands/agent.mjs";
 import { cmdWorkspaceSetup, cmdWorkspaceInit, cmdWorkspaceStatus } from "./commands/workspace.mjs";
 import { cmdWorkflow } from "./commands/workflow.mjs";
@@ -11,6 +12,7 @@ import {
   printCliHelp,
   printSkillsHelp,
   printTeamHelp,
+  printFactoryHelp,
   printAgentHelp,
   printWorkspaceHelp,
   printWorkflowHelp,
@@ -88,6 +90,21 @@ function runNewTree({ command, args, flags }, argv) {
         default:
           console.error(`Unknown team command: "${sub}"`);
           printTeamHelp();
+          return 1;
+      }
+    }
+    case "factory": {
+      const sub = args[0] ?? "help";
+      const rest = args.slice(1);
+      switch (sub) {
+        case "setup":
+          return cmdFactorySetup(rest, flags);
+        case "help":
+          printFactoryHelp();
+          return 0;
+        default:
+          console.error(`Unknown factory command: "${sub}"`);
+          printFactoryHelp();
           return 1;
       }
     }
@@ -194,6 +211,8 @@ function parseArgs(argv) {
       flags.yes = true;
     } else if (arg === "--skip-skills") {
       flags.skipSkills = true;
+    } else if (arg === "--provider") {
+      flags.provider = rest[++i];
     } else if (arg === "--update-confidence") {
       flags.updateConfidence = true;
     } else if (arg === "--build-to-delete") {
