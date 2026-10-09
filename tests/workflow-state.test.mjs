@@ -8,9 +8,9 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "no
 import { writeFileSync as fsWriteFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkflowEngine, RunState, RunStatus, Lease, LeaseHeldError } from "../src/factory/engine.mjs";
-import { STEP_REGISTRY } from "../src/factory/registry.mjs";
-import { stateStart, stateAdvance, statePause, stateFail, stateShow } from "../src/factory/state.mjs";
+import { WorkflowEngine, RunState, RunStatus, Lease, LeaseHeldError } from "../src/workflow/engine.mjs";
+import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
+import { stateStart, stateAdvance, statePause, stateFail, stateShow } from "../src/workflow/state.mjs";
 
 function makeProject() {
   const dir = mkdtempSync(join(tmpdir(), "wf-state-"));

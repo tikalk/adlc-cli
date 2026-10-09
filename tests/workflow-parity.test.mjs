@@ -10,11 +10,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { evaluateExpression, evaluateCondition } from "../src/factory/expressions.mjs";
-import { StepContext, StepStatus, RunStatus } from "../src/factory/base.mjs";
-import { WorkflowEngine, WorkflowDefinition, RunState, validateWorkflow } from "../src/factory/engine.mjs";
-import { STEP_REGISTRY, getStepType } from "../src/factory/registry.mjs";
-import { GateStep } from "../src/factory/steps/gate.mjs";
+import { evaluateExpression, evaluateCondition } from "../src/workflow/expressions.mjs";
+import { StepContext, StepStatus, RunStatus } from "../src/workflow/base.mjs";
+import { WorkflowEngine, WorkflowDefinition, RunState, validateWorkflow } from "../src/workflow/engine.mjs";
+import { STEP_REGISTRY, getStepType } from "../src/workflow/registry.mjs";
+import { GateStep } from "../src/workflow/steps/gate.mjs";
 
 const ctx = (fields = {}) => new StepContext(fields);
 
@@ -754,8 +754,8 @@ steps:
 // operator wrongly defaulted nulls — these tests pin the corrected behavior.
 
 test("explicit null config values fail loudly, never silently default", async () => {
-  const { FanOutStep } = await import("../src/factory/steps/control.mjs");
-  const { IfThenStep } = await import("../src/factory/steps/control.mjs");
+  const { FanOutStep } = await import("../src/workflow/steps/control.mjs");
+  const { IfThenStep } = await import("../src/workflow/steps/control.mjs");
 
   // fan-out: explicit `step: null` FAILS (upstream: get() does not default it).
   let result = await new FanOutStep().execute(

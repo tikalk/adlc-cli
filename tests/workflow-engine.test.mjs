@@ -5,9 +5,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkflowEngine, WorkflowDefinition, validateWorkflow, RunStatus } from "../src/factory/engine.mjs";
-import { STEP_REGISTRY } from "../src/factory/registry.mjs";
-import { StepStatus } from "../src/factory/base.mjs";
+import { WorkflowEngine, WorkflowDefinition, validateWorkflow, RunStatus } from "../src/workflow/engine.mjs";
+import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
+import { StepStatus } from "../src/workflow/base.mjs";
 
 function makeProject() {
   const dir = mkdtempSync(join(tmpdir(), "factory-test-"));
