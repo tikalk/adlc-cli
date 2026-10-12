@@ -4,6 +4,22 @@ A `.events.json` file at the root of a skills repo declares which skills should 
 
 Repos without `.events.json` are handled gracefully — commands are generated, events are skipped silently.
 
+## opencode 1.x + 2.x hybrid plugin
+
+The opencode event target is a single hybrid TypeScript plugin
+(`.opencode/plugins/adlc-skills-events.ts`, id `adlc-skills-events`): it
+default-exports `{ ...Plugin.define({ id, setup }), server }`. OpenCode 1.x
+(>= 1.18.29, which added object entrypoints) calls `server()` and uses the
+V1 hook keys (`experimental.chat.messages.transform`, `chat.message`,
+`tool.execute.before/after`, generic `event` for `file.edited`); OpenCode 2.x
+calls `setup()` and registers the mapped domain hooks (`session.hook("context")`,
+`session.hook("prompt")`, `tool.hook("execute.before/after")`,
+`event.subscribe()`). Both paths call the same shipped dispatcher
+(`.agents/dispatcher.mjs`), so skill behavior is identical. The generated file
+imports from `@opencode/plugin` — the project needs that package installed
+where opencode resolves plugin imports (e.g. `.opencode/package.json`).
+OpenCode 1.x older than 1.18.29 cannot load the hybrid file; upgrade to use events.
+
 ## Schema
 
 ```json

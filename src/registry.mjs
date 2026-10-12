@@ -466,12 +466,14 @@ export const EVENT_AGENTS = {
   opencode: {
     config_file: ".opencode/plugins/adlc-skills-events.ts",
     format: "ts-plugin",
-    // opencode doesn't have lifecycle event hooks (session.start, etc.).
-    // Instead it has fixed hook keys. Map canonical events to opencode hooks:
-    //   session_start       → experimental.chat.messages.transform (first user message injection — active instructions)
-    //   user_prompt_submit  → chat.message (fires on each user message)
-    //   pre_tool_use        → tool.execute.before
-    //   post_tool_use       → tool.execute.after
+    // Hybrid opencode 1.x (>=1.18.29 object entrypoints) + 2.x plugin: the
+    // generated file default-exports { ...Plugin.define({ id, setup }), server }.
+    // V1 calls server() and uses the fixed hook keys below; V2 calls setup()
+    // and registers the mapped domain hooks:
+    //   session_start       → V1 experimental.chat.messages.transform / V2 ctx.session.hook("context")
+    //   user_prompt_submit  → V1 chat.message / V2 ctx.session.hook("prompt")
+    //   pre_tool_use        → V1 tool.execute.before / V2 ctx.tool.hook("execute.before")
+    //   post_tool_use       → V1 tool.execute.after / V2 ctx.tool.hook("execute.after")
     //   session_end / stop  → (no equivalent; skip)
     canonical_to_native: {
       session_start: "experimental.chat.messages.transform",
