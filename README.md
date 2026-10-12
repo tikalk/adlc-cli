@@ -257,7 +257,7 @@ agents with event hooks, 4 run profiles.
 
 | Agent | Commands dir | Format | Events | Run |
 |-------|-------------|--------|--------|-----|
-| opencode | `.opencode/commands/` | markdown | yes | yes |
+| opencode (1.x + 2.x hybrid plugin) | `.opencode/commands/` | markdown | yes | yes |
 | claude-code | `.claude/commands/` | markdown | yes | yes |
 | goose | `.goose/recipes/` | yaml | no | yes |
 | gemini-cli | `.gemini/commands/` | toml | yes | `agent run -a gemini` |
@@ -384,7 +384,7 @@ Skill scripts see `ADLC_EVENT` in their environment and the event payload on std
 
 | Agent | Config file | Format | Timeout unit |
 |-------|------------|--------|-------------|
-| opencode | `.opencode/plugins/adlc-skills-events.ts` | TS plugin | seconds |
+| opencode (hybrid: V1 `server()` + V2 `setup()`, requires opencode 1.x >= 1.18.29 or any 2.x; project needs `@opencode/plugin` installed for the generated import) | `.opencode/plugins/adlc-skills-events.ts` | TS plugin | seconds |
 | claude-code | `.claude/settings.json` (merged) | JSON nested | seconds |
 | cursor | `.cursor/hooks.json` (merged) | JSON nested | seconds |
 | github-copilot | `.github/hooks/adlc-skills.json` | JSON | seconds |

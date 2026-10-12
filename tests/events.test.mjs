@@ -193,7 +193,7 @@ describe("Events: opencode plugin generation", () => {
       const result = installEvents("opencode", projectRoot, resolved, ".agents/skills");
       assert.equal(result.path, ".opencode/plugins/adlc-skills-events.ts");
       const content = readFileSync(join(projectRoot, result.path), "utf-8");
-      assert.ok(content.includes("AdlcEventsPlugin"));
+      assert.ok(content.includes('id: "adlc-skills-events"'));
       assert.ok(content.includes("runEvent"));
       assert.ok(content.includes("team-boot"));
       assert.ok(content.includes("team-discover"));
@@ -469,6 +469,62 @@ describe("Events: opencode plugin generation", () => {
       assert.ok(!content.includes('"chat.message"'), "no chat.message hook for session_start-only manifest");
       assert.ok(!content.includes("team-discover"), "no team-discover reference");
       assert.ok(content.includes("team-boot"), "team-boot present");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Events: opencode hybrid V1+V2 plugin", () => {
+  it("generates a single hybrid file with V1 server() and V2 setup()", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
+      const result = installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      assert.equal(result.path, ".opencode/plugins/adlc-skills-events.ts");
+      const content = readFileSync(join(projectRoot, result.path), "utf-8");
+
+      // V2 entrypoint: Plugin.define with stable id + setup
+      assert.ok(content.includes('import { Plugin } from "@opencode/plugin"'), "V2 import");
+      assert.ok(content.includes("Plugin.define"), "Plugin.define present");
+      assert.ok(content.includes('id: "adlc-skills-events"'), "stable plugin id");
+      assert.ok(content.includes("async setup("), "V2 setup present");
+      // V1 entrypoint preserved for opencode 1.x (>=1.18.29 object entrypoints)
+      assert.ok(content.includes("async server("), "V1 server() present");
+      // V1 hooks preserved inside server()
+      assert.ok(content.includes("experimental.chat.messages.transform"), "V1 messages.transform preserved");
+      assert.ok(content.includes("chat.message"), "V1 chat.message preserved");
+      // V2 hook registrations inside setup()
+      assert.ok(content.includes('ctx.session.hook("context"'), "V2 context hook for session_start");
+      assert.ok(content.includes('ctx.session.hook("prompt"'), "V2 prompt hook for user_prompt_submit");
+      assert.ok(content.includes("team-boot"), "dispatcher skill reference preserved");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("V2 setup wires tool hooks and file.edited subscription when declared", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = {
+        events: {
+          session_start: [{ skill: "team-boot", timeout: 60 }],
+          pre_tool_use: [{ skill: "audit-write", matcher: "write|edit", timeout: 10 }],
+          post_tool_use: [{ skill: "audit-read", timeout: 10 }],
+          file_edited: [{ skill: "team-boot", timeout: 10 }],
+        },
+      };
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      assert.ok(content.includes('ctx.tool.hook("execute.before"'), "V2 pre-tool hook");
+      assert.ok(content.includes('ctx.tool.hook("execute.after"'), "V2 post-tool hook");
+      assert.ok(content.includes("ctx.event.subscribe"), "V2 event subscription for file.edited");
+      assert.ok(content.includes("file.edited"), "file.edited type guard preserved");
+      assert.ok(content.includes("_pendingNudge"), "nudge stash shared across V1+V2");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

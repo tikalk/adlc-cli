@@ -230,10 +230,14 @@ export function installEvents(agentKey, projectRoot, resolvedEvents, agentSkills
 // ── opencode: TypeScript plugin ─────────────────────────────────────────
 
 function generateOpenCodePlugin(projectRoot, resolvedEvents, skillsDir, agentConfig) {
-  const hookEntries = buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig);
+  const v1Entries = buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig);
+  const v2SetupBody = buildOpenCodeV2Setup(resolvedEvents, agentConfig);
 
   const content = `// ${MARKER} — do not edit
-import type { Plugin } from "@opencode-ai/plugin"
+// Hybrid opencode 1.x (>=1.18.29 object entrypoints) + 2.x plugin.
+// V1 calls server(), V2 calls setup() via Plugin.define. Dispatcher contract
+// (node .agents/dispatcher.mjs <event> <skill> <dir> <timeout>) is shared.
+import { Plugin } from "@opencode/plugin"
 import { execFileSync } from "node:child_process"
 import { resolve } from "node:path"
 import { statSync } from "node:fs"
@@ -241,9 +245,10 @@ import { statSync } from "node:fs"
 let DISPATCHER = ""
 let SKILLS_DIR = ${JSON.stringify(skillsDir)}
 
-// Cache for session_start handlers — experimental.chat.messages.transform
-// fires on every step, but the script output is stable for the session.
-// Keyed by skill name so multiple session_start handlers each get their own cache.
+// Cache for session_start handlers — messages.transform (V1) fires on every
+// step and the V2 context hook fires on every model request, but the script
+// output is stable for the session. Keyed by skill name so multiple
+// session_start handlers each get their own cache.
 const _sessionStartCache: Record<string, string> = {}
 
 // Track init-options.json state so the cache invalidates when team-setup
@@ -251,8 +256,8 @@ const _sessionStartCache: Record<string, string> = {}
 let _sessionStartState: { exists: boolean; mtime: number } = { exists: false, mtime: 0 }
 
 // Pending file.edited nudge (e.g. a clarify-skill suggestion after a decision
-// draft was written). Stashed by the generic event handler, drained into the
-// last user message by the next messages.transform pass.
+// draft was written). Stashed by the file.edited subscription, drained into
+// context by the next session hook pass.
 let _pendingNudge = ""
 
 function runEvent(command: string, event: string, timeoutSec: number, payload: string = ""): string {
@@ -268,10 +273,10 @@ function runEvent(command: string, event: string, timeoutSec: number, payload: s
   }
 }
 
-// Drain the pending nudge into the last user message. Called at the TOP of
-// messages.transform — before the session_start early-return guard, which
-// returns on every step after the first injection and would otherwise strand
-// a mid-session nudge forever.
+// Drain the pending nudge into the last user message (V1 shape). Called at
+// the TOP of messages.transform — before the session_start early-return
+// guard, which returns on every step after the first injection and would
+// otherwise strand a mid-session nudge forever.
 function _drainPendingNudge(output: { messages: any[] }): void {
   if (!_pendingNudge) return
   const nudge = _pendingNudge
@@ -286,11 +291,43 @@ function _drainPendingNudge(output: { messages: any[] }): void {
   lastUser.parts.unshift({ ...ref, type: "text", text: nudge })
 }
 
-export const AdlcEventsPlugin: Plugin = async ({ directory }) => {
-  DISPATCHER = resolve(directory, ".agents", "dispatcher.mjs")
-  return {
-${hookEntries}
+// Drain the pending nudge into V2 model-request system instructions.
+function _drainPendingNudgeV2(event: { system?: any[] }): void {
+  if (!_pendingNudge) return
+  const nudge = _pendingNudge
+  _pendingNudge = ""
+  event.system ??= []
+  const texts = event.system.map((s: any) => (typeof s === "string" ? s : (s.text ?? "")))
+  if (texts.some((t: string) => t.includes("[pending-drafts]"))) return
+  event.system.push({ type: "text", text: nudge })
+}
+
+function _checkSessionStartState(): void {
+  let _exists = false, _mtime = 0
+  try { const st = statSync(".adlc/init-options.json"); _exists = true; _mtime = st.mtimeMs } catch {}
+  const _stateChanged = _exists !== _sessionStartState.exists || _mtime !== _sessionStartState.mtime
+  if (_stateChanged) {
+    for (const k of Object.keys(_sessionStartCache)) delete _sessionStartCache[k]
+    _sessionStartState = { exists: _exists, mtime: _mtime }
   }
+}
+
+export default {
+  ...Plugin.define({
+    id: "adlc-skills-events",
+    async setup(ctx) {
+      const directory = ctx.location?.directory ?? process.cwd()
+      DISPATCHER = resolve(directory, ".agents", "dispatcher.mjs")
+${v2SetupBody}
+    },
+  }),
+  async server(ctx: any = {}) {
+    const directory = ctx.directory ?? process.cwd()
+    DISPATCHER = resolve(directory, ".agents", "dispatcher.mjs")
+    return {
+${v1Entries}
+    }
+  },
 }
 `;
 
@@ -299,6 +336,94 @@ ${hookEntries}
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, content, "utf-8");
   return { path: agentConfig.config_file, merged: false };
+}
+
+// V2 setup body: register ctx.session/ctx.tool hooks + ctx.event subscription
+// per resolved canonical event. Mirrors the V1 mapping:
+//   session_start      → ctx.session.hook("context") (V1: messages.transform)
+//   user_prompt_submit → ctx.session.hook("prompt")   (V1: chat.message)
+//   pre_tool_use       → ctx.tool.hook("execute.before")
+//   post_tool_use      → ctx.tool.hook("execute.after")
+//   file_edited        → ctx.event.subscribe() stash + drain in context hook
+function buildOpenCodeV2Setup(resolvedEvents, agentConfig) {
+  const lines = [];
+  const fileEditedRuns = [];
+  let hasContext = false;
+
+  for (const [canonicalEvent, handlers] of Object.entries(resolvedEvents)) {
+    const nativeEvent = agentConfig.canonical_to_native[canonicalEvent];
+    for (const h of handlers) {
+      if (nativeEvent === "experimental.chat.messages.transform") {
+        hasContext = true;
+        lines.push(`      await ctx.session.hook("context", (event: any) => {
+        try {
+          _drainPendingNudgeV2(event)
+          _checkSessionStartState()
+          const _key = ${JSON.stringify(h.skill)}
+          if (!(_key in _sessionStartCache)) {
+            _sessionStartCache[_key] = runEvent(_key, ${JSON.stringify(canonicalEvent)}, ${h.timeout})
+          }
+          const ctxText = _sessionStartCache[_key]
+          if (!ctxText) return
+          event.system ??= []
+          const texts = event.system.map((s: any) => (typeof s === "string" ? s : (s.text ?? "")))
+          if (texts.some((t: string) => t.includes("EXTREMELY_IMPORTANT"))) return
+          event.system.push({ type: "text", text: ctxText })
+        } catch (e) {
+          console.error("adlc context hook failed:", (e as Error).message)
+        }
+      })`);
+      } else if (nativeEvent === "chat.message") {
+        lines.push(`      await ctx.session.hook("prompt", (event: any) => {
+        try {
+          const ctxText = runEvent(${JSON.stringify(h.skill)}, ${JSON.stringify(canonicalEvent)}, ${h.timeout})
+          if (!ctxText) return
+          event.prompt.text = event.prompt.text ? event.prompt.text + "\\n\\n" + ctxText : ctxText
+        } catch (e) {
+          console.error("adlc prompt hook failed:", (e as Error).message)
+        }
+      })`);
+      } else if (nativeEvent === "file.edited") {
+        fileEditedRuns.push(`          try {
+            const nudge = runEvent(${JSON.stringify(h.skill)}, ${JSON.stringify(canonicalEvent)}, ${h.timeout}, JSON.stringify(event))
+            if (nudge) _pendingNudge = nudge
+          } catch (e) {
+            console.error("adlc file.edited hook failed:", (e as Error).message)
+          }`);
+      } else if (nativeEvent === "tool.execute.before" || nativeEvent === "tool.execute.after") {
+        const v2Hook = nativeEvent === "tool.execute.before" ? "execute.before" : "execute.after";
+        lines.push(`      await ctx.tool.hook(${JSON.stringify(v2Hook)}, (event: any) => {
+        try {
+          runEvent(${JSON.stringify(h.skill)}, ${JSON.stringify(canonicalEvent)}, ${h.timeout}, JSON.stringify(event))
+        } catch (e) {
+          console.error(${JSON.stringify(`adlc ${v2Hook} hook failed:`)}, (e as Error).message)
+        }
+      })`);
+      }
+    }
+  }
+
+  if (fileEditedRuns.length > 0) {
+    lines.push(`      void (async () => {
+        for await (const event of ctx.event.subscribe()) {
+          if ((event as any).type !== "file.edited") continue
+${fileEditedRuns.join("\n")}
+        }
+      })()`);
+    if (!hasContext) {
+      // No session_start handler declared — without a context hook nothing
+      // would ever drain the nudge. Emit a standalone drainer.
+      lines.push(`      await ctx.session.hook("context", (event: any) => {
+        try {
+          _drainPendingNudgeV2(event)
+        } catch (e) {
+          console.error("adlc context hook failed:", (e as Error).message)
+        }
+      })`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
