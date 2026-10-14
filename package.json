@@ -8,7 +8,7 @@
     "adlc-skills-cli": "bin/adlc-skills-cli.mjs"
   },
   "scripts": {
-    "test": "node --test && bash tests/e2e-workspace.sh --skip-agent",
+    "test": "node --test && node tests/e2e-node-gate.mjs --skip-agent",
     "prepublishOnly": "npm test"
   },
   "engines": {
