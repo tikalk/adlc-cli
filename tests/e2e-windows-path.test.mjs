@@ -57,6 +57,24 @@ function resolveBash() {
 const BASH = resolveBash();
 // Fail-open SKIP convention on Windows: never fail when bash is unavailable.
 const SKIP_NO_BASH = BASH ? {} : { skip: "bash not found on PATH (Windows Node-spawned process has no Git bin on PATH)" };
+// Faked-OSTYPE/stub-cygpath tests are not portable to Windows: the
+// extensionless stub script is not executable-resolvable there, so bash
+// skips it and finds the REAL /usr/bin/cygpath.exe, which translates the
+// REAL temp path (hence C:/Users/RUNNER~1/... vs C:/fake/tmp/...).
+// Irony worth noting: on real Windows runners the real cygpath does exactly
+// what the snippet wants, so the snippet logic is almost certainly correct —
+// only the faked unit tests can't run there. Real msys coverage comes from
+// the windows-20/22 E2E jobs, which execute the shell script for real.
+const SKIP_WIN32_FAKED = process.platform === "win32"
+  ? { skip: "faked OSTYPE/stub-cygpath not portable to Windows; real msys coverage comes from the windows-20/22 E2E jobs" }
+  : {};
+// First skip reason wins; {} when neither applies (mirrors the existing
+// { skip } options-object convention, Node >= 18 compatible).
+function combineSkips(...opts) {
+  for (const o of opts) if (o.skip) return o;
+  return {};
+}
+const SKIP_FAKED = combineSkips(SKIP_NO_BASH, SKIP_WIN32_FAKED);
 
 function runSnippet({ ostype, binDir }) {
   const block = extractBlock();
@@ -90,12 +108,12 @@ function makeBinDir({ withCygpath }) {
   return dir;
 }
 
-test("msys + cygpath: ROOT normalized to Windows C:/ form", SKIP_NO_BASH, () => {
+test("msys + cygpath: ROOT normalized to Windows C:/ form", SKIP_FAKED, () => {
   const bin = makeBinDir({ withCygpath: true });
   assert.equal(runSnippet({ ostype: "msys", binDir: bin }), "C:/fake/tmp/adlc-e2e-ws.TEST");
 });
 
-test("cygwin + cygpath: ROOT normalized to Windows C:/ form", SKIP_NO_BASH, () => {
+test("cygwin + cygpath: ROOT normalized to Windows C:/ form", SKIP_FAKED, () => {
   const bin = makeBinDir({ withCygpath: true });
   assert.equal(runSnippet({ ostype: "cygwin_nt-10.0", binDir: bin }), "C:/fake/tmp/adlc-e2e-ws.TEST");
 });
@@ -105,7 +123,7 @@ test("linux: ROOT untouched", SKIP_NO_BASH, () => {
   assert.equal(runSnippet({ ostype: "linux-gnu", binDir: bin }), "/tmp/adlc-e2e-ws.TEST");
 });
 
-test("msys without cygpath: falls back, exit 0, ROOT untouched", SKIP_NO_BASH, () => {
+test("msys without cygpath: falls back, exit 0, ROOT untouched", SKIP_FAKED, () => {
   const bin = makeBinDir({ withCygpath: false });
   assert.equal(runSnippet({ ostype: "msys", binDir: bin }), "/tmp/adlc-e2e-ws.TEST");
 });
