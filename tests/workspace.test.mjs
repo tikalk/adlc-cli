@@ -567,3 +567,26 @@ test("bare workspace defaults to status (requires agent)", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("setup --dry-run routes multiline goal to single agent run line", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Multiline Goal"
+agent: opencode
+workspace:
+  dirs:
+    - fresh-multi
+goal: > # folded multiline goal
+  Run the setup
+  for this project
+`);
+  try {
+    const r = await run(["workspace", "setup", "--dry-run"], dir);
+    assert.equal(r.code ?? 0, 0, combined(r));
+    assert.match(r.stdout, /goal \(agent-led, first boot\)/);
+    const agentLines = r.stdout.split("\n").filter((l) => l.includes("agent run -a opencode"));
+    assert.equal(agentLines.length, 1, `expected one agent run line, got: ${r.stdout}`);
+    assert.match(agentLines[0], /agent run -a opencode "Run the setup for this project"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

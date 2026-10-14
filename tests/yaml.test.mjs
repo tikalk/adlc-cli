@@ -98,3 +98,49 @@ test("parses folded block scalars", () => {
   assert.equal(p.goal, "Run the setup for this project");
   assert.equal(p.next, 1);
 });
+
+test("parses multiline goal (| keeps newlines, > folds)", () => {
+  const literal = parseYaml("goal: |\n  line one\n  line two\nnext: 1");
+  assert.equal(literal.goal, "line one\nline two");
+  assert.equal(literal.next, 1);
+  const folded = parseYaml("goal: >\n  line one\n  line two\nnext: 1");
+  assert.equal(folded.goal, "line one line two");
+  assert.equal(folded.next, 1);
+});
+
+test("parses block scalar headers with trailing comments", () => {
+  const literal = parseYaml("goal: | # keep newlines\n  line one\n  line two\nnext: 1");
+  assert.equal(literal.goal, "line one\nline two");
+  const folded = parseYaml("goal: > # fold lines\n  line one\n  line two\nnext: 1");
+  assert.equal(folded.goal, "line one line two");
+});
+
+test("keeps URL fragments, strips trailing comments", () => {
+  const p = parseYaml(
+    "repo: https://example.com/repo.git#v6.4.1 # pin comment\nplain: value # trailing\nquoted: \"1.0\" # version comment\n",
+  );
+  assert.equal(p.repo, "https://example.com/repo.git#v6.4.1");
+  assert.equal(p.plain, "value");
+  assert.equal(p.quoted, "1.0");
+});
+
+test("parses comment-heavy workspace file", () => {
+  const p = parseYaml(
+    "# top comment\n" +
+      'schema_version: "1.0" # schema\n' +
+      '# name comment\nname: "Comment Workspace" # workspace name\n' +
+      "agent: opencode # agent choice\n" +
+      "workspace: # workspace block\n" +
+      "  link: true # enable linking\n" +
+      "  init: true # run init\n" +
+      "goal: > # multiline goal\n" +
+      "  Run the setup\n" +
+      "  for this project\n",
+  );
+  assert.equal(p.schema_version, "1.0");
+  assert.equal(p.name, "Comment Workspace");
+  assert.equal(p.agent, "opencode");
+  assert.equal(p.workspace.link, true);
+  assert.equal(p.workspace.init, true);
+  assert.equal(p.goal, "Run the setup for this project");
+});
