@@ -1,0 +1,37 @@
+name: E2E Full Agent (nightly)
+
+# Full workspace shell E2E including live agent-led parts (3+4).
+# Scheduled only — never in the default push/PR path, which must stay free
+# of live LLM/network dependencies (see ci.yml e2e-skip-agent).
+#
+# NOTE (opencode auth): this job needs live `opencode` auth in the runner.
+# Configure the required secret/env in the repo settings (e.g. OPENCODE_API_KEY
+# or an authenticated opencode config) and reference it in the env below.
+# Without it the agent-led steps fail by design.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  e2e-full-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Checkout workspace skill fixture
+        uses: actions/checkout@v7
+        with:
+          repository: tikalk/adlc-team-skills
+          path: .e2e/adlc-team-skills
+
+      - name: Run workspace shell E2E (full agent)
+        run: bash tests/e2e-workspace.sh
+        env:
+          SKILL_SRC: .e2e/adlc-team-skills/skills/team/workspace

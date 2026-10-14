@@ -23,8 +23,44 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      # Workspace shell E2E resolves its skill fixture from a sibling
+      # adlc-team-skills checkout locally; in CI check it out and point
+      # SKILL_SRC at it so `npm test` (node --test + e2e-workspace.sh
+      # --skip-agent) stays green. No live LLM/network in this path.
+      - name: Checkout workspace skill fixture
+        uses: actions/checkout@v7
+        with:
+          repository: tikalk/adlc-team-skills
+          path: .e2e/adlc-team-skills
+
       - name: Run tests
         run: npm test
+        env:
+          SKILL_SRC: .e2e/adlc-team-skills/skills/team/workspace
 
       - name: Verify CLI starts
         run: node bin/adlc-skills-cli.mjs agents
+
+  # Explicit skip-agent E2E job (deterministic, no live agent). The matrix
+  # `test` job above already runs it via `npm test`; this job pins it on
+  # ubuntu/node 22 as the documented default-green gate.
+  e2e-skip-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Checkout workspace skill fixture
+        uses: actions/checkout@v7
+        with:
+          repository: tikalk/adlc-team-skills
+          path: .e2e/adlc-team-skills
+
+      - name: Run workspace shell E2E (skip-agent)
+        run: bash tests/e2e-workspace.sh --skip-agent
+        env:
+          SKILL_SRC: .e2e/adlc-team-skills/skills/team/workspace

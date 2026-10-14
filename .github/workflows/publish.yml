@@ -20,8 +20,18 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      # `npm test` includes the workspace shell E2E (--skip-agent), which
+      # needs the workspace skill fixture (sibling checkout locally).
+      - name: Checkout workspace skill fixture
+        uses: actions/checkout@v7
+        with:
+          repository: tikalk/adlc-team-skills
+          path: .e2e/adlc-team-skills
+
       - name: Run tests
         run: npm test
+        env:
+          SKILL_SRC: .e2e/adlc-team-skills/skills/team/workspace
 
       - name: Verify CLI starts
         run: node bin/adlc-cli.mjs agent list
