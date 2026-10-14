@@ -14,7 +14,16 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../bin/adlc-cli.mjs"
 ADLC_REPO="$(cd "$HERE/.." && pwd)"
-SKILL_SRC="${SKILL_SRC:-$(cd "$ADLC_REPO/../adlc-team-skills/skills/team/workspace" 2>/dev/null && pwd)}"
+# Hermetic default: vendored fixture. Sibling ../adlc-team-skills checkout is an
+# optional fallback; SKILL_SRC env always wins.
+VENDORED_SRC="$HERE/fixtures/skills-src/skills/team/workspace"
+SIBLING_SRC="$(cd "$ADLC_REPO/../adlc-team-skills/skills/team/workspace" 2>/dev/null && pwd || true)"
+if [ -z "${SKILL_SRC:-}" ]; then
+  SKILL_SRC="$VENDORED_SRC"
+  if [ ! -f "$SKILL_SRC/SKILL.md" ] && [ -n "$SIBLING_SRC" ]; then
+    SKILL_SRC="$SIBLING_SRC"
+  fi
+fi
 SKIP_AGENT="${1:-}"
 
 if [ -z "$SKILL_SRC" ] || [ ! -f "$SKILL_SRC/SKILL.md" ]; then

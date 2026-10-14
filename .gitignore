@@ -20,6 +20,8 @@ npm-debug.log*
 .opencode/
 .events.json
 skills-lock.json
+# Exception: vendored E2E fixture is a tracked source, not a generated artifact
+!tests/fixtures/skills-src/.events.json
 
 # graphify knowledge graph (generated)
 graphify-out/
