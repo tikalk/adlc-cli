@@ -7,9 +7,14 @@
 // (no shell, no quoting changes).
 
 export function portableSpawnOptions(command, platform = process.platform) {
-  void command;
-  if (platform === "win32") return { shell: true };
-  return {};
+  if (platform !== "win32") return {};
+  // Narrowed: shell only for bare console-shim names (no path separators,
+  // no .exe suffix). Absolute-path binaries (e.g. node.exe) and relative
+  // script paths spawn directly — shell would lose their stdout on win32.
+  if (typeof command !== "string" || command.length === 0) return {};
+  if (command.includes("/") || command.includes("\\")) return {};
+  if (command.toLowerCase().endsWith(".exe")) return {};
+  return { shell: true };
 }
 
 export function describeSpawnError(result) {
