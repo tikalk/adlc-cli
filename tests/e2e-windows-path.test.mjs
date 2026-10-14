@@ -28,11 +28,49 @@ function extractBlock() {
   return SCRIPT.slice(start, end + "\nfi".length);
 }
 
+function resolveBash() {
+  // 1. Bare `bash` via PATH lookup — preserves Linux/macOS behavior exactly.
+  try {
+    execFileSync("bash", ["--version"], { stdio: "ignore" });
+    return "bash";
+  } catch {
+    // Not on PATH (e.g. Node-spawned process on windows-latest, where
+    // Git's bin dir is only on PATH inside Git Bash shells).
+  }
+  // 2. Well-known Git-for-Windows locations.
+  if (process.platform === "win32") {
+    for (const base of [process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"]]) {
+      if (!base) continue;
+      const exe = path.join(base, "Git", "bin", "bash.exe");
+      try {
+        fs.accessSync(exe, fs.constants.X_OK);
+        return exe;
+      } catch {
+        // Try the next location.
+      }
+    }
+  }
+  // 3. No bash — callers SKIP instead of failing.
+  return null;
+}
+
+const BASH = resolveBash();
+// Fail-open SKIP convention on Windows: never fail when bash is unavailable.
+const SKIP_NO_BASH = BASH ? {} : { skip: "bash not found on PATH (Windows Node-spawned process has no Git bin on PATH)" };
+
 function runSnippet({ ostype, binDir }) {
   const block = extractBlock();
   const prog = `ROOT="/tmp/adlc-e2e-ws.TEST"\n${block}\necho "ROOT=$ROOT"\n`;
-  const out = execFileSync("bash", ["-c", prog], {
-    env: { ...process.env, OSTYPE: ostype, PATH: `${binDir}${path.delimiter}/usr/bin:/bin` },
+  const out = execFileSync(BASH, ["-c", prog], {
+    env: {
+      ...process.env,
+      OSTYPE: ostype,
+      // Stub bin dir first so the faked cygpath wins; keep the real PATH
+      // so a bare `bash` (and the stub's `#!/usr/bin/env bash` shebang)
+      // still resolves — the old hardcoded /usr/bin:/bin is meaningless
+      // on Windows.
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
     encoding: "utf8",
   });
   const line = out.trim().split("\n").pop();
@@ -52,22 +90,22 @@ function makeBinDir({ withCygpath }) {
   return dir;
 }
 
-test("msys + cygpath: ROOT normalized to Windows C:/ form", () => {
+test("msys + cygpath: ROOT normalized to Windows C:/ form", SKIP_NO_BASH, () => {
   const bin = makeBinDir({ withCygpath: true });
   assert.equal(runSnippet({ ostype: "msys", binDir: bin }), "C:/fake/tmp/adlc-e2e-ws.TEST");
 });
 
-test("cygwin + cygpath: ROOT normalized to Windows C:/ form", () => {
+test("cygwin + cygpath: ROOT normalized to Windows C:/ form", SKIP_NO_BASH, () => {
   const bin = makeBinDir({ withCygpath: true });
   assert.equal(runSnippet({ ostype: "cygwin_nt-10.0", binDir: bin }), "C:/fake/tmp/adlc-e2e-ws.TEST");
 });
 
-test("linux: ROOT untouched", () => {
+test("linux: ROOT untouched", SKIP_NO_BASH, () => {
   const bin = makeBinDir({ withCygpath: true });
   assert.equal(runSnippet({ ostype: "linux-gnu", binDir: bin }), "/tmp/adlc-e2e-ws.TEST");
 });
 
-test("msys without cygpath: falls back, exit 0, ROOT untouched", () => {
+test("msys without cygpath: falls back, exit 0, ROOT untouched", SKIP_NO_BASH, () => {
   const bin = makeBinDir({ withCygpath: false });
   assert.equal(runSnippet({ ostype: "msys", binDir: bin }), "/tmp/adlc-e2e-ws.TEST");
 });
