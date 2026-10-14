@@ -6,6 +6,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { getRunProfile } from "./registry.mjs";
+import { portableSpawnOptions } from "./utils/spawn.mjs";
 
 export function buildRunCommand(agentKey, prompt, opts = {}) {
   const profile = getRunProfile(agentKey);
@@ -52,6 +53,7 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
     env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
+    ...portableSpawnOptions(cmd),
   });
 
   const promise = new Promise((resolve) => {

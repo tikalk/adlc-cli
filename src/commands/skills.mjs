@@ -18,6 +18,7 @@ import {
   resolveEvents,
 } from "../events.mjs";
 import { writeAgent, writeSkillsSource, readSkillsSource } from "../utils/init-options.mjs";
+import { portableSpawnOptions, describeSpawnError } from "../utils/spawn.mjs";
 
 // ── add ────────────────────────────────────────────────────────────────
 export async function cmdAdd(args, flags) {
@@ -76,9 +77,11 @@ export async function cmdAdd(args, flags) {
     if (npxYes) npxArgs.push("-y");
 
     console.log(`│  Running: npx ${npxArgs.join(" ")}`);
-    const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot });
+    const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot, ...portableSpawnOptions("npx") });
     if (result.status !== 0) {
       console.error(`│  ✗ npx skills add failed for ${agentKey}`);
+      const spawnError = describeSpawnError(result);
+      if (spawnError) console.error(`│  spawn error: ${spawnError}`);
       return result.status || 1;
     }
 
@@ -203,9 +206,11 @@ export async function cmdUpdate(args, flags) {
       }
       npxArgs.push("-y");
       console.log(`Pulling latest skills from ${pullSource} for ${agentKey}...`);
-      const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot });
+      const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot, ...portableSpawnOptions("npx") });
       if (result.status !== 0) {
         console.error(`│  ✗ npx skills add failed for ${agentKey}`);
+        const spawnError = describeSpawnError(result);
+        if (spawnError) console.error(`│  spawn error: ${spawnError}`);
         return result.status || 1;
       }
     }
