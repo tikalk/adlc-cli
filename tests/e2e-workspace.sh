@@ -31,6 +31,16 @@ if [ -z "$SKILL_SRC" ] || [ ! -f "$SKILL_SRC/SKILL.md" ]; then
 fi
 
 ROOT="$(mktemp -d /tmp/adlc-e2e-ws.XXXXXX)"
+# Windows (Git Bash/msys, cygwin): mktemp yields an msys-virtual /tmp path that
+# bash-side git resolves but Node-spawned native git.exe cannot. Normalize to
+# Windows form (forward-slash C:/...) so bash, git.exe, and node all agree.
+if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+  if command -v cygpath >/dev/null 2>&1; then
+    ROOT="$(cygpath -m "$ROOT")"
+  else
+    echo "WARNING: cygpath not found; continuing with unconverted ROOT=$ROOT" >&2
+  fi
+fi
 FIX="$ROOT/fixtures"; WS="$ROOT/ws"
 mkdir -p "$FIX" "$WS/.adlc"
 
