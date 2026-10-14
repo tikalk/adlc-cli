@@ -4,15 +4,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const exec = promisify(execFile);
 const BIN = fileURLToPath(new URL("../bin/adlc-cli.mjs", import.meta.url));
-const run = (args, cwd) =>
-  exec(process.execPath, [BIN, ...args], { cwd }).catch((e) => e);
+const run = (args, cwd, env) =>
+  exec(process.execPath, [BIN, ...args], { cwd, env: { ...process.env, ...(env || {}) } }).catch((e) => e);
 
 const WORKSPACE_YML = `schema_version: "1.0"
 name: "Test Workspace"
@@ -246,4 +246,85 @@ test("workspace help lists setup, init, status", async () => {
   assert.match(r.stdout, /setup \[file\]/);
   assert.match(r.stdout, /init/);
   assert.match(r.stdout, /status/);
+});
+
+// ── mock-agent seam (ADLC_MOCK_AGENT): agent-led paths without live agent ──
+
+test("setup: goal invokes agent once on first-boot via mock agent", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Mock Goal"
+agent: opencode
+workspace:
+  dirs:
+    - fresh
+goal: "hello"`);
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "setup"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: stubFile,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    assert.ok(existsSync(join(dir, "fresh")), "fresh dir created");
+    assert.ok(existsSync(stubFile), "mock agent stub file written");
+    const content = readFileSync(stubFile, "utf-8");
+    assert.match(content, /hello/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("init (real, non-dry-run) routes through mock agent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "init", "-a", "opencode", "--link"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: stubFile,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    const content = readFileSync(stubFile, "utf-8");
+    assert.match(content, /Run \/workspace --init --link/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("status (real, non-dry-run) routes through mock agent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "status", "-a", "opencode"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: stubFile,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    const content = readFileSync(stubFile, "utf-8");
+    assert.match(content, /Run \/workspace --status/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: commands agent run routed through mock agent", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Mock Commands"
+agent: opencode
+workspace:
+  dirs:
+    - fresh-cmd
+commands:
+  - agent run "hi"`);
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "setup"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: stubFile,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    const content = readFileSync(stubFile, "utf-8");
+    assert.match(content, /hi/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

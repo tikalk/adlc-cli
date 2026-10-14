@@ -5,9 +5,22 @@ import { classifyAgentExit } from "../exit-codes.mjs";
 import { runTask } from "../run.mjs";
 import { normalizeLine } from "../run-events.mjs";
 import { renderTextEvent, handleInlineHitl } from "../render.mjs";
+import { appendFileSync } from "node:fs";
 
 // ── run ────────────────────────────────────────────────────────────────
 export async function cmdAgentRun(runArgs) {
+  // Mock-agent seam (e2e hardening): when ADLC_MOCK_AGENT is set, record args
+  // to a stub file and return 0 without spawning a live agent. Lets
+  // workspace agent-led paths (init/link, commands, goal) run deterministically.
+  if (process.env.ADLC_MOCK_AGENT && process.env.ADLC_MOCK_AGENT !== "0") {
+    const file =
+      process.env.ADLC_MOCK_AGENT_FILE ||
+      process.env.ADLC_AGENT_STUB_FILE ||
+      "./mock-agent.log";
+    appendFileSync(file, JSON.stringify({ args: runArgs }) + "\n");
+    return 0;
+  }
+
   const { agent, model, format, requireApproval, prompt: rawPrompt, cwd, timeout } = parseRunArgs(runArgs);
 
   let prompt = rawPrompt;
