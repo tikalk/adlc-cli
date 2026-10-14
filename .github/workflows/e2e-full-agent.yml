@@ -25,13 +25,6 @@ jobs:
         with:
           node-version: 22
 
-      - name: Checkout workspace skill fixture
-        uses: actions/checkout@v7
-        with:
-          repository: tikalk/adlc-team-skills
-          path: .e2e/adlc-team-skills
-
+      # Hermetic default: vendored skill fixture (tests/fixtures/skills-src).
       - name: Run workspace shell E2E (full agent)
         run: bash tests/e2e-workspace.sh
-        env:
-          SKILL_SRC: .e2e/adlc-team-skills/skills/team/workspace

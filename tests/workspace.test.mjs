@@ -274,6 +274,35 @@ goal: "hello"`);
   }
 });
 
+test("setup: goal fires once — second run adds no stub lines and shows first-boot skip hint", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Mock Goal Idempotent"
+agent: opencode
+workspace:
+  dirs:
+    - fresh
+goal: "hello"`);
+  const stubFile = join(dir, "mock-agent.log");
+  const env = {
+    ADLC_MOCK_AGENT: "1",
+    ADLC_MOCK_AGENT_FILE: stubFile,
+  };
+  try {
+    const r1 = await run(["workspace", "setup"], dir, env);
+    assert.equal(r1.code ?? 0, 0, r1.stderr);
+    const first = readFileSync(stubFile, "utf-8").trim().split("\n");
+    assert.equal(first.length, 1, "first boot fires the goal exactly once");
+
+    const r2 = await run(["workspace", "setup"], dir, env);
+    assert.equal(r2.code ?? 0, 0, r2.stderr);
+    assert.match(r2.stdout, /goal \(first-boot only — nothing assembled this run, skipping\)/);
+    const second = readFileSync(stubFile, "utf-8").trim().split("\n");
+    assert.equal(second.length, 1, "re-run adds no new stub lines — goal stayed silent");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("init (real, non-dry-run) routes through mock agent", async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
   const stubFile = join(dir, "mock-agent.log");
@@ -485,7 +514,11 @@ workspace:
     const r = await run(["workspace", "setup"], dir);
     assert.notEqual(r.code, 0);
     assert.match(combined(r), /checkout .* failed/);
-    assert.ok(!existsSync(join(dir, "cloned", "f.txt")) || true, "checkout never landed");
+    // Clone landed on the default branch, but the bad-ref checkout never took
+    // effect: HEAD is still main, not the requested ref.
+    assert.ok(existsSync(join(dir, "cloned", "f.txt")), "clone landed before the bad-ref checkout");
+    const head = await exec("git", ["-C", join(dir, "cloned"), "rev-parse", "--abbrev-ref", "HEAD"]);
+    assert.equal(head.stdout.trim(), "main", "failed checkout left HEAD on the default branch");
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(origin, { recursive: true, force: true });

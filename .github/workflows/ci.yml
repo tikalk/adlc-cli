@@ -23,20 +23,11 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      # Workspace shell E2E resolves its skill fixture from a sibling
-      # adlc-team-skills checkout locally; in CI check it out and point
-      # SKILL_SRC at it so `npm test` (node --test + e2e-workspace.sh
-      # --skip-agent) stays green. No live LLM/network in this path.
-      - name: Checkout workspace skill fixture
-        uses: actions/checkout@v7
-        with:
-          repository: tikalk/adlc-team-skills
-          path: .e2e/adlc-team-skills
-
+      # Workspace shell E2E uses the vendored skill fixture
+      # (tests/fixtures/skills-src) by default — no extra checkout, no
+      # network, no token needed. No live LLM/network in this path.
       - name: Run tests
         run: npm test
-        env:
-          SKILL_SRC: .e2e/adlc-team-skills/skills/team/workspace
 
       - name: Verify CLI starts
         run: node bin/adlc-skills-cli.mjs agents
@@ -54,13 +45,6 @@ jobs:
         with:
           node-version: 22
 
-      - name: Checkout workspace skill fixture
-        uses: actions/checkout@v7
-        with:
-          repository: tikalk/adlc-team-skills
-          path: .e2e/adlc-team-skills
-
+      # Vendored skill fixture (tests/fixtures/skills-src) is the default.
       - name: Run workspace shell E2E (skip-agent)
         run: bash tests/e2e-workspace.sh --skip-agent
-        env:
-          SKILL_SRC: .e2e/adlc-team-skills/skills/team/workspace
