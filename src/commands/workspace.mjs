@@ -38,6 +38,11 @@ export async function cmdWorkspaceSetup(args, flags) {
   // 3. Parse + validate
   let wsfile;
   try {
+    // Tabs are never valid YAML indentation — fail fast with a clear error
+    // instead of silently mis-parsing (the minimal parser skips bad lines).
+    if (/^[ ]*\t/m.test(content)) {
+      throw new Error("tab indentation is not valid YAML (use spaces)");
+    }
     wsfile = parseYaml(content);
   } catch (err) {
     console.error(`Error: invalid workspace file: ${err.message}`);

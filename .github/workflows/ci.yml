@@ -23,8 +23,28 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      # Workspace shell E2E uses the vendored skill fixture
+      # (tests/fixtures/skills-src) by default — no extra checkout, no
+      # network, no token needed. No live LLM/network in this path.
       - name: Run tests
         run: npm test
 
       - name: Verify CLI starts
         run: node bin/adlc-skills-cli.mjs agents
+
+  # Explicit skip-agent E2E job (deterministic, no live agent). The matrix
+  # `test` job above already runs it via `npm test`; this job pins it on
+  # ubuntu/node 22 as the documented default-green gate.
+  e2e-skip-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # Vendored skill fixture (tests/fixtures/skills-src) is the default.
+      - name: Run workspace shell E2E (skip-agent)
+        run: bash tests/e2e-workspace.sh --skip-agent

@@ -18,7 +18,7 @@ export function parseFrontmatter(content) {
 
 function parseSimpleYaml(raw) {
   const result = {};
-  const lines = raw.split("\n");
+  const lines = raw.split(/\r?\n/);
   let i = 0;
 
   while (i < lines.length) {

@@ -4,15 +4,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const exec = promisify(execFile);
 const BIN = fileURLToPath(new URL("../bin/adlc-cli.mjs", import.meta.url));
-const run = (args, cwd) =>
-  exec(process.execPath, [BIN, ...args], { cwd }).catch((e) => e);
+const run = (args, cwd, env) =>
+  exec(process.execPath, [BIN, ...args], { cwd, env: { ...process.env, ...(env || {}) } }).catch((e) => e);
 
 const WORKSPACE_YML = `schema_version: "1.0"
 name: "Test Workspace"
@@ -246,4 +246,380 @@ test("workspace help lists setup, init, status", async () => {
   assert.match(r.stdout, /setup \[file\]/);
   assert.match(r.stdout, /init/);
   assert.match(r.stdout, /status/);
+});
+
+// ── mock-agent seam (ADLC_MOCK_AGENT): agent-led paths without live agent ──
+
+test("setup: goal invokes agent once on first-boot via mock agent", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Mock Goal"
+agent: opencode
+workspace:
+  dirs:
+    - fresh
+goal: "hello"`);
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "setup"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: stubFile,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    assert.ok(existsSync(join(dir, "fresh")), "fresh dir created");
+    assert.ok(existsSync(stubFile), "mock agent stub file written");
+    const content = readFileSync(stubFile, "utf-8");
+    assert.match(content, /hello/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: goal fires once — second run adds no stub lines and shows first-boot skip hint", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Mock Goal Idempotent"
+agent: opencode
+workspace:
+  dirs:
+    - fresh
+goal: "hello"`);
+  const stubFile = join(dir, "mock-agent.log");
+  const env = {
+    ADLC_MOCK_AGENT: "1",
+    ADLC_MOCK_AGENT_FILE: stubFile,
+  };
+  try {
+    const r1 = await run(["workspace", "setup"], dir, env);
+    assert.equal(r1.code ?? 0, 0, r1.stderr);
+    const first = readFileSync(stubFile, "utf-8").trim().split("\n");
+    assert.equal(first.length, 1, "first boot fires the goal exactly once");
+
+    const r2 = await run(["workspace", "setup"], dir, env);
+    assert.equal(r2.code ?? 0, 0, r2.stderr);
+    assert.match(r2.stdout, /goal \(first-boot only — nothing assembled this run, skipping\)/);
+    const second = readFileSync(stubFile, "utf-8").trim().split("\n");
+    assert.equal(second.length, 1, "re-run adds no new stub lines — goal stayed silent");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("init (real, non-dry-run) routes through mock agent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "init", "-a", "opencode", "--link"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: stubFile,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    const content = readFileSync(stubFile, "utf-8");
+    assert.match(content, /Run \/workspace --init --link/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("status (real, non-dry-run) routes through mock agent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "status", "-a", "opencode"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: stubFile,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    const content = readFileSync(stubFile, "utf-8");
+    assert.match(content, /Run \/workspace --status/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: commands agent run routed through mock agent", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Mock Commands"
+agent: opencode
+workspace:
+  dirs:
+    - fresh-cmd
+commands:
+  - agent run "hi"`);
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "setup"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: stubFile,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    const content = readFileSync(stubFile, "utf-8");
+    assert.match(content, /hi/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── failure-mode + precedence coverage ───────────────────────────────
+// run() already merges per-call env (Task 1 seam); agent-led paths below
+// use --dry-run or fail before any spawn, so no live agent is needed.
+
+const combined = (r) => `${r.stdout ?? ""}\n${r.stderr ?? ""}\n${r.message ?? ""}`;
+
+test("setup: ADLC_WORKSPACE_FILE env resolves when no local file", async () => {
+  const src = makeTempWorkspace(`schema_version: "1.0"
+name: "Env Workspace"
+agent: opencode
+workspace:
+  dirs:
+    - env-dir
+`);
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
+  try {
+    const r = await run(["workspace", "setup", "--dry-run"], dir, {
+      ADLC_WORKSPACE_FILE: join(src, ".adlc", "workspace.yml"),
+    });
+    assert.equal(r.code ?? 0, 0, combined(r));
+    assert.match(r.stdout, /Env Workspace/);
+    assert.match(r.stdout, /mkdir -p env-dir/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test("setup: explicit arg beats env", async () => {
+  const envSrc = makeTempWorkspace(`schema_version: "1.0"
+name: "Env Workspace"
+agent: opencode
+`);
+  const argSrc = makeTempWorkspace(`schema_version: "1.0"
+name: "Explicit Workspace"
+agent: opencode
+`);
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
+  const envFile = join(envSrc, ".adlc", "workspace.yml");
+  const explicit = join(argSrc, ".adlc", "workspace.yml");
+  try {
+    const r = await run(["workspace", "setup", explicit, "--dry-run"], dir, {
+      ADLC_WORKSPACE_FILE: envFile,
+    });
+    assert.equal(r.code ?? 0, 0, combined(r));
+    assert.match(r.stdout, /Explicit Workspace/);
+    assert.doesNotMatch(r.stdout, /Env Workspace/);
+
+    // An explicit URL beats the env file too — the fetch error proves the
+    // explicit source won (127.0.0.1:1 refuses fast, no network hang).
+    const r2 = await run(["workspace", "setup", "http://127.0.0.1:1/nonexistent.yml"], dir, {
+      ADLC_WORKSPACE_FILE: envFile,
+    });
+    assert.notEqual(r2.code, 0);
+    assert.match(combined(r2), /failed to fetch/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(envSrc, { recursive: true, force: true });
+    rmSync(argSrc, { recursive: true, force: true });
+  }
+});
+
+test("setup: -a flag beats workspace agent:", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Flag Beats File"
+agent: file-agent
+workspace:
+  dirs:
+    - flag-dir
+`);
+  try {
+    const r = await run(["workspace", "setup", "--dry-run", "-a", "flag-agent"], dir);
+    assert.equal(r.code ?? 0, 0, combined(r));
+    assert.match(r.stdout, /Agent: flag-agent/);
+    assert.doesNotMatch(r.stdout, /file-agent/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: missing agent errors", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "No Agent"
+workspace:
+  dirs:
+    - d
+`);
+  try {
+    const r = await run(["workspace", "setup", "--dry-run"], dir);
+    assert.notEqual(r.code, 0);
+    assert.match(combined(r), /agent required/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: git entry missing repo/path exits 1", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Bad Git Entry"
+agent: opencode
+workspace:
+  git:
+    - path: only-path
+`);
+  try {
+    const r = await run(["workspace", "setup", "--dry-run"], dir);
+    assert.notEqual(r.code, 0);
+    assert.match(combined(r), /missing repo or path/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: bad git clone exits non-zero before skills", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Bad Clone"
+agent: opencode
+workspace:
+  git:
+    - repo: file:///nonexistent-adlc-ws-xyz-123
+      path: bad-clone
+skills:
+  sources:
+    - tikalk/adlc-team-skills
+`);
+  try {
+    const r = await run(["workspace", "setup"], dir);
+    assert.notEqual(r.code, 0);
+    assert.match(combined(r), /git clone failed/);
+    assert.doesNotMatch(combined(r), /skills\.sources/, "clone failed — skills step never reached");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: bad ref checkout fails", async () => {
+  const origin = mkdtempSync(join(tmpdir(), "adlc-ws-origin-"));
+  await exec("git", ["init", "-q", "-b", "main"], { cwd: origin });
+  writeFileSync(join(origin, "f.txt"), "x\n", "utf-8");
+  await exec("git", ["add", "."], { cwd: origin });
+  await exec("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-qm", "init"], {
+    cwd: origin,
+  });
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Bad Ref"
+agent: opencode
+workspace:
+  git:
+    - repo: ${origin}
+      path: cloned
+      ref: nonexistent-branch-xyz
+`);
+  try {
+    const r = await run(["workspace", "setup"], dir);
+    assert.notEqual(r.code, 0);
+    assert.match(combined(r), /checkout .* failed/);
+    // Clone landed on the default branch, but the bad-ref checkout never took
+    // effect: HEAD is still main, not the requested ref.
+    assert.ok(existsSync(join(dir, "cloned", "f.txt")), "clone landed before the bad-ref checkout");
+    const head = await exec("git", ["-C", join(dir, "cloned"), "rev-parse", "--abbrev-ref", "HEAD"]);
+    assert.equal(head.stdout.trim(), "main", "failed checkout left HEAD on the default branch");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(origin, { recursive: true, force: true });
+  }
+});
+
+test("setup: unknown commands[] entry exits 1", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Bad Command"
+agent: opencode
+commands:
+  - frobnicate the whatsit
+`);
+  try {
+    const r = await run(["workspace", "setup", "--dry-run"], dir);
+    assert.notEqual(r.code, 0);
+    assert.match(combined(r), /unknown command/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: commands stop on first failure", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Stop Early"
+agent: opencode
+commands:
+  - frobnicate first
+  - agent run "SHOULD-NEVER-RUN-XYZ"
+`);
+  try {
+    const r = await run(["workspace", "setup", "--dry-run"], dir);
+    assert.notEqual(r.code, 0);
+    assert.match(combined(r), /unknown command/);
+    assert.doesNotMatch(combined(r), /SHOULD-NEVER-RUN-XYZ/, "second command never ran");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: malformed YAML errors, empty file errors", async () => {
+  const bad = makeTempWorkspace("schema_version: \"1.0\"\nname: \"Tabs\"\n\tbad-indent: true\n");
+  try {
+    const r1 = await run(["workspace", "setup", "--dry-run"], bad);
+    assert.notEqual(r1.code, 0);
+    assert.match(combined(r1), /invalid workspace file/);
+  } finally {
+    rmSync(bad, { recursive: true, force: true });
+  }
+  const empty = makeTempWorkspace("");
+  try {
+    const r2 = await run(["workspace", "setup", "--dry-run"], empty);
+    assert.notEqual(r2.code, 0);
+    assert.match(combined(r2), /missing schema_version|invalid workspace file/);
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test("init --ignore-only --dry-run prints --ignore-only prompt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
+  try {
+    const r = await run(["workspace", "init", "-a", "opencode", "--ignore-only", "--dry-run"], dir);
+    assert.equal(r.code ?? 0, 0, combined(r));
+    assert.match(r.stdout, /--ignore-only/);
+    assert.match(r.stdout, /agent run -a opencode "Run \/workspace --init --ignore-only"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bare workspace defaults to status (requires agent)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-test-"));
+  try {
+    const r = await run(["workspace"], dir);
+    assert.notEqual(r.code, 0);
+    assert.match(combined(r), /agent required/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup --dry-run routes multiline goal to single agent run line", async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Multiline Goal"
+agent: opencode
+workspace:
+  dirs:
+    - fresh-multi
+goal: > # folded multiline goal
+  Run the setup
+  for this project
+`);
+  try {
+    const r = await run(["workspace", "setup", "--dry-run"], dir);
+    assert.equal(r.code ?? 0, 0, combined(r));
+    assert.match(r.stdout, /goal \(agent-led, first boot\)/);
+    const agentLines = r.stdout.split("\n").filter((l) => l.includes("agent run -a opencode"));
+    assert.equal(agentLines.length, 1, `expected one agent run line, got: ${r.stdout}`);
+    assert.match(agentLines[0], /agent run -a opencode "Run the setup for this project"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
