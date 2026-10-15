@@ -6,6 +6,7 @@ import { runTask } from "../run.mjs";
 import { normalizeLine } from "../run-events.mjs";
 import { renderTextEvent, handleInlineHitl } from "../render.mjs";
 import { appendFileSync } from "node:fs";
+import { spawnCompat } from "../utils/spawn.mjs";
 
 // ── run ────────────────────────────────────────────────────────────────
 export async function cmdAgentRun(runArgs) {
@@ -76,6 +77,43 @@ export async function cmdAgentRun(runArgs) {
   const { code, signal } = await promise;
   if (timeoutHandle) clearTimeout(timeoutHandle);
   return classifyAgentExit({ code, signal }).exitCode;
+}
+
+// ── interactive (TTY) handoff ──────────────────────────────────────────
+// Launch the agent's interactive UI with the prompt seeded, instead of a
+// headless one-shot run. Skills that are interactive wizards (e.g.
+// /team-setup: mode selection + confirm) cannot complete headlessly — the
+// model prints the question and the run exits.
+// Returns the exit code, or null when the profile has no interactive form
+// (caller falls back to headless).
+export async function runAgentInteractive(agentKey, prompt, { cwd } = {}) {
+  let profile;
+  try {
+    profile = getRunProfile(agentKey);
+  } catch (err) {
+    console.error(err.message);
+    return 1;
+  }
+  const spec = profile.interactive;
+  if (!spec) return null;
+
+  const env = { ...process.env, PWD: cwd ?? process.cwd() };
+  if (profile.envVars) Object.assign(env, profile.envVars);
+
+  return new Promise((resolvePromise) => {
+    const child = spawnCompat(profile.binary, [...(spec.args ?? []), prompt], {
+      cwd: cwd ?? process.cwd(),
+      env,
+      stdio: "inherit",
+    });
+    child.on("error", (err) => {
+      console.error(`[interactive] spawn error: ${err.message}`);
+      resolvePromise(1);
+    });
+    child.on("exit", (code, signal) => {
+      resolvePromise(classifyAgentExit({ code, signal }).exitCode);
+    });
+  });
 }
 
 function parseRunArgs(argv) {

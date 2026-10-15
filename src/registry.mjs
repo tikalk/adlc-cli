@@ -361,6 +361,12 @@ export const RUN_PROFILES = {
     outputFormat: "json",
     permissionMode: "auto",
     modelFlag: "-m",
+    // Interactive handoff form (TTY): full TUI with the prompt auto-sent, which
+    // stays resident so the user can answer follow-up questions. NOT
+    // `run -i` — on opencode 1.17+ that flag is a no-op (the handler only
+    // reads the hidden `--mini`: "run --interactive exits as soon as the
+    // prompt's turn completes", anomalyco/opencode#41513).
+    interactive: { args: ["--prompt"] },
   },
   "claude-code": {
     binary: "claude",
@@ -370,6 +376,8 @@ export const RUN_PROFILES = {
     permissionMode: "allowed-tools",
     allowedTools: ["Read", "Edit", "Write", "Bash", "WebFetch"],
     modelFlag: "--model",
+    // claude's interactive REPL takes the initial prompt as a positional arg.
+    interactive: { args: [] },
   },
   goose: {
     binary: "goose",
@@ -379,6 +387,7 @@ export const RUN_PROFILES = {
     permissionMode: "auto",
     envVars: { GOOSE_MODE: "auto" },
     modelFlag: null,
+    interactive: null,
   },
   gemini: {
     binary: "gemini",
@@ -387,6 +396,7 @@ export const RUN_PROFILES = {
     outputFormat: "text",
     permissionMode: "sandbox",
     modelFlag: "-m",
+    interactive: null,
   },
 };
 

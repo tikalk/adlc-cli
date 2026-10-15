@@ -1,11 +1,12 @@
 // Skill lifecycle commands: add, upgrade, remove, status.
 // These share imports and operate on the skill installation state.
 
-import { spawnSync } from "node:child_process";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, copyFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AGENTS, resolveNpxAgent, getAgent, getEventAgentConfig } from "../registry.mjs";
 import { findInstalledSkills, detectAdlc, expandTilde } from "../source.mjs";
+import { spawnNpxSync, resolveSkillsPackageSpec } from "../utils/spawn.mjs";
+import { normalizePs1Scripts } from "../utils/encoding.mjs";
 import { generateCommand, commandFilename, isGenerated, removeGeneratedCommands } from "../convert.mjs";
 import {
   installDispatcher,
@@ -18,7 +19,7 @@ import {
   resolveEvents,
 } from "../events.mjs";
 import { writeAgent, writeSkillsSource, readSkillsSource } from "../utils/init-options.mjs";
-import { portableSpawnOptions, describeSpawnError } from "../utils/spawn.mjs";
+import { describeSpawnError } from "../utils/spawn.mjs";
 
 // ── add ────────────────────────────────────────────────────────────────
 export async function cmdAdd(args, flags) {
@@ -58,7 +59,11 @@ export async function cmdAdd(args, flags) {
     console.log(`\n┌─ ${agent.name} (${agentKey})`);
 
     const npxAgent = resolveNpxAgent(agentKey);
-    const npxArgs = ["skills", "add", source, "-a", npxAgent];
+    // Version-aware spec: skills@latest defeats the stale _npx cache install
+    // without revalidating (Windows kept 1.5.18 after 1.7.2 shipped — missing
+    // UI like the "Select All" row); older Nodes get pinned skills@1.5.18,
+    // the newest release that runs there. --yes skips npx's own install confirm.
+    const npxArgs = ["--yes", resolveSkillsPackageSpec(), "add", source, "-a", npxAgent];
     if (isGlobal) npxArgs.push("-g");
     // Selective installs expand through .skills-deps.json closure: borrowers
     // pull their canonical homes (npx accepts repeated --skill flags).
@@ -77,8 +82,9 @@ export async function cmdAdd(args, flags) {
     if (npxYes) npxArgs.push("-y");
 
     console.log(`│  Running: npx ${npxArgs.join(" ")}`);
-    const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot, ...portableSpawnOptions("npx") });
+    const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
     if (result.status !== 0) {
+      if (result.error) console.error(`│  ✗ could not run npx: ${result.error.message}`);
       console.error(`│  ✗ npx skills add failed for ${agentKey}`);
       const spawnError = describeSpawnError(result);
       if (spawnError) console.error(`│  spawn error: ${spawnError}`);
@@ -89,6 +95,12 @@ export async function cmdAdd(args, flags) {
     if (!skillsDir) {
       console.log(`│  No skills directory for ${agentKey} — skipping command generation`);
       continue;
+    }
+
+    // Windows PowerShell 5.1 misreads BOM-less non-ASCII .ps1 as ANSI — normalize now.
+    const bomFixed = normalizePs1Scripts(resolve(projectRoot, expandTilde(skillsDir)));
+    if (bomFixed > 0) {
+      console.log(`│  UTF-8 BOM added to ${bomFixed} .ps1 script(s) (Windows PowerShell 5.1 compat)`);
     }
 
     const skills = await findInstalledSkills(skillsDir, projectRoot);
@@ -200,14 +212,15 @@ export async function cmdUpdate(args, flags) {
     }
     for (const agentKey of agents) {
       const npxAgent = resolveNpxAgent(agentKey);
-      const npxArgs = ["skills", "add", pullSource, "-a", npxAgent, "--copy"];
+      const npxArgs = ["--yes", resolveSkillsPackageSpec(), "add", pullSource, "-a", npxAgent, "--copy"];
       if (pullSelected) {
         for (const name of pullSelected) npxArgs.push("-s", name);
       }
       npxArgs.push("-y");
       console.log(`Pulling latest skills from ${pullSource} for ${agentKey}...`);
-      const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot, ...portableSpawnOptions("npx") });
+      const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
       if (result.status !== 0) {
+        if (result.error) console.error(`│  ✗ could not run npx: ${result.error.message}`);
         console.error(`│  ✗ npx skills add failed for ${agentKey}`);
         const spawnError = describeSpawnError(result);
         if (spawnError) console.error(`│  spawn error: ${spawnError}`);
@@ -222,6 +235,9 @@ export async function cmdUpdate(args, flags) {
 
     const skillsDir = isGlobal ? agent.global_skills_dir : agent.skills_dir;
     if (!skillsDir) continue;
+
+    // Re-copied skills come from upstream without BOMs — re-normalize every update.
+    normalizePs1Scripts(resolve(projectRoot, expandTilde(skillsDir)));
 
     const skills = await findInstalledSkills(skillsDir, projectRoot);
     if (skills.length === 0) continue;

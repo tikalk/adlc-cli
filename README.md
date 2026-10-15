@@ -21,7 +21,9 @@ Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-te
 # Install skills + generate commands + wire events
 npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
 
-# Install skills AND configure team-ai-directives (runs /team-setup headlessly)
+# Install skills AND configure team-ai-directives
+# (opens the agent's interactive UI on /team-setup when run in a terminal;
+#  piped/CI runs fall back to a headless one-shot run)
 npx adlc-cli team setup tikalk/adlc-team-skills -a opencode
 
 # Works with any skills repo — events auto-skip if no .events.json
@@ -53,7 +55,7 @@ npx adlc-cli version
 
 | Command | Description |
 |----------|-------------|
-| `team setup <source> -a <agent>` | Install skills + write `.adlc/init-options.json` + run `/team-setup` headlessly (`--skip-skills` to skip installation) |
+| `team setup <source> -a <agent>` | Install skills + write `.adlc/init-options.json` + run `/team-setup` (interactive UI on a TTY, headless in CI/pipes; `--skip-skills` to skip installation) |
 | `team update` | `git pull` the team-ai-directives repo + re-install skills from source + `team repair --update-confidence` |
 | `team repair [--update-confidence\|--validate-drafts\|--build-to-delete]` | Run `/team-repair` headlessly (agent-driven), or the deterministic `setup-team.sh` path for `--update-confidence` / `--validate-drafts` |
 

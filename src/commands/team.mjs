@@ -42,11 +42,26 @@ export async function cmdTeamSetup(args, flags) {
     }
   }
 
-  const { cmdAgentRun } = await import("./agent.mjs");
+  const { cmdAgentRun, runAgentInteractive } = await import("./agent.mjs");
+  const prompt = "Run /team-setup to configure team-ai-directives for this project";
+
+  // The /team-setup skill is an interactive wizard (mode selection + confirm):
+  // a headless one-shot run prints the question and exits without an answer.
+  // When we own a real terminal, hand off to the agent's interactive UI with
+  // the prompt seeded; piped/CI runs (and profiles without an interactive
+  // form) keep the headless behavior.
+  const interactiveEligible = !flags.format && process.stdin.isTTY && process.stdout.isTTY;
+  if (interactiveEligible) {
+    console.log("Opening an interactive session for /team-setup — answer the mode question there.");
+    const code = await runAgentInteractive(agentKey, prompt, { cwd: flags.cwd ?? process.cwd() });
+    if (code !== null) return code;
+    // profile has no interactive form → fall through to headless
+  }
+
   const runArgs = ["-a", agentKey, "--timeout", "300"];
   if (flags.format) runArgs.push("--format", flags.format);
   if (flags.cwd) runArgs.push("--cwd", flags.cwd);
-  runArgs.push("Run /team-setup to configure team-ai-directives for this project");
+  runArgs.push(prompt);
   return cmdAgentRun(runArgs);
 }
 
