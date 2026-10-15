@@ -5,7 +5,7 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, copyFileSyn
 import { join, resolve } from "node:path";
 import { AGENTS, resolveNpxAgent, getAgent, getEventAgentConfig } from "../registry.mjs";
 import { findInstalledSkills, detectAdlc, expandTilde } from "../source.mjs";
-import { spawnNpxSync } from "../utils/spawn.mjs";
+import { spawnNpxSync, resolveSkillsPackageSpec } from "../utils/spawn.mjs";
 import { normalizePs1Scripts } from "../utils/encoding.mjs";
 import { generateCommand, commandFilename, isGenerated, removeGeneratedCommands } from "../convert.mjs";
 import {
@@ -59,10 +59,11 @@ export async function cmdAdd(args, flags) {
     console.log(`\n┌─ ${agent.name} (${agentKey})`);
 
     const npxAgent = resolveNpxAgent(agentKey);
-    // skills@latest: bare `npx skills` reuses the stale _npx cache install
+    // Version-aware spec: skills@latest defeats the stale _npx cache install
     // without revalidating (Windows kept 1.5.18 after 1.7.2 shipped — missing
-    // UI like the "Select All" row); --yes skips npx's own install confirm.
-    const npxArgs = ["--yes", "skills@latest", "add", source, "-a", npxAgent];
+    // UI like the "Select All" row); older Nodes get pinned skills@1.5.18,
+    // the newest release that runs there. --yes skips npx's own install confirm.
+    const npxArgs = ["--yes", resolveSkillsPackageSpec(), "add", source, "-a", npxAgent];
     if (isGlobal) npxArgs.push("-g");
     // Selective installs expand through .skills-deps.json closure: borrowers
     // pull their canonical homes (npx accepts repeated --skill flags).
@@ -211,7 +212,7 @@ export async function cmdUpdate(args, flags) {
     }
     for (const agentKey of agents) {
       const npxAgent = resolveNpxAgent(agentKey);
-      const npxArgs = ["--yes", "skills@latest", "add", pullSource, "-a", npxAgent, "--copy"];
+      const npxArgs = ["--yes", resolveSkillsPackageSpec(), "add", pullSource, "-a", npxAgent, "--copy"];
       if (pullSelected) {
         for (const name of pullSelected) npxArgs.push("-s", name);
       }

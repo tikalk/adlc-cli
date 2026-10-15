@@ -5,7 +5,7 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, copyFileSyn
 import { join, resolve } from "node:path";
 import { AGENTS, resolveNpxAgent, getAgent, getEventAgentConfig } from "../registry.mjs";
 import { findInstalledSkills, detectAdlc, expandTilde } from "../source.mjs";
-import { spawnNpxSync } from "../utils/spawn.mjs";
+import { spawnNpxSync, resolveSkillsPackageSpec } from "../utils/spawn.mjs";
 import { normalizePs1Scripts } from "../utils/encoding.mjs";
 import { generateCommand, commandFilename, isGenerated, removeGeneratedCommands } from "../convert.mjs";
 import {
@@ -49,8 +49,10 @@ export async function cmdAdd(args, flags) {
     console.log(`\n┌─ ${agent.name} (${agentKey})`);
 
     const npxAgent = resolveNpxAgent(agentKey);
-    // See skills.mjs: skills@latest defeats the stale npx cache; --yes skips npx's confirm.
-    const npxArgs = ["--yes", "skills@latest", "add", source, "-a", npxAgent];
+    // Version-aware spec: skills@latest defeats the stale npx cache on
+    // capable Nodes; older Nodes get pinned skills@1.5.18 (newest that
+    // runs there). --yes skips npx's confirm.
+    const npxArgs = ["--yes", resolveSkillsPackageSpec(), "add", source, "-a", npxAgent];
     if (isGlobal) npxArgs.push("-g");
     if (skillFilter) {
       if (skillFilter === "*") npxArgs.push("--skill", "*");
@@ -167,7 +169,7 @@ export async function cmdUpgrade(args, flags) {
     }
     for (const agentKey of agents) {
       const npxAgent = resolveNpxAgent(agentKey);
-      const npxArgs = ["--yes", "skills@latest", "add", pullSource, "-a", npxAgent, "--copy"];
+      const npxArgs = ["--yes", resolveSkillsPackageSpec(), "add", pullSource, "-a", npxAgent, "--copy"];
       if (flags.skill && flags.skill !== "*") { npxArgs.push("-s", flags.skill); }
       npxArgs.push("-y");
       console.log(`Pulling latest skills from ${pullSource} for ${agentKey}...`);
