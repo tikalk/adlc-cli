@@ -8,14 +8,21 @@ import { StepBase, StepResult, StepStatus, typeName } from "../base.mjs";
 import { evaluateExpression } from "../expressions.mjs";
 import { runTask } from "../../run.mjs";
 import { getRunProfile } from "../../registry.mjs";
+import { readAgent } from "../../utils/init-options.mjs";
 
 const rid = (config) => `'${config.id ?? "?"}'`;
 
 // Resolve the agent key: step > workflow default (context) > project default
 // (.adlc/init-options.json). Returns null when nothing resolves — the step
 // then fails with a clear message.
+//
+// The third tier was documented here but never implemented: any workflow
+// relying on the project default alone (e.g. the bundled `factory` built-in,
+// which sets neither a step nor a workflow integration) failed every agent
+// step with "no agent/integration configured", even though .adlc/init-
+// options.json had `agent` set to exactly what the error suggested setting.
 function resolveAgent(config, context) {
-  return config.integration ?? context.defaultIntegration ?? null;
+  return config.integration ?? context.defaultIntegration ?? readAgent(context.projectRoot) ?? null;
 }
 
 async function runAgentStep({ agentKey, model, prompt, context, config, timeoutSec }) {
