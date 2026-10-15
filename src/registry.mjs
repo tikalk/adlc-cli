@@ -361,6 +361,8 @@ export const RUN_PROFILES = {
     outputFormat: "json",
     permissionMode: "auto",
     modelFlag: "-m",
+    // Interactive handoff form (TTY): opencode seeds the prompt in split-footer mode.
+    interactive: { args: ["run", "-i"] },
   },
   "claude-code": {
     binary: "claude",
@@ -370,6 +372,8 @@ export const RUN_PROFILES = {
     permissionMode: "allowed-tools",
     allowedTools: ["Read", "Edit", "Write", "Bash", "WebFetch"],
     modelFlag: "--model",
+    // claude's interactive REPL takes the initial prompt as a positional arg.
+    interactive: { args: [] },
   },
   goose: {
     binary: "goose",
@@ -379,6 +383,7 @@ export const RUN_PROFILES = {
     permissionMode: "auto",
     envVars: { GOOSE_MODE: "auto" },
     modelFlag: null,
+    interactive: null,
   },
   gemini: {
     binary: "gemini",
@@ -387,6 +392,7 @@ export const RUN_PROFILES = {
     outputFormat: "text",
     permissionMode: "sandbox",
     modelFlag: "-m",
+    interactive: null,
   },
 };
 

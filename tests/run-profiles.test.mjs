@@ -53,3 +53,18 @@ test("unknown agent throws with supported list", () => {
 test("RUN_PROFILES exports all four agents", () => {
   assert.deepEqual(Object.keys(RUN_PROFILES).sort(), ["claude-code", "gemini", "goose", "opencode"]);
 });
+
+test("interactive handoff specs: opencode seeds prompt in split-footer mode", () => {
+  const p = getRunProfile("opencode");
+  assert.deepEqual(p.interactive, { args: ["run", "-i"] });
+});
+
+test("interactive handoff specs: claude REPL takes prompt as positional", () => {
+  const p = getRunProfile("claude-code");
+  assert.deepEqual(p.interactive, { args: [] });
+});
+
+test("interactive handoff specs: goose and gemini fall back to headless", () => {
+  assert.equal(getRunProfile("goose").interactive, null);
+  assert.equal(getRunProfile("gemini").interactive, null);
+});

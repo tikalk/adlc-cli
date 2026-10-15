@@ -1,11 +1,12 @@
 // Skill lifecycle commands: add, upgrade, remove, status.
 // These share imports and operate on the skill installation state.
 
-import { spawnSync } from "node:child_process";
 import { writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, copyFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AGENTS, resolveNpxAgent, getAgent, getEventAgentConfig } from "../registry.mjs";
 import { findInstalledSkills, detectAdlc, expandTilde } from "../source.mjs";
+import { spawnNpxSync } from "../utils/spawn.mjs";
+import { normalizePs1Scripts } from "../utils/encoding.mjs";
 import { generateCommand, commandFilename, isGenerated, removeGeneratedCommands } from "../convert.mjs";
 import {
   installDispatcher,
@@ -18,7 +19,7 @@ import {
   resolveEvents,
 } from "../events.mjs";
 import { writeAgent, writeSkillsSource, readSkillsSource } from "../utils/init-options.mjs";
-import { portableSpawnOptions, describeSpawnError } from "../utils/spawn.mjs";
+import { describeSpawnError } from "../utils/spawn.mjs";
 
 // ── add ────────────────────────────────────────────────────────────────
 export async function cmdAdd(args, flags) {
@@ -77,8 +78,9 @@ export async function cmdAdd(args, flags) {
     if (npxYes) npxArgs.push("-y");
 
     console.log(`│  Running: npx ${npxArgs.join(" ")}`);
-    const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot, ...portableSpawnOptions("npx") });
+    const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
     if (result.status !== 0) {
+      if (result.error) console.error(`│  ✗ could not run npx: ${result.error.message}`);
       console.error(`│  ✗ npx skills add failed for ${agentKey}`);
       const spawnError = describeSpawnError(result);
       if (spawnError) console.error(`│  spawn error: ${spawnError}`);
@@ -89,6 +91,12 @@ export async function cmdAdd(args, flags) {
     if (!skillsDir) {
       console.log(`│  No skills directory for ${agentKey} — skipping command generation`);
       continue;
+    }
+
+    // Windows PowerShell 5.1 misreads BOM-less non-ASCII .ps1 as ANSI — normalize now.
+    const bomFixed = normalizePs1Scripts(resolve(projectRoot, expandTilde(skillsDir)));
+    if (bomFixed > 0) {
+      console.log(`│  UTF-8 BOM added to ${bomFixed} .ps1 script(s) (Windows PowerShell 5.1 compat)`);
     }
 
     const skills = await findInstalledSkills(skillsDir, projectRoot);
@@ -206,8 +214,9 @@ export async function cmdUpdate(args, flags) {
       }
       npxArgs.push("-y");
       console.log(`Pulling latest skills from ${pullSource} for ${agentKey}...`);
-      const result = spawnSync("npx", npxArgs, { stdio: "inherit", cwd: projectRoot, ...portableSpawnOptions("npx") });
+      const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
       if (result.status !== 0) {
+        if (result.error) console.error(`│  ✗ could not run npx: ${result.error.message}`);
         console.error(`│  ✗ npx skills add failed for ${agentKey}`);
         const spawnError = describeSpawnError(result);
         if (spawnError) console.error(`│  spawn error: ${spawnError}`);
@@ -222,6 +231,9 @@ export async function cmdUpdate(args, flags) {
 
     const skillsDir = isGlobal ? agent.global_skills_dir : agent.skills_dir;
     if (!skillsDir) continue;
+
+    // Re-copied skills come from upstream without BOMs — re-normalize every update.
+    normalizePs1Scripts(resolve(projectRoot, expandTilde(skillsDir)));
 
     const skills = await findInstalledSkills(skillsDir, projectRoot);
     if (skills.length === 0) continue;

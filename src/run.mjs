@@ -3,10 +3,9 @@
 // Ported from agentic-container/packages/runtime/src/engine/agent-registry.ts
 // and process.ts (invocation + spawn half; normalization lives in run-events.mjs).
 
-import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { spawnCompat, isWindows } from "./utils/spawn.mjs";
 import { getRunProfile } from "./registry.mjs";
-import { portableSpawnOptions } from "./utils/spawn.mjs";
 
 export function buildRunCommand(agentKey, prompt, opts = {}) {
   const profile = getRunProfile(agentKey);
@@ -48,12 +47,17 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
   // (docker WORKDIR) instead of the requested workspace.
   env.PWD = childCwd;
 
-  const child = spawn(cmd, args, {
+  // Windows: agent binaries are .cmd/.bat npm shims (claude, gemini, ...) —
+  // CreateProcess can't exec them directly (ENOENT); spawnCompat routes through
+  // cmd.exe there. POSIX stays a direct exec.
+  // detached is POSIX-only: it powers the kill(-pid) group signal below, but on
+  // Windows shell:true + detached:true (DETACHED_PROCESS) drops the child's
+  // stdout pipe — and negative-pid kills never worked there anyway.
+  const child = spawnCompat(cmd, args, {
     cwd: childCwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
-    ...portableSpawnOptions(cmd),
+    detached: !isWindows,
   });
 
   const promise = new Promise((resolve) => {
