@@ -361,8 +361,12 @@ export const RUN_PROFILES = {
     outputFormat: "json",
     permissionMode: "auto",
     modelFlag: "-m",
-    // Interactive handoff form (TTY): opencode seeds the prompt in split-footer mode.
-    interactive: { args: ["run", "-i"] },
+    // Interactive handoff form (TTY): full TUI with the prompt auto-sent, which
+    // stays resident so the user can answer follow-up questions. NOT
+    // `run -i` — on opencode 1.17+ that flag is a no-op (the handler only
+    // reads the hidden `--mini`: "run --interactive exits as soon as the
+    // prompt's turn completes", anomalyco/opencode#41513).
+    interactive: { args: ["--prompt"] },
   },
   "claude-code": {
     binary: "claude",

@@ -54,9 +54,11 @@ test("RUN_PROFILES exports all four agents", () => {
   assert.deepEqual(Object.keys(RUN_PROFILES).sort(), ["claude-code", "gemini", "goose", "opencode"]);
 });
 
-test("interactive handoff specs: opencode seeds prompt in split-footer mode", () => {
+test("interactive handoff specs: opencode opens resident TUI with seeded prompt", () => {
   const p = getRunProfile("opencode");
-  assert.deepEqual(p.interactive, { args: ["run", "-i"] });
+  // `run -i` is a no-op on opencode 1.17+ (exits when the prompt turn ends);
+  // top-level --prompt auto-sends into the TUI and keeps it open.
+  assert.deepEqual(p.interactive, { args: ["--prompt"] });
 });
 
 test("interactive handoff specs: claude REPL takes prompt as positional", () => {
