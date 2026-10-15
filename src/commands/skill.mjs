@@ -49,7 +49,8 @@ export async function cmdAdd(args, flags) {
     console.log(`\n┌─ ${agent.name} (${agentKey})`);
 
     const npxAgent = resolveNpxAgent(agentKey);
-    const npxArgs = ["skills", "add", source, "-a", npxAgent];
+    // See skills.mjs: skills@latest defeats the stale npx cache; --yes skips npx's confirm.
+    const npxArgs = ["--yes", "skills@latest", "add", source, "-a", npxAgent];
     if (isGlobal) npxArgs.push("-g");
     if (skillFilter) {
       if (skillFilter === "*") npxArgs.push("--skill", "*");
@@ -166,7 +167,7 @@ export async function cmdUpgrade(args, flags) {
     }
     for (const agentKey of agents) {
       const npxAgent = resolveNpxAgent(agentKey);
-      const npxArgs = ["skills", "add", pullSource, "-a", npxAgent, "--copy"];
+      const npxArgs = ["--yes", "skills@latest", "add", pullSource, "-a", npxAgent, "--copy"];
       if (flags.skill && flags.skill !== "*") { npxArgs.push("-s", flags.skill); }
       npxArgs.push("-y");
       console.log(`Pulling latest skills from ${pullSource} for ${agentKey}...`);

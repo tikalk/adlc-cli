@@ -59,7 +59,10 @@ export async function cmdAdd(args, flags) {
     console.log(`\n┌─ ${agent.name} (${agentKey})`);
 
     const npxAgent = resolveNpxAgent(agentKey);
-    const npxArgs = ["skills", "add", source, "-a", npxAgent];
+    // skills@latest: bare `npx skills` reuses the stale _npx cache install
+    // without revalidating (Windows kept 1.5.18 after 1.7.2 shipped — missing
+    // UI like the "Select All" row); --yes skips npx's own install confirm.
+    const npxArgs = ["--yes", "skills@latest", "add", source, "-a", npxAgent];
     if (isGlobal) npxArgs.push("-g");
     // Selective installs expand through .skills-deps.json closure: borrowers
     // pull their canonical homes (npx accepts repeated --skill flags).
@@ -208,7 +211,7 @@ export async function cmdUpdate(args, flags) {
     }
     for (const agentKey of agents) {
       const npxAgent = resolveNpxAgent(agentKey);
-      const npxArgs = ["skills", "add", pullSource, "-a", npxAgent, "--copy"];
+      const npxArgs = ["--yes", "skills@latest", "add", pullSource, "-a", npxAgent, "--copy"];
       if (pullSelected) {
         for (const name of pullSelected) npxArgs.push("-s", name);
       }
