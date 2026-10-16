@@ -76,9 +76,14 @@ export async function fetchEventsManifest(source) {
   }
 
   // Full GitHub URL: https://github.com/owner/repo
-  const ghMatch = source.match(/^https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)/);
+  // (http:// is warn-and-continued: the fetch below always rebuilds an
+  // https:// raw URL, so transport stays encrypted — the operator is told).
+  const ghMatch = source.match(/^(https?):\/\/github\.com\/([\w.-]+\/[\w.-]+)/);
+  if (ghMatch && ghMatch[1] === "http") {
+    console.warn(`Warning: events source uses plaintext http (fetching over https instead): ${source}`);
+  }
   if (ghMatch) {
-    return await fetchGitHubRaw(ghMatch[1], "HEAD", ".events.json");
+    return await fetchGitHubRaw(ghMatch[2], "HEAD", ".events.json");
   }
 
   // Bare local directory name (e.g., "adlc-team-skills").

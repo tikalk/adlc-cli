@@ -12,6 +12,40 @@ import { readAgent } from "../utils/init-options.mjs";
 
 const WORKSPACE_FILE = ".adlc/workspace.yml";
 
+// ── Security validators (skills.sh audit: Socket/Snyk/Gen) ─────────────
+// Workspace files are agent-authored but may arrive from shared repos, so
+// URLs, refs, and paths from them are untrusted input. These pure helpers
+// are exported for unit testing.
+export function isHttpUrl(source) {
+  return /^http:\/\//i.test(source);
+}
+
+export function isHttpsUrl(source) {
+  return /^https:\/\//i.test(source);
+}
+
+export function isSafeGitRemote(url) {
+  // spawnSync argv-form already neutralizes shell metachars; these rules kill
+  // the vectors argv-form does NOT stop: ext:: remote-helper command
+  // execution and option injection (a repo/branch starting with -).
+  // Local paths and file:// are legitimate (mirrors, test fixtures).
+  if (typeof url !== "string" || url === "") return false;
+  if (/^[\s-]/.test(url)) return false;
+  if (/[\s\x00-\x1f\x7f;|&$`'"\\]/.test(url)) return false;
+  if (/^ext::/i.test(url)) return false;
+  return true;
+}
+
+export function isSafeGitRef(ref) {
+  return typeof ref === "string" && /^(?![-])(?!.*\.\.)[A-Za-z0-9._/-]+$/.test(ref);
+}
+
+export function isPathWithinRoot(root, candidate) {
+  const path = candidate.startsWith("/") ? candidate : resolve(root, candidate);
+  const normRoot = resolve(root);
+  return path === normRoot || path.startsWith(normRoot + "/");
+}
+
 // ── setup ──────────────────────────────────────────────────────────────
 export async function cmdWorkspaceSetup(args, flags) {
   const projectRoot = process.cwd();
@@ -88,6 +122,23 @@ export async function cmdWorkspaceSetup(args, flags) {
       if (existsSync(target)) {
         console.log(`│  = ${mod.path} (exists, skipping clone)`);
         continue;
+      }
+      if (!isSafeGitRemote(mod.repo)) {
+        console.error(`│  ✗ git entry has an unsafe repo URL (ext:: helpers, leading -, whitespace, or shell metachars rejected): ${mod.repo}`);
+        console.log(`└─ failed`);
+        return 1;
+      }
+      if (typeof mod.path !== "string" || !isPathWithinRoot(projectRoot, join(projectRoot, mod.path))) {
+        console.error(`│  ✗ git entry path escapes the project root: ${mod.path}`);
+        console.log(`└─ failed`);
+        return 1;
+      }
+      for (const ref of [mod.branch, mod.ref]) {
+        if (ref !== undefined && ref !== null && !isSafeGitRef(String(ref))) {
+          console.error(`│  ✗ git entry has an unsafe branch/ref (must match [A-Za-z0-9._/-], no leading -, no ..): ${ref}`);
+          console.log(`└─ failed`);
+          return 1;
+        }
       }
       changed = true;
       const gitArgs = ["clone", mod.repo, mod.path];
@@ -222,6 +273,11 @@ export async function cmdWorkspaceSetup(args, flags) {
 }
 
 async function loadWorkspaceFile(source, projectRoot) {
+  if (isHttpUrl(source)) {
+    // Warn-and-continue on plaintext transport: the operator sees the
+    // downgrade, but setup still proceeds (fail-open for local mirrors).
+    console.warn(`Warning: workspace file source uses plaintext http (prefer https): ${source}`);
+  }
   if (/^https?:\/\//.test(source)) {
     try {
       const res = await fetch(source);
@@ -235,6 +291,9 @@ async function loadWorkspaceFile(source, projectRoot) {
       return null;
     }
   }
+  // Explicit argv/env/default paths are operator intent (env vars and absolute
+  // args legitimately point outside the project), so no containment check here.
+  // Containment IS enforced for paths declared inside the file (git entry paths).
   const path = resolve(projectRoot, source);
   if (!existsSync(path)) {
     console.error(`Error: workspace file not found at ${path}`);
