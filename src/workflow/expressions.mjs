@@ -95,12 +95,15 @@ function resolveDotPath(obj, path) {
   const parts = path.split(".");
   let current = obj;
   for (const part of parts) {
+    // Own properties only: `in` walks the prototype chain, so
+    // `inputs.constructor` / `inputs.__proto__` would leak Object.prototype
+    // members (e.g. function source) into step output. inherited = invisible.
     const idxMatch = part.match(INDEXED_SEGMENT);
     if (idxMatch) {
       const key = idxMatch[1];
       const idx = parseInt(idxMatch[2], 10);
       if (current !== null && typeof current === "object" && !Array.isArray(current)) {
-        current = key in current ? current[key] : undefined;
+        current = Object.hasOwn(current, key) ? current[key] : undefined;
       } else {
         return null;
       }
@@ -110,7 +113,7 @@ function resolveDotPath(obj, path) {
         return null;
       }
     } else if (current !== null && typeof current === "object" && !Array.isArray(current)) {
-      current = part in current ? current[part] : undefined;
+      current = Object.hasOwn(current, part) ? current[part] : undefined;
     } else {
       return null;
     }
