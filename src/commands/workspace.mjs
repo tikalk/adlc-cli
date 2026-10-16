@@ -6,7 +6,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, relative, isAbsolute, sep } from "node:path";
 import { parseYaml } from "../utils/yaml.mjs";
 import { readAgent } from "../utils/init-options.mjs";
 
@@ -29,8 +29,16 @@ export function isSafeGitRemote(url) {
   // the vectors argv-form does NOT stop: ext:: remote-helper command
   // execution and option injection (a repo/branch starting with -).
   // Local paths and file:// are legitimate (mirrors, test fixtures).
+  // Windows local paths legitimately contain backslashes (C:\mirrors\repo,
+  // UNC \\server\share), so they validate on a separate branch that allows
+  // the separator but keeps every other rejection intact.
   if (typeof url !== "string" || url === "") return false;
   if (/^[\s-]/.test(url)) return false;
+  if (/^[A-Za-z]:[\\/]/.test(url) || /^\\\\/.test(url)) {
+    if (/[\s\x00-\x1f\x7f;|&$`'"]/.test(url)) return false;
+    if (/^ext::/i.test(url)) return false;
+    return true;
+  }
   if (/[\s\x00-\x1f\x7f;|&$`'"\\]/.test(url)) return false;
   if (/^ext::/i.test(url)) return false;
   return true;
@@ -41,9 +49,26 @@ export function isSafeGitRef(ref) {
 }
 
 export function isPathWithinRoot(root, candidate) {
-  const path = candidate.startsWith("/") ? candidate : resolve(root, candidate);
+  // Separator-aware containment: path.relative-based so Windows backslash
+  // paths resolve correctly (the old normRoot + "/" suffix check falsely
+  // rejected every legitimate relative entry on win32). isAbsolute dispatch
+  // covers drive-letter and UNC absolutes, not just POSIX leading "/".
+  if (typeof candidate !== "string") return false;
   const normRoot = resolve(root);
-  return path === normRoot || path.startsWith(normRoot + "/");
+  const abs = isAbsolute(candidate) ? resolve(candidate) : resolve(normRoot, candidate);
+  let base = normRoot;
+  let target = abs;
+  if (process.platform === "win32") {
+    base = base.toLowerCase();
+    target = target.toLowerCase();
+  }
+  const rel = relative(base, target);
+  if (rel === "") return true;
+  if (isAbsolute(rel)) return false;
+  if (rel === ".." || rel.startsWith(`..${sep}`) || rel.startsWith("../") || rel.startsWith("..\\")) {
+    return false;
+  }
+  return true;
 }
 
 // ── setup ──────────────────────────────────────────────────────────────
@@ -115,6 +140,11 @@ export async function cmdWorkspaceSetup(args, flags) {
     for (const mod of gitModules) {
       if (!mod || !mod.repo || !mod.path) {
         console.error("│  ✗ git entry missing repo or path");
+        console.log(`└─ failed`);
+        return 1;
+      }
+      if (typeof mod.path !== "string") {
+        console.error(`│  ✗ git entry path escapes the project root: ${mod.path}`);
         console.log(`└─ failed`);
         return 1;
       }
