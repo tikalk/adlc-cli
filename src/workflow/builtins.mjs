@@ -21,7 +21,10 @@ steps:
     command: factory-product
   - id: gate-product
     type: gate
-    message: "Product decisions drafted. Approve PDRs before architecture?"
+    message: "Approve PDRs before architecture?"
+    context:
+      records: [".adlc/drafts/pdr/*.md"]
+      since: last_approved
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
@@ -30,7 +33,10 @@ steps:
     command: factory-architect
   - id: gate-architecture
     type: gate
-    message: "Architecture decisions drafted. Approve ADRs before execution?"
+    message: "Approve ADRs before execution?"
+    context:
+      records: [".adlc/drafts/adr/*.md"]
+      since: last_approved
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
@@ -39,7 +45,10 @@ steps:
     command: factory-mission
   - id: gate-completion
     type: gate
-    message: "Execution converged. Approve completion?"
+    message: "Approve completion (ChDRs and merge request)?"
+    context:
+      records: [".adlc/drafts/chdr/*.md"]
+      since: last_approved
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict

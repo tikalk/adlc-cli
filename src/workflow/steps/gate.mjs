@@ -7,11 +7,7 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { StepBase, StepResult, StepStatus, typeName } from "../base.mjs";
 import { evaluateExpression } from "../expressions.mjs";
-
-// Control characters except tab: C0 (incl. LF), DEL, C1 (incl. CSI). Stripped
-// from anything derived from a show_file before it is printed — file contents
-// and the path itself cannot inject ANSI/terminal escapes.
-const CONTROL_CHARS = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/g;
+import { CONTROL_CHARS, buildGateManifest, renderGateMessage, validateGateContext } from "../gate-context.mjs";
 
 export class GateStep extends StepBase {
   static typeKey = "gate";
@@ -57,6 +53,12 @@ export class GateStep extends StepBase {
         error: `Gate step ${rid(config)}: 'verdict_input' must be a non-empty string.`,
       });
     }
+    if ("context" in config) {
+      const contextErrors = validateGateContext(config, rid(config));
+      if (contextErrors.length > 0) {
+        return new StepResult({ status: StepStatus.FAILED, error: contextErrors.join(" ") });
+      }
+    }
     if (hasVerdictInput && context.insideFanOut) {
       return new StepResult({
         status: StepStatus.FAILED,
@@ -79,6 +81,25 @@ export class GateStep extends StepBase {
       show_file: showFile,
       choice: null,
     };
+
+    // Decision manifest (ADR-391-amendment-gate-decision-context): only a
+    // gate that declares `context` gets one — a gate without it keeps its
+    // static message and output shape exactly. Built on every execution
+    // (pause and resume) so the approval audits what was actually shown.
+    let manifest = null;
+    if ("context" in config) {
+      manifest = buildGateManifest({
+        records: config.context.records,
+        projectRoot: context.projectRoot,
+        stepId: config.id,
+        steps: context.steps,
+      });
+      output.message = renderGateMessage(message, manifest);
+      output.decisions = manifest.decisions;
+      output.since_sha = manifest.since_sha;
+      output.no_changes = manifest.no_changes;
+      output.truncated_count = manifest.truncated_count;
+    }
 
     let choice = null;
     let boundVerdictInput = null;
@@ -113,7 +134,7 @@ export class GateStep extends StepBase {
       // Interactive: prompt the user; show_file contents are folded into the
       // displayed message so the operator can review before choosing.
       choice = await GateStep.prompt(
-        GateStep.composePrompt(message, showFile),
+        GateStep.composePrompt(output.message, showFile),
         options,
       );
     }
@@ -140,6 +161,11 @@ export class GateStep extends StepBase {
       return new StepResult({ status: StepStatus.COMPLETED, output });
     }
 
+    // Approval pins HEAD so the next context gate in this run lists only
+    // records changed after it (`since: last_approved`).
+    if (manifest && manifest.head_sha) {
+      output.approved_sha = manifest.head_sha;
+    }
     return new StepResult({ status: StepStatus.COMPLETED, output });
   }
 
@@ -248,6 +274,7 @@ export class GateStep extends StepBase {
         errors.push(`Gate step ${rid(config)}: on_reject=${JSON.stringify(onReject)} but options has no 'reject' or 'abort' choice.`);
       }
     }
+    errors.push(...validateGateContext(config, rid(config)));
     return errors;
   }
 }

@@ -893,6 +893,19 @@ export class WorkflowEngine {
       this.recordResult(context, state, stepId, stepData);
 
       await state.appendLog({ event: "step_completed", step_id: stepId, status: result.status });
+      if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.approved_sha) {
+        // Audit copy of the manifest the approver saw (ADR-391-amendment-
+        // gate-decision-context); approved_sha itself lives in step_results.
+        await state.appendLog({
+          event: "gate_approved",
+          step_id: stepId,
+          approved_sha: result.output.approved_sha,
+          since_sha: result.output.since_sha,
+          no_changes: result.output.no_changes,
+          truncated_count: result.output.truncated_count,
+          decisions: result.output.decisions,
+        });
+      }
       this.emit("step_completed", { run_id: state.runId, step_id: stepId, step_type: stepType, status: result.status });
 
       if (result.status === StepStatus.PAUSED) {
@@ -901,7 +914,17 @@ export class WorkflowEngine {
         if (stepType === "gate") {
           // Container gate identification (ADR-390-amendment): the gate
           // payload plus its normalized permission_request shape, reusing
-          // the agentic container's existing HITL pipeline verbatim.
+          // the agentic container's existing HITL pipeline verbatim. A
+          // context gate also carries its decision manifest; `message`
+          // already holds the rendered text, so relays need no change.
+          const manifest = "decisions" in result.output
+            ? {
+                decisions: result.output.decisions,
+                since_sha: result.output.since_sha,
+                no_changes: result.output.no_changes,
+                truncated_count: result.output.truncated_count,
+              }
+            : {};
           this.emit("gate_paused", {
             run_id: state.runId,
             step_id: stepId,
@@ -909,6 +932,7 @@ export class WorkflowEngine {
             options: result.output.options,
             on_reject: result.output.on_reject,
             verdict_input: stepConfig.verdict_input ?? null,
+            ...manifest,
           });
           this.emit("permission_request", {
             tool: "workflow-gate",
@@ -918,6 +942,7 @@ export class WorkflowEngine {
             message: result.output.message,
             options: result.output.options,
             verdict_input: stepConfig.verdict_input ?? null,
+            ...manifest,
           });
         }
         return;
