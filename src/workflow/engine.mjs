@@ -28,6 +28,7 @@ import { readAgent } from "../utils/init-options.mjs";
 import { Lease } from "./lease.mjs";
 import { pushRunRef } from "./refs.mjs";
 import { getBuiltinWorkflow } from "./builtins.mjs";
+import { currentHeadSha, hasContextGate } from "./gate-context.mjs";
 
 export { RunStatus, StepStatus };
 export { Lease, LeaseHeldError } from "./lease.mjs";
@@ -440,6 +441,11 @@ export class RunState {
     this.updatedAt = now;
     this.logEntries = [];
     this.error = null;
+    // Run-level shas for context gates (ADR-391-amendment-gate-decision-
+    // context): HEAD at run start, and the most recent gate approval in time.
+    // Persisted only when set, so runs without context gates are unchanged.
+    this.runStartSha = null;
+    this.lastApprovedSha = null;
     // Async mutex serializing save()/appendLog file writes — the JS analogue
     // of upstream's _lock/_log_lock pair (single-threaded JS needs it only
     // across await points during concurrent fan-out).
@@ -487,6 +493,8 @@ export class RunState {
         updated_at: this.updatedAt,
         error: this.error,
       };
+      if (this.runStartSha !== null) stateData.run_start_sha = this.runStartSha;
+      if (this.lastApprovedSha !== null) stateData.last_approved_sha = this.lastApprovedSha;
       atomicWriteJson(join(this.runsDir, "state.json"), stateData);
       atomicWriteJson(join(this.runsDir, "inputs.json"), { inputs: this.inputs });
     });
@@ -580,6 +588,9 @@ export class RunState {
     state.createdAt = stateData.created_at ?? "";
     state.updatedAt = stateData.updated_at ?? "";
     state.error = stateData.error ?? null;
+    // Optional (absent in state files written before context gates existed).
+    state.runStartSha = typeof stateData.run_start_sha === "string" ? stateData.run_start_sha : null;
+    state.lastApprovedSha = typeof stateData.last_approved_sha === "string" ? stateData.last_approved_sha : null;
 
     const inputsPath = join(runsDir, "inputs.json");
     if (existsSync(inputsPath)) {
@@ -691,6 +702,9 @@ export class WorkflowEngine {
     const workflowDir = definition.sourcePath ? dirname(resolve(definition.sourcePath)) : null;
     state.workflowDir = workflowDir;
     state.status = RunStatus.RUNNING;
+    if (hasContextGate(definition.steps)) {
+      state.runStartSha = currentHeadSha(String(this.projectRoot));
+    }
     await state.save();
     this.emit("run_started", { run_id: state.runId, workflow_id: definition.id });
 
@@ -703,6 +717,7 @@ export class WorkflowEngine {
       runId: state.runId,
       workflowDir,
     });
+    context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };
 
     try {
       await this.executeSteps(definition.steps, context, state, registry, 0, lease);
@@ -798,6 +813,7 @@ export class WorkflowEngine {
       workflowDir: state.workflowDir,
     });
     context.isResume = true;
+    context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };
 
     if (state.currentStepIndex >= definition.steps.length) {
       throw new Error(
@@ -894,6 +910,9 @@ export class WorkflowEngine {
 
       await state.appendLog({ event: "step_completed", step_id: stepId, status: result.status });
       if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.approved_sha) {
+        // The most recent approval in time is the next context gate's `since`.
+        state.lastApprovedSha = result.output.approved_sha;
+        if (context.gateRun) context.gateRun.lastApprovedSha = result.output.approved_sha;
         // Audit copy of the manifest the approver saw (ADR-391-amendment-
         // gate-decision-context); approved_sha itself lives in step_results.
         await state.appendLog({

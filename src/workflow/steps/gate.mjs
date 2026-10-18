@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { StepBase, StepResult, StepStatus, typeName } from "../base.mjs";
 import { evaluateExpression } from "../expressions.mjs";
-import { CONTROL_CHARS, buildGateManifest, renderGateMessage, validateGateContext } from "../gate-context.mjs";
+import { CONTROL_CHARS, buildGateManifest, currentHeadSha, renderGateMessage, validateGateContext } from "../gate-context.mjs";
 
 export class GateStep extends StepBase {
   static typeKey = "gate";
@@ -84,21 +84,32 @@ export class GateStep extends StepBase {
 
     // Decision manifest (ADR-391-amendment-gate-decision-context): only a
     // gate that declares `context` gets one — a gate without it keeps its
-    // static message and output shape exactly. Built on every execution
-    // (pause and resume) so the approval audits what was actually shown.
+    // static message and output shape exactly. When this gate paused with a
+    // manifest and HEAD has not moved since, that manifest is what the
+    // approver saw and is reused verbatim; otherwise a fresh one is built.
     let manifest = null;
+    let shownManifest = null;
     if ("context" in config) {
-      manifest = buildGateManifest({
-        records: config.context.records,
-        projectRoot: context.projectRoot,
-        stepId: config.id,
-        steps: context.steps,
-      });
-      output.message = renderGateMessage(message, manifest);
-      output.decisions = manifest.decisions;
-      output.since_sha = manifest.since_sha;
-      output.no_changes = manifest.no_changes;
-      output.truncated_count = manifest.truncated_count;
+      shownManifest = pausedManifest(context.steps?.[config.id]);
+      if (shownManifest && currentHeadSha(context.projectRoot) === shownManifest.head_sha) {
+        manifest = shownManifest;
+      } else {
+        const built = buildGateManifest({
+          records: config.context.records,
+          projectRoot: context.projectRoot,
+          lastApprovedSha: context.gateRun?.lastApprovedSha ?? null,
+          runStartSha: context.gateRun?.runStartSha ?? null,
+        });
+        manifest = {
+          message: renderGateMessage(message, built),
+          decisions: built.decisions,
+          since_sha: built.since_sha,
+          no_changes: built.no_changes,
+          truncated_count: built.truncated_count,
+          head_sha: built.head_sha,
+        };
+      }
+      Object.assign(output, manifest);
     }
 
     let choice = null;
@@ -125,6 +136,19 @@ export class GateStep extends StepBase {
       }
     }
 
+    // A headless approval of a view that is no longer current (HEAD moved
+    // since the pause) must not pass: pause again with the fresh manifest so
+    // the approver re-decides on what is actually there (ADR-422: gates halt).
+    if (
+      boundVerdictInput !== null &&
+      shownManifest &&
+      manifest !== shownManifest &&
+      !isRejection(choice)
+    ) {
+      context.inputs[boundVerdictInput] = "";
+      return new StepResult({ status: StepStatus.PAUSED, output });
+    }
+
     if (choice === null || choice === undefined) {
       // Non-interactive: pause for later resume (the file is not read here).
       if (!process.stdin.isTTY) {
@@ -141,7 +165,7 @@ export class GateStep extends StepBase {
     output.choice = choice;
 
     // Match rejection case-insensitively, agreeing with validate().
-    if (choice.toLowerCase() === "reject" || choice.toLowerCase() === "abort") {
+    if (isRejection(choice)) {
       if (onReject === "abort") {
         output.aborted = true;
         return new StepResult({
@@ -161,8 +185,9 @@ export class GateStep extends StepBase {
       return new StepResult({ status: StepStatus.COMPLETED, output });
     }
 
-    // Approval pins HEAD so the next context gate in this run lists only
-    // records changed after it (`since: last_approved`).
+    // Approval pins the HEAD the shown manifest was built at, so the next
+    // context gate in this run lists only records changed after it
+    // (`since: last_approved`); the engine records it as last_approved_sha.
     if (manifest && manifest.head_sha) {
       output.approved_sha = manifest.head_sha;
     }
@@ -277,6 +302,28 @@ export class GateStep extends StepBase {
     errors.push(...validateGateContext(config, rid(config)));
     return errors;
   }
+}
+
+function isRejection(choice) {
+  const c = String(choice).toLowerCase();
+  return c === "reject" || c === "abort";
+}
+
+// The manifest a context gate paused with (its step result is still PAUSED
+// and carries head_sha), or null.
+function pausedManifest(previous) {
+  const out = previous?.output;
+  if (previous?.status !== StepStatus.PAUSED || typeof out?.head_sha !== "string" || !Array.isArray(out.decisions)) {
+    return null;
+  }
+  return {
+    message: out.message,
+    decisions: out.decisions,
+    since_sha: out.since_sha,
+    no_changes: out.no_changes,
+    truncated_count: out.truncated_count,
+    head_sha: out.head_sha,
+  };
 }
 
 function rid(config) {

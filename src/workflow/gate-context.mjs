@@ -29,8 +29,16 @@ export const MAX_DECISIONS = 10;
 // Longest rendered field; a runaway first "sentence" must not flood Slack.
 const MAX_FIELD_CHARS = 300;
 
-// Target branches tried, in order, for the merge-base fallback of `since`.
-const TARGET_BRANCHES = ["main", "origin/main", "master", "origin/master"];
+// Target-branch candidates for the merge-base fallback of `since`. The most
+// recent merge-base among those that exist wins, so a stale local `main`
+// cannot pull already-merged drafts back into the list (converge-1 I2).
+const TARGET_BRANCHES = ["origin/HEAD", "origin/main", "origin/master", "main", "master"];
+
+// Label of each `since` basis, as rendered in the message (N1).
+const SINCE_LABELS = Object.freeze({ approval: "approval", "merge-base": "merge-base", "run-start": "run start" });
+
+// Record kind named in the message, derived from the record globs (N1).
+const KIND_BY_TYPE = Object.freeze({ pdr: "product", adr: "architecture", chdr: "change" });
 
 const GIT_TIMEOUT_MS = 15_000;
 
@@ -57,18 +65,47 @@ export function validateGateContext(config, rid) {
   return errors;
 }
 
+// HEAD of the project root as a full sha, or null (no repo, no commits, git
+// failure). Never throws.
+export function currentHeadSha(projectRoot) {
+  try {
+    return runGit(projectRoot || ".", ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+  } catch {
+    return null;
+  }
+}
+
+// True when any step (at any nesting depth) of a workflow definition is a
+// gate declaring `context` — only such runs record run-level shas.
+export function hasContextGate(steps) {
+  const seen = new Set();
+  const visit = (node) => {
+    if (typeof node !== "object" || node === null || seen.has(node)) return false;
+    seen.add(node);
+    if (Array.isArray(node)) return node.some(visit);
+    if (node.type === "gate" && "context" in node) return true;
+    return Object.values(node).some(visit);
+  };
+  return visit(steps);
+}
+
 // Build the manifest for a context gate. Never throws.
-// Returns { decisions, since_sha, head_sha, no_changes, truncated_count, total, unavailable }.
-export function buildGateManifest({ records, projectRoot, stepId, steps }) {
+// `lastApprovedSha` / `runStartSha` are the run-level shas (state.json).
+// Returns { decisions, since_sha, since_basis, head_sha, no_changes,
+// truncated_count, total, unavailable, more_link, kind }.
+export function buildGateManifest({ records, projectRoot, lastApprovedSha = null, runStartSha = null }) {
+  const kind = recordKind(records);
   const empty = (reason) => ({
     decisions: [],
     since_sha: null,
+    since_basis: null,
     head_sha: null,
     no_changes: false,
     truncated_count: 0,
     total: 0,
     unavailable: reason,
     more_link: null,
+    kind,
   });
   try {
     const cwd = projectRoot || ".";
@@ -77,8 +114,9 @@ export function buildGateManifest({ records, projectRoot, stepId, steps }) {
     const head = git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     if (head === null) return empty("no git history in the project root");
 
-    const since = resolveSince(git, stepId, steps);
-    if (since === null) return empty("no base commit to compare against");
+    const resolved = resolveSince(git, head, lastApprovedSha, runStartSha);
+    if (resolved === null) return empty("no base commit to compare against");
+    const { sha: since, basis } = resolved;
 
     // `:(glob)` pathspecs keep `*` within one directory level, so only
     // records matching the declared globs are ever considered. --relative
@@ -87,25 +125,26 @@ export function buildGateManifest({ records, projectRoot, stepId, steps }) {
     const diff = git(["diff", "--name-status", "--no-renames", "--relative", "-z", since, head, "--", ...pathspecs]);
     if (diff === null) return empty("git diff failed");
 
-    const changed = parseNameStatus(diff);
+    // Sort by path (code-unit order: locale-independent) and parse only the
+    // records that will be listed — the rest are counted, never read (N2).
+    const changed = parseNameStatus(diff).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     const linkFor = makeLinker(git);
-    const all = changed.map(({ path, change }) => {
+    const decisions = changed.slice(0, MAX_DECISIONS).map(({ path, change }) => {
       // Content comes from the commit the diff ends at, not the working tree.
       const text = git(["show", `${head}:./${path}`]);
       return { ...parseRecord(path, text), change, path, link: linkFor(path) };
     });
-    all.sort((a, b) => a.path.localeCompare(b.path));
-
-    const decisions = all.slice(0, MAX_DECISIONS);
     return {
       decisions,
       since_sha: since,
+      since_basis: basis,
       head_sha: head,
-      no_changes: all.length === 0,
-      truncated_count: all.length - decisions.length,
-      total: all.length,
+      no_changes: changed.length === 0,
+      truncated_count: changed.length - decisions.length,
+      total: changed.length,
       unavailable: null,
-      more_link: linkFor(globDir(records[0]), "tree"),
+      more_link: linkFor(commonDir(records.map(globDir)) || ".", "tree"),
+      kind,
     };
   } catch {
     return empty("manifest could not be built");
@@ -121,13 +160,14 @@ export function renderGateMessage(message, manifest) {
     lines.push(`Decision list unavailable: ${manifest.unavailable}.`);
     return lines.join("\n");
   }
-  const short = manifest.since_sha.slice(0, 7);
+  const since = `${SINCE_LABELS[manifest.since_basis] ?? "merge-base"} @${manifest.since_sha.slice(0, 7)}`;
+  const kind = manifest.kind ? `${manifest.kind} ` : "";
   if (manifest.no_changes) {
-    lines.push(`No new or changed decision records since ${short}.`);
+    lines.push(`No new or changed ${kind}decisions since ${since}.`);
     return lines.join("\n");
   }
   const n = manifest.total;
-  lines.push(`${n} ${n === 1 ? "decision" : "decisions"} to approve (new or changed since ${short}):`);
+  lines.push(`${n} ${kind}${n === 1 ? "decision" : "decisions"} to approve (since ${since}):`);
   for (const d of manifest.decisions) {
     const title = d.title && d.title !== d.id ? ` ${d.title}` : "";
     lines.push(`• ${d.id} (${d.change})${title}`);
@@ -155,28 +195,41 @@ function runGit(cwd, args) {
   return r.stdout.trim();
 }
 
-// `since`: approved_sha of the most recently approved gate in this run (the
-// current gate excluded — its own earlier pause is not an approval), else the
-// merge-base of HEAD with the target branch.
-function resolveSince(git, stepId, steps) {
-  let approved = null;
-  for (const [id, data] of Object.entries(steps ?? {})) {
-    if (id === stepId) continue;
-    const sha = data?.output?.approved_sha;
-    if (data?.type === "gate" && typeof sha === "string" && /^[0-9a-f]{7,64}$/i.test(sha)) {
-      approved = sha;
-    }
-  }
-  if (approved !== null) {
-    const resolved = git(["rev-parse", "--verify", "--quiet", `${approved}^{commit}`]);
-    if (resolved !== null) return resolved;
-  }
+// `since` (with its basis for the message):
+//   1. the run's last_approved_sha — the most recent approval in time (N3);
+//   2. else the most recent merge-base of HEAD with an existing target-branch
+//      candidate (I2);
+//   3. if that merge-base is HEAD itself (running on the target branch), the
+//      HEAD recorded at run start (I3).
+function resolveSince(git, head, lastApprovedSha, runStartSha) {
+  const verify = (sha) =>
+    typeof sha === "string" && /^[0-9a-f]{7,64}$/i.test(sha)
+      ? git(["rev-parse", "--verify", "--quiet", `${sha}^{commit}`])
+      : null;
+
+  const approved = verify(lastApprovedSha);
+  if (approved !== null) return { sha: approved, basis: "approval" };
+
+  const bases = [];
   for (const branch of TARGET_BRANCHES) {
     if (git(["rev-parse", "--verify", "--quiet", `${branch}^{commit}`]) === null) continue;
     const base = git(["merge-base", "HEAD", branch]);
-    if (base) return base;
+    if (base && !bases.includes(base)) bases.push(base);
   }
-  return null;
+  if (bases.length === 0) return null;
+  let base = bases[0];
+  if (bases.length > 1) {
+    // Bases not reachable from any other; on a linear history exactly one
+    // (the newest). Divergent bases fall back to candidate order.
+    const independent = (git(["merge-base", "--independent", ...bases]) ?? "").split(/\s+/).filter(Boolean);
+    base = bases.find((b) => independent.includes(b)) ?? base;
+  }
+
+  if (base === head) {
+    const start = verify(runStartSha);
+    if (start !== null) return { sha: start, basis: "run-start" };
+  }
+  return { sha: base, basis: "merge-base" };
 }
 
 function parseNameStatus(out) {
@@ -214,9 +267,39 @@ function makeLinker(git) {
 function webBase(url) {
   if (!url) return null;
   let m = url.match(/^https:\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(?:\.git)?\/?$/);
-  if (!m) m = url.match(/^(?:ssh:\/\/)?git@([^:/]+)[:/](.+?)(?:\.git)?\/?$/);
+  // ssh://[user@]host[:port]/path — the web UI never lives on the ssh port.
+  if (!m) m = url.match(/^ssh:\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+?)(?:\.git)?\/?$/);
+  if (!m) m = url.match(/^git@([^:/]+):(.+?)(?:\.git)?\/?$/);
   if (!m) return null;
   return `https://${m[1]}/${m[2]}`.replace(/\s+/g, "").replace(CONTROL_CHARS, "");
+}
+
+// Longest common directory of repo-relative directories ("" = repo root).
+function commonDir(dirs) {
+  const split = dirs.map((d) => (d === "." || d === "" ? [] : d.split("/")));
+  const common = [];
+  for (let i = 0; i < split[0].length; i++) {
+    if (!split.every((parts) => parts[i] === split[0][i])) break;
+    common.push(split[0][i]);
+  }
+  return common.join("/");
+}
+
+// pdr→product, adr→architecture, chdr→change when every glob names the same
+// record type (a `pdr/` directory or a `PDR-*` file); otherwise null.
+function recordKind(records) {
+  if (!Array.isArray(records) || records.length === 0) return null;
+  const kinds = new Set(
+    records.map((glob) => {
+      const parts = String(glob).toLowerCase().split("/");
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const m = parts[i].match(/^(chdr|adr|pdr)(?:s|$|[-_])/);
+        if (m) return KIND_BY_TYPE[m[1]];
+      }
+      return null;
+    }),
+  );
+  return kinds.size === 1 ? [...kinds][0] : null;
 }
 
 function globDir(glob) {
