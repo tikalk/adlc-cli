@@ -275,8 +275,9 @@ test("R2: no web remote → link percent-encodes path segments like the web bran
   assert.equal(d.link, rel.split("/").map(encodeURIComponent).join("/"));
   assert.equal(d.link, ".adlc/drafts/pdr/PDR-300%20my%20%23decision%25.md");
   const message = renderGateMessage("Approve PDRs?", m);
-  const statusLine = message.split("\n").find((l) => l.trim().startsWith("Status:"));
-  assert.ok(statusLine && statusLine.endsWith(` · ${d.link}`), `percent-encoded link in the message:\n${message}`);
+  // Iteration 4 (U1): the link line is `  <link> · status: <status>`.
+  const linkLine = message.split("\n").find((l) => l.includes(" · status: "));
+  assert.ok(linkLine && linkLine.startsWith(`  ${d.link} · status: `), `percent-encoded link in the message:\n${message}`);
 });
 
 test("R2: a record filename with a newline cannot inject message lines", { skip: process.platform === "win32" }, () => {
