@@ -932,6 +932,7 @@ export class WorkflowEngine {
           step_id: stepId,
           without_list: true,
           unavailable_reason: result.output.unavailable_reason ?? null,
+          unavailable_kind: result.output.unavailable_kind ?? null,
           decisions: [],
         });
       }

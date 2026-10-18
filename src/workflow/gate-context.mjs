@@ -34,6 +34,11 @@ const MAX_FIELD_CHARS = 300;
 // cannot pull already-merged drafts back into the list (converge-1 I2).
 const TARGET_BRANCHES = ["origin/HEAD", "origin/main", "origin/master", "main", "master"];
 
+// Unavailable-list kinds that are structural facts of the project, so an
+// approval shown one of them may stand "without list" when the fresh build
+// reports the identical kind (T2). Every other failure is kind `error`.
+export const PERMANENT_UNAVAILABLE = Object.freeze(["not-a-git-repo", "no-target-branch"]);
+
 // Label of each `since` basis, as rendered in the message (N1).
 const SINCE_LABELS = Object.freeze({ approval: "approval", "merge-base": "merge-base", "run-start": "run start" });
 
@@ -77,16 +82,24 @@ export function validateGateContext(config, rid) {
   return errors;
 }
 
+// Longest merge-request link accepted (T3).
+const MAX_MR_LINK_CHARS = 2048;
+
 // The merge-request link a gate's evaluated `context.link` names, or null.
-// Only a non-empty absolute http(s) URL with no whitespace, control or
-// invisible characters and no < > | is accepted — rejected, never escaped,
-// so the value cannot inject Slack link syntax or message lines (S5).
+// Only a non-empty absolute http(s) URL of at most 2048 characters with no
+// whitespace, control or invisible characters (incl. soft hyphen and
+// U+2060–U+2064), no < > | or backslash, and no userinfo (`user[:pw]@`) is
+// accepted — rejected, never escaped, so the value cannot inject Slack link
+// syntax or message lines, nor disguise its real host (S5, T3).
 export function safeMrLink(value) {
-  if (typeof value !== "string" || value === "") return null;
-  if (!/^https?:\/\/[^\s<>|\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]+$/i.test(value)) return null;
+  if (typeof value !== "string" || value === "" || value.length > MAX_MR_LINK_CHARS) return null;
+  if (!/^https?:\/\/[^\s<>|\\\x00-\x1f\x7f-\x9f\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069]+$/i.test(value)) return null;
+  // Any '@' in the authority is userinfo, whatever the URL parser makes of it.
+  if (/^https?:\/\/[^/?#]*@/i.test(value)) return null;
   try {
     const url = new URL(value);
     if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "") return null;
+    if (url.username !== "" || url.password !== "") return null;
   } catch {
     return null;
   }
@@ -120,10 +133,14 @@ export function hasContextGate(steps) {
 // Build the manifest for a context gate. Never throws.
 // `lastApprovedSha` / `runStartSha` are the run-level shas (state.json).
 // Returns { decisions, since_sha, since_basis, head_sha, no_changes,
-// truncated_count, total, unavailable, more_link, kind }.
+// truncated_count, total, unavailable, unavailable_kind, more_link, kind }.
+// `unavailable` is the human reason the list could not be built (else null);
+// `unavailable_kind` classifies it (T2): PERMANENT_UNAVAILABLE kinds are
+// structural facts of the project, `error` is anything transient (git
+// missing/spawn error, timeout, maxBuffer, a failing rev-parse/diff/show).
 export function buildGateManifest({ records, projectRoot, lastApprovedSha = null, runStartSha = null }) {
   const kind = recordKind(records);
-  const empty = (reason) => ({
+  const empty = (reason, unavailableKind = "error") => ({
     decisions: [],
     since_sha: null,
     since_basis: null,
@@ -132,6 +149,7 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
     truncated_count: 0,
     total: 0,
     unavailable: reason,
+    unavailable_kind: unavailableKind,
     more_link: null,
     kind,
   });
@@ -139,11 +157,26 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
     const cwd = projectRoot || ".";
     const git = (args) => runGit(cwd, args);
 
-    const head = git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
-    if (head === null) return empty("no git history in the project root");
+    // A git that cannot run (ENOENT, timeout) is transient, never "not a repo".
+    // Only git's own "not a git repository" answer (C locale) is structural.
+    const inside = gitExec(cwd, ["rev-parse", "--is-inside-work-tree"], { stderr: true });
+    if (inside.failed) return empty("git could not be run");
+    if (inside.status !== 0 || inside.stdout !== "true") {
+      return (inside.status === 0 && inside.stdout === "false") || /not a git repository/i.test(inside.stderr)
+        ? empty("the project root is not in a git work tree", "not-a-git-repo")
+        : empty("git rev-parse failed");
+    }
+    // `--verify --quiet` exits 1 (and only 1) when HEAD has no commit yet.
+    const headProbe = gitExec(cwd, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    if (headProbe.failed || (headProbe.status !== 0 && headProbe.status !== 1)) return empty("git rev-parse failed");
+    if (headProbe.status === 1 || headProbe.stdout === "") return empty("no git history in the project root", "not-a-git-repo");
+    const head = headProbe.stdout;
 
-    const resolved = resolveSince(git, head, lastApprovedSha, runStartSha);
-    if (resolved === null) return empty("no base commit to compare against");
+    const resolved = resolveSince(cwd, git, head, lastApprovedSha, runStartSha);
+    if (resolved.unavailable_kind === "no-target-branch") {
+      return empty(`no target branch (${TARGET_BRANCHES.join(", ")}) to compare against`, "no-target-branch");
+    }
+    if (resolved.unavailable_kind) return empty("no base commit to compare against");
     const { sha: since, basis } = resolved;
 
     // `:(glob)` pathspecs keep `*` within one directory level, so only
@@ -157,16 +190,18 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
     // records that will be listed — the rest are counted, never read (N2).
     const changed = parseNameStatus(diff).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     const linkFor = makeLinker(git);
-    const decisions = changed.slice(0, MAX_DECISIONS).map(({ path, change }) => {
+    const decisions = [];
+    for (const { path, change } of changed.slice(0, MAX_DECISIONS)) {
       // Content comes from the commit the diff ends at, not the working tree.
       const text = git(["show", `${head}:./${path}`]);
+      if (text === null) return empty("git show failed");
       // A path with a control character is never shown, not even in part.
       const shown = /[\x00-\x1f\x7f-\x9f]/.test(path) ? UNPRINTABLE_PATH : path;
       const link = shown === path ? linkFor(path) : UNPRINTABLE_PATH;
       // The shown path gets the record fields' Slack escaping (S2); the link
       // is percent-encoded from the raw path instead.
-      return { ...parseRecord(shown, text), change, path: shown === path ? slackSafe(path) : shown, link };
-    });
+      decisions.push({ ...parseRecord(shown, text), change, path: shown === path ? slackSafe(path) : shown, link });
+    }
     return {
       decisions,
       since_sha: since,
@@ -176,6 +211,7 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
       truncated_count: changed.length - decisions.length,
       total: changed.length,
       unavailable: null,
+      unavailable_kind: null,
       more_link: linkFor(commonDir(records.map(globDir)) || ".", "tree"),
       kind,
     };
@@ -223,17 +259,29 @@ function manifestLines(manifest) {
 
 // ── git helpers ──────────────────────────────────────────────────────────
 
-// Argument-array git invocation (never a shell string); stdout or null.
-function runGit(cwd, args) {
+// Argument-array git invocation (never a shell string). `failed` means git
+// did not run to completion (spawn error such as ENOENT, timeout, maxBuffer,
+// signal) — distinct from git running and exiting with a non-zero `status`.
+// With `stderr: true`, stderr is captured too, in the C locale so git's
+// messages can be matched.
+function gitExec(cwd, args, { stderr = false } = {}) {
   const r = spawnSync("git", args, {
     cwd,
     encoding: "utf-8",
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: 16 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["ignore", "pipe", stderr ? "pipe" : "ignore"],
+    ...(stderr ? { env: { ...process.env, LC_ALL: "C" } } : {}),
   });
-  if (r.error || r.status !== 0) return null;
-  return r.stdout.trim();
+  const failed = Boolean(r.error) || r.signal !== null || typeof r.status !== "number";
+  const text = (v) => (typeof v === "string" ? v.trim() : "");
+  return { failed, status: failed ? null : r.status, stdout: text(r.stdout), stderr: text(r.stderr) };
+}
+
+// stdout of a successful git invocation, or null.
+function runGit(cwd, args) {
+  const r = gitExec(cwd, args);
+  return r.failed || r.status !== 0 ? null : r.stdout;
 }
 
 // `since` (with its basis for the message):
@@ -243,7 +291,9 @@ function runGit(cwd, args) {
 //      candidate (I2);
 //   3. if that merge-base is HEAD itself (running on the target branch), the
 //      HEAD recorded at run start (I3).
-function resolveSince(git, head, lastApprovedSha, runStartSha) {
+// Returns { sha, basis } or { unavailable_kind }: `no-target-branch` only when
+// git answered that none of the candidates exists, else `error` (T2).
+function resolveSince(cwd, git, head, lastApprovedSha, runStartSha) {
   const verify = (sha) =>
     typeof sha === "string" && /^[0-9a-f]{7,64}$/i.test(sha)
       ? git(["rev-parse", "--verify", "--quiet", `${sha}^{commit}`])
@@ -259,11 +309,14 @@ function resolveSince(git, head, lastApprovedSha, runStartSha) {
 
   const bases = [];
   for (const branch of TARGET_BRANCHES) {
-    if (git(["rev-parse", "--verify", "--quiet", `${branch}^{commit}`]) === null) continue;
+    const probe = gitExec(cwd, ["rev-parse", "--verify", "--quiet", `${branch}^{commit}`]);
+    if (probe.failed || (probe.status !== 0 && probe.status !== 1)) return { unavailable_kind: "error" };
+    if (probe.status === 1) continue; // the candidate does not exist
     const base = git(["merge-base", "HEAD", branch]);
-    if (base && !bases.includes(base)) bases.push(base);
+    if (!base) return { unavailable_kind: "error" };
+    if (!bases.includes(base)) bases.push(base);
   }
-  if (bases.length === 0) return null;
+  if (bases.length === 0) return { unavailable_kind: "no-target-branch" };
   let base = bases[0];
   if (bases.length > 1) {
     // Bases not reachable from any other; on a linear history exactly one

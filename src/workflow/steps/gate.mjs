@@ -9,6 +9,7 @@ import { StepBase, StepResult, StepStatus, typeName } from "../base.mjs";
 import { evaluateExpression } from "../expressions.mjs";
 import {
   CONTROL_CHARS,
+  PERMANENT_UNAVAILABLE,
   buildGateManifest,
   currentHeadSha,
   renderGateMessage,
@@ -96,12 +97,13 @@ export class GateStep extends StepBase {
     // approver saw and is reused verbatim; otherwise a fresh one is built.
     let manifest = null;
     let shownManifest = null;
-    let shownUnavailable = false;
+    let shownUnavailableKind = null;
     let unavailableReason = null;
+    let unavailableKind = null;
     if ("context" in config) {
       const previous = context.steps?.[config.id];
       shownManifest = pausedManifest(previous);
-      shownUnavailable = shownManifest === null && pausedUnavailable(previous);
+      shownUnavailableKind = shownManifest === null ? pausedUnavailableKind(previous) : null;
       if (shownManifest && currentHeadSha(context.projectRoot) === shownManifest.head_sha) {
         manifest = shownManifest;
       } else {
@@ -112,6 +114,7 @@ export class GateStep extends StepBase {
           runStartSha: context.gateRun?.runStartSha ?? null,
         });
         unavailableReason = built.unavailable;
+        unavailableKind = built.unavailable ? built.unavailable_kind : null;
         const mrLink = gateMrLink(config.context, context);
         manifest = {
           message: renderGateMessage(message, built, mrLink),
@@ -120,6 +123,8 @@ export class GateStep extends StepBase {
           no_changes: built.no_changes,
           truncated_count: built.truncated_count,
           head_sha: built.head_sha,
+          // Persisted in the paused output: what the approver was shown (T2).
+          ...(unavailableReason ? { unavailable_reason: unavailableReason, unavailable_kind: unavailableKind } : {}),
           ...(mrLink ? { mr_link: mrLink } : {}),
         };
       }
@@ -155,14 +160,20 @@ export class GateStep extends StepBase {
     // earlier gate, or the pause had no list) or a stale one (HEAD moved since
     // the pause), clear the verdict and pause with the fresh manifest so the
     // approver decides on what is actually there (ADR-422: gates halt).
-    // Exception (S1): the pause said "Decision list unavailable" and the list
-    // is still unavailable — there is nothing more to show, so the approval
-    // stands "without list" (no approved_sha; audited by the engine) instead
-    // of deadlocking non-git projects and repos without a target branch.
+    // Exception (S1, T2): the pause said "Decision list unavailable" for a
+    // permanent, structural reason (not-a-git-repo / no-target-branch) and
+    // the fresh build reports the identical kind — there is nothing more to
+    // show, so the approval stands "without list" (no approved_sha; audited
+    // by the engine) instead of deadlocking such projects. A transient
+    // failure (`error`) or a changed kind fails closed: re-pause.
     // Caveat (S4): a context gate inside an if/loop body whose earlier step
     // commits on every re-run cannot be approved headlessly — each resume
     // re-runs that step, HEAD moves, and the gate re-pauses (livelock).
-    const withoutList = shownUnavailable && unavailableReason !== null;
+    const withoutList =
+      shownUnavailableKind !== null &&
+      unavailableReason !== null &&
+      shownUnavailableKind === unavailableKind &&
+      PERMANENT_UNAVAILABLE.includes(unavailableKind);
     if (
       "context" in config &&
       boundVerdictInput !== null &&
@@ -218,6 +229,7 @@ export class GateStep extends StepBase {
     } else if (withoutList && boundVerdictInput !== null) {
       output.without_list = true;
       output.unavailable_reason = unavailableReason;
+      output.unavailable_kind = unavailableKind;
     }
     return new StepResult({ status: StepStatus.COMPLETED, output });
   }
@@ -361,16 +373,20 @@ function pausedManifest(previous) {
   };
 }
 
-// True when a context gate paused with "Decision list unavailable" (its
-// paused output carries a manifest whose head_sha is null/empty) — the
-// approver was shown that no list could be built (S1).
-function pausedUnavailable(previous) {
+// The unavailable_kind a context gate paused with when it showed "Decision
+// list unavailable" (its paused output carries a manifest whose head_sha is
+// null/empty), else null — the approver was shown that no list could be
+// built, and why (S1, T2). A pause without a recorded kind counts as none.
+function pausedUnavailableKind(previous) {
   const out = previous?.output;
-  return (
-    previous?.status === StepStatus.PAUSED &&
-    Array.isArray(out?.decisions) &&
-    (out.head_sha === null || out.head_sha === undefined || out.head_sha === "")
-  );
+  if (
+    previous?.status !== StepStatus.PAUSED ||
+    !Array.isArray(out?.decisions) ||
+    !(out.head_sha === null || out.head_sha === undefined || out.head_sha === "")
+  ) {
+    return null;
+  }
+  return typeof out.unavailable_kind === "string" ? out.unavailable_kind : null;
 }
 
 // The gate's evaluated `context.link` when it is a safe http(s) URL, else
