@@ -255,8 +255,9 @@ test("context gate: rendered message = static message + manifest with id, change
   const msg = state.stepResults.review.output.message;
   assert.equal(typeof msg, "string");
   assert.ok(msg.startsWith("Approve product decisions before architecture?"), msg);
-  assert.ok(msg.includes("2 decisions to approve"), msg);
-  assert.ok(msg.includes(`since ${baseSha.slice(0, 7)}`), msg);
+  // Iteration 2 (N1): kind-specific wording + since-label.
+  assert.ok(msg.includes("2 product decisions to approve"), msg);
+  assert.ok(msg.includes(`since merge-base @${baseSha.slice(0, 7)}`), msg);
 
   const ids = ["PDR-125", "PDR-127"];
   const b127 = bulletFor(msg, "PDR-127", ids);
