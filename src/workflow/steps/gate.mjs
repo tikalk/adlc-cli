@@ -136,12 +136,14 @@ export class GateStep extends StepBase {
       }
     }
 
-    // A headless approval of a view that is no longer current (HEAD moved
-    // since the pause) must not pass: pause again with the fresh manifest so
-    // the approver re-decides on what is actually there (ADR-422: gates halt).
+    // A context gate's headless approval covers exactly the manifest shown at
+    // its pause. With no shown manifest (verdict preset or shared with an
+    // earlier gate, or the pause had no list) or a stale one (HEAD moved since
+    // the pause), clear the verdict and pause with the fresh manifest so the
+    // approver decides on what is actually there (ADR-422: gates halt).
     if (
+      "context" in config &&
       boundVerdictInput !== null &&
-      shownManifest &&
       manifest !== shownManifest &&
       !isRejection(choice)
     ) {
@@ -310,10 +312,16 @@ function isRejection(choice) {
 }
 
 // The manifest a context gate paused with (its step result is still PAUSED
-// and carries head_sha), or null.
+// and carries a non-empty head_sha), or null — a "Decision list unavailable"
+// pause showed no list, so it counts as nothing shown.
 function pausedManifest(previous) {
   const out = previous?.output;
-  if (previous?.status !== StepStatus.PAUSED || typeof out?.head_sha !== "string" || !Array.isArray(out.decisions)) {
+  if (
+    previous?.status !== StepStatus.PAUSED ||
+    typeof out?.head_sha !== "string" ||
+    out.head_sha === "" ||
+    !Array.isArray(out.decisions)
+  ) {
     return null;
   }
   return {

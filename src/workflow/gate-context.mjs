@@ -42,6 +42,15 @@ const KIND_BY_TYPE = Object.freeze({ pdr: "product", adr: "architecture", chdr: 
 
 const GIT_TIMEOUT_MS = 15_000;
 
+// Zero-width and bidirectional-override code points (U+200B–U+200F,
+// U+202A–U+202E, U+2066–U+2069): invisible text that can disguise a record
+// field in the HITL message (R1).
+const INVISIBLE_CHARS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+// Shown in place of a changed record path that contains a control character
+// (legal in POSIX filenames), so a filename cannot inject message lines (R2).
+const UNPRINTABLE_PATH = "(unprintable path)";
+
 // Validation errors for a gate's `context` block (empty when valid or absent).
 export function validateGateContext(config, rid) {
   if (!("context" in config)) return [];
@@ -132,7 +141,10 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
     const decisions = changed.slice(0, MAX_DECISIONS).map(({ path, change }) => {
       // Content comes from the commit the diff ends at, not the working tree.
       const text = git(["show", `${head}:./${path}`]);
-      return { ...parseRecord(path, text), change, path, link: linkFor(path) };
+      // A path with a control character is never shown, not even in part.
+      const shown = /[\x00-\x1f\x7f-\x9f]/.test(path) ? UNPRINTABLE_PATH : path;
+      const link = shown === path ? linkFor(path) : UNPRINTABLE_PATH;
+      return { ...parseRecord(shown, text), change, path: shown, link };
     });
     return {
       decisions,
@@ -151,9 +163,10 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
   }
 }
 
-// Render the static gate message followed by the manifest. Every record
-// field was sanitised at parse time; only id/title/decision/status/link
-// are ever rendered.
+// Render the static gate message followed by the manifest. Only
+// id/title/decision/status/link are ever rendered: the record fields were
+// made single-line and Slack-safe at parse time (clean), and a link is
+// either percent-encoded or the unprintable-path placeholder.
 export function renderGateMessage(message, manifest) {
   const lines = [String(message), ""];
   if (manifest.unavailable) {
@@ -196,7 +209,8 @@ function runGit(cwd, args) {
 }
 
 // `since` (with its basis for the message):
-//   1. the run's last_approved_sha — the most recent approval in time (N3);
+//   1. the run's last_approved_sha — the most recent approval in time (N3) —
+//      while it is still an ancestor of HEAD (N4);
 //   2. else the most recent merge-base of HEAD with an existing target-branch
 //      candidate (I2);
 //   3. if that merge-base is HEAD itself (running on the target branch), the
@@ -207,8 +221,13 @@ function resolveSince(git, head, lastApprovedSha, runStartSha) {
       ? git(["rev-parse", "--verify", "--quiet", `${sha}^{commit}`])
       : null;
 
+  // An approval sha that is no longer an ancestor of HEAD (rebase /
+  // force-push since) would list the target branch's changes as this
+  // branch's: fall through to the merge-base resolution instead (N4).
   const approved = verify(lastApprovedSha);
-  if (approved !== null) return { sha: approved, basis: "approval" };
+  if (approved !== null && git(["merge-base", "--is-ancestor", approved, head]) !== null) {
+    return { sha: approved, basis: "approval" };
+  }
 
   const bases = [];
   for (const branch of TARGET_BRANCHES) {
@@ -247,6 +266,7 @@ function parseNameStatus(out) {
 
 // Link to a record: the file on the pushed branch's web page when the branch
 // tracks an https/ssh GitHub or GitLab remote, else the repo-relative path.
+// Either way each path segment is percent-encoded (R2).
 function makeLinker(git) {
   let web = null;
   const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
@@ -257,8 +277,8 @@ function makeLinker(git) {
     if (base) web = { base, branch, gitlab: /gitlab/i.test(base) };
   }
   return (path, kind = "blob") => {
-    if (!web) return path;
     const encoded = path.split("/").map(encodeURIComponent).join("/");
+    if (!web) return encoded;
     const sep = web.gitlab ? "/-/" : "/";
     return `${web.base}${sep}${kind}/${encodeURIComponent(web.branch).replace(/%2F/g, "/")}/${encoded}`;
   };
@@ -364,16 +384,28 @@ function sectionBody(body, headingRe) {
   return section.split(/\r?\n[ \t]*\r?\n/)[0];
 }
 
+// A sentence ends at . ! or ? followed by whitespace and an uppercase letter,
+// or by the end of the text — never at a common abbreviation (N2).
 function firstSentence(paragraph) {
   const flat = paragraph.replace(/\s+/g, " ").trim();
-  const m = flat.match(/^.*?[.!?](?=\s|$)/);
+  const m = flat.match(/^.*?(?<!\b(?:[Ee]\.g|[Ii]\.e|etc|vs))[.!?](?=\s+[A-Z]|$)/);
   return m ? m[0] : flat;
 }
 
 function clean(value) {
   if (typeof value !== "string") return "";
   // Record fields are single-line: fold whitespace (incl. tab/LF) first, then
-  // strip whatever control characters remain.
-  const s = value.replace(/\s+/g, " ").replace(CONTROL_CHARS, "").trim();
-  return s.length > MAX_FIELD_CHARS ? `${s.slice(0, MAX_FIELD_CHARS - 1)}…` : s;
+  // strip whatever control and invisible characters remain.
+  let s = value.replace(/\s+/g, " ").replace(CONTROL_CHARS, "").replace(INVISIBLE_CHARS, "").trim();
+  if (s.length > MAX_FIELD_CHARS) s = `${s.slice(0, MAX_FIELD_CHARS - 1)}…`;
+  // Slack-safe (R1): record text is agent-written from untrusted input and
+  // the relay forwards it verbatim. Escaping & < > neutralises <!channel>,
+  // <@U…>, <!subteam^…> and <url|text>; U+2060 after '@' breaks @here /
+  // @channel / @everyone; backticks cannot open a code span or block.
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/@(here|channel|everyone)\b/gi, "@\u2060$1")
+    .replace(/`/g, "\u02b9");
 }
