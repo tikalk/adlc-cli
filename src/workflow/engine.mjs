@@ -28,6 +28,7 @@ import { readAgent } from "../utils/init-options.mjs";
 import { Lease } from "./lease.mjs";
 import { pushRunRef } from "./refs.mjs";
 import { getBuiltinWorkflow } from "./builtins.mjs";
+import { currentHeadSha, hasContextGate } from "./gate-context.mjs";
 
 export { RunStatus, StepStatus };
 export { Lease, LeaseHeldError } from "./lease.mjs";
@@ -440,6 +441,11 @@ export class RunState {
     this.updatedAt = now;
     this.logEntries = [];
     this.error = null;
+    // Run-level shas for context gates (ADR-391-amendment-gate-decision-
+    // context): HEAD at run start, and the most recent gate approval in time.
+    // Persisted only when set, so runs without context gates are unchanged.
+    this.runStartSha = null;
+    this.lastApprovedSha = null;
     // Async mutex serializing save()/appendLog file writes — the JS analogue
     // of upstream's _lock/_log_lock pair (single-threaded JS needs it only
     // across await points during concurrent fan-out).
@@ -487,6 +493,8 @@ export class RunState {
         updated_at: this.updatedAt,
         error: this.error,
       };
+      if (this.runStartSha !== null) stateData.run_start_sha = this.runStartSha;
+      if (this.lastApprovedSha !== null) stateData.last_approved_sha = this.lastApprovedSha;
       atomicWriteJson(join(this.runsDir, "state.json"), stateData);
       atomicWriteJson(join(this.runsDir, "inputs.json"), { inputs: this.inputs });
     });
@@ -580,6 +588,9 @@ export class RunState {
     state.createdAt = stateData.created_at ?? "";
     state.updatedAt = stateData.updated_at ?? "";
     state.error = stateData.error ?? null;
+    // Optional (absent in state files written before context gates existed).
+    state.runStartSha = typeof stateData.run_start_sha === "string" ? stateData.run_start_sha : null;
+    state.lastApprovedSha = typeof stateData.last_approved_sha === "string" ? stateData.last_approved_sha : null;
 
     const inputsPath = join(runsDir, "inputs.json");
     if (existsSync(inputsPath)) {
@@ -691,6 +702,9 @@ export class WorkflowEngine {
     const workflowDir = definition.sourcePath ? dirname(resolve(definition.sourcePath)) : null;
     state.workflowDir = workflowDir;
     state.status = RunStatus.RUNNING;
+    if (hasContextGate(definition.steps)) {
+      state.runStartSha = currentHeadSha(String(this.projectRoot));
+    }
     await state.save();
     this.emit("run_started", { run_id: state.runId, workflow_id: definition.id });
 
@@ -703,6 +717,7 @@ export class WorkflowEngine {
       runId: state.runId,
       workflowDir,
     });
+    context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };
 
     try {
       await this.executeSteps(definition.steps, context, state, registry, 0, lease);
@@ -798,6 +813,7 @@ export class WorkflowEngine {
       workflowDir: state.workflowDir,
     });
     context.isResume = true;
+    context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };
 
     if (state.currentStepIndex >= definition.steps.length) {
       throw new Error(
@@ -893,6 +909,33 @@ export class WorkflowEngine {
       this.recordResult(context, state, stepId, stepData);
 
       await state.appendLog({ event: "step_completed", step_id: stepId, status: result.status });
+      if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.approved_sha) {
+        // The most recent approval in time is the next context gate's `since`.
+        state.lastApprovedSha = result.output.approved_sha;
+        if (context.gateRun) context.gateRun.lastApprovedSha = result.output.approved_sha;
+        // Audit copy of the manifest the approver saw (ADR-391-amendment-
+        // gate-decision-context); approved_sha itself lives in step_results.
+        await state.appendLog({
+          event: "gate_approved",
+          step_id: stepId,
+          approved_sha: result.output.approved_sha,
+          since_sha: result.output.since_sha,
+          no_changes: result.output.no_changes,
+          truncated_count: result.output.truncated_count,
+          decisions: result.output.decisions,
+        });
+      } else if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.without_list === true) {
+        // Approved while the decision list was unavailable (S1): audited, but
+        // no sha is pinned, so last_approved_sha stays as it was.
+        await state.appendLog({
+          event: "gate_approved",
+          step_id: stepId,
+          without_list: true,
+          unavailable_reason: result.output.unavailable_reason ?? null,
+          unavailable_kind: result.output.unavailable_kind ?? null,
+          decisions: [],
+        });
+      }
       this.emit("step_completed", { run_id: state.runId, step_id: stepId, step_type: stepType, status: result.status });
 
       if (result.status === StepStatus.PAUSED) {
@@ -901,7 +944,18 @@ export class WorkflowEngine {
         if (stepType === "gate") {
           // Container gate identification (ADR-390-amendment): the gate
           // payload plus its normalized permission_request shape, reusing
-          // the agentic container's existing HITL pipeline verbatim.
+          // the agentic container's existing HITL pipeline verbatim. A
+          // context gate also carries its decision manifest; `message`
+          // already holds the rendered text, so relays need no change.
+          const manifest = "decisions" in result.output
+            ? {
+                decisions: result.output.decisions,
+                since_sha: result.output.since_sha,
+                no_changes: result.output.no_changes,
+                truncated_count: result.output.truncated_count,
+                ...("mr_link" in result.output ? { mr_link: result.output.mr_link } : {}),
+              }
+            : {};
           this.emit("gate_paused", {
             run_id: state.runId,
             step_id: stepId,
@@ -909,6 +963,7 @@ export class WorkflowEngine {
             options: result.output.options,
             on_reject: result.output.on_reject,
             verdict_input: stepConfig.verdict_input ?? null,
+            ...manifest,
           });
           this.emit("permission_request", {
             tool: "workflow-gate",
@@ -918,6 +973,7 @@ export class WorkflowEngine {
             message: result.output.message,
             options: result.output.options,
             verdict_input: stepConfig.verdict_input ?? null,
+            ...manifest,
           });
         }
         return;

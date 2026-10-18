@@ -46,6 +46,10 @@ export class StepContext {
     this.workflowDir = fields.workflowDir ?? null;
     // Whether the engine is re-executing the current step during resume.
     this.isResume = fields.isResume ?? false;
+    // Run-level shas context gates resolve `since` from ({ runStartSha,
+    // lastApprovedSha }); shared by reference so approvals are seen by
+    // every derived context.
+    this.gateRun = fields.gateRun ?? null;
   }
 
   // Returns a shallow copy with per-fan-out-item overrides. The shared
