@@ -264,14 +264,19 @@ test("R2: no web remote → link percent-encodes path segments like the web bran
   write(dir, "README.md", "x\n");
   commitAll(dir, "base");
   git(dir, "checkout", "-q", "-b", "feature/r2");
-  write(dir, ".adlc/drafts/pdr/PDR-300 my <decision>.md", record({ title: "Spaced", decision: "Spaced decision." }));
+  // Windows-legal name (no < > : " | ? *) that still needs percent-encoding:
+  // space, # and % (iteration 3, T1).
+  const rel = ".adlc/drafts/pdr/PDR-300 my #decision%.md";
+  write(dir, rel, record({ title: "Spaced", decision: "Spaced decision." }));
   commitAll(dir, "spaced");
   const m = buildGateManifest({ records: [PDR_GLOB], projectRoot: dir });
   assert.equal(m.decisions.length, 1);
   const [d] = m.decisions;
-  assert.equal(d.link, ".adlc/drafts/pdr/" + encodeURIComponent("PDR-300 my <decision>.md"));
+  assert.equal(d.link, rel.split("/").map(encodeURIComponent).join("/"));
+  assert.equal(d.link, ".adlc/drafts/pdr/PDR-300%20my%20%23decision%25.md");
   const message = renderGateMessage("Approve PDRs?", m);
-  assert.ok(!message.includes("<decision>"), message);
+  const statusLine = message.split("\n").find((l) => l.trim().startsWith("Status:"));
+  assert.ok(statusLine && statusLine.endsWith(` · ${d.link}`), `percent-encoded link in the message:\n${message}`);
 });
 
 test("R2: a record filename with a newline cannot inject message lines", { skip: process.platform === "win32" }, () => {
