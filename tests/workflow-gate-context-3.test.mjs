@@ -20,8 +20,9 @@
 //       the gate PAUSES with the freshly built manifest (gate_paused emitted,
 //       no approved_sha, no gate_approved). Consequences: a verdict preset at a
 //       context gate's first execution no longer approves; a shared
-//       `verdict_input` cannot auto-pass a later context gate; a "Decision list
-//       unavailable" pause re-pauses on approve. Reject verdicts and gates
+//       `verdict_input` cannot auto-pass a later context gate. (Refined by S1
+//       in workflow-gate-context-4: a "Decision list unavailable" pause that is
+//       still unavailable at resume completes on approve, without_list.) Reject verdicts and gates
 //       without `context` are unchanged.
 //   N2  A decision line's first sentence ends at [.!?] + whitespace + an
 //       uppercase letter, or at end of text — abbreviations such as "e.g." /
@@ -375,7 +376,7 @@ test("R3: builtin factory — approving gate-product does not auto-pass gate-arc
   assert.deepEqual(approvals3.map((e) => e.step_id), ["gate-product", "gate-architecture"]);
 });
 
-test("R3: 'Decision list unavailable' pause (head_sha null) + approve → re-pauses, nothing approved", async () => {
+test("R3 (refined by S1, iteration 4): 'Decision list unavailable' pause (head_sha null) + approve, still unavailable → completes without an approval sha", async () => {
   const dir = tempDir("gate-ctx3-nogit-");
   write(dir, ".adlc/drafts/pdr/PDR-1.md", record({ title: "x", decision: "y." }));
   const { engine, state: s1 } = await runWorkflow(dir, gateYaml() + FIN, "g3r30003");
@@ -386,14 +387,18 @@ test("R3: 'Decision list unavailable' pause (head_sha null) + approve → re-pau
   const events = [];
   engine.onEvent = (e) => events.push(e);
   const s2 = await engine.resume("g3r30003", { verdict: "approve" }, STEP_REGISTRY);
-  assert.equal(s2.status, RunStatus.PAUSED, "an unavailable list cannot be approved");
-  assert.equal(s2.currentStepId, "review");
-  assert.equal(s2.stepResults.review.status, StepStatus.PAUSED);
+  // S1: shown unavailable + fresh unavailable → the approval is accepted
+  // (no deadlock), but nothing is pinned as approved.
+  assert.equal(s2.status, RunStatus.COMPLETED, "shown-unavailable list approved again unavailable completes");
+  assert.equal(s2.stepResults.review.status, StepStatus.COMPLETED);
   assert.equal(s2.stepResults.review.output.approved_sha, undefined);
-  assert.equal(s2.stepResults.fin, undefined);
-  assert.equal(s2.inputs.verdict, "", "bound verdict cleared");
-  assert.ok(events.some((e) => e.type === "gate_paused" && e.step_id === "review"), "gate_paused re-emitted");
-  assert.ok(!logEntries(dir, "g3r30003").some((e) => e.event === "gate_approved"));
+  assert.equal(s2.stepResults.fin?.status, StepStatus.COMPLETED);
+  assert.ok(!events.some((e) => e.type === "gate_paused"), "no re-pause");
+  assert.equal(persistedState(dir, "g3r30003").last_approved_sha, undefined);
+  const audit = logEntries(dir, "g3r30003").filter((e) => e.event === "gate_approved");
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].without_list, true);
+  assert.deepEqual(audit[0].decisions, []);
 });
 
 test("R3 guard: verdict 'reject' preset at first execution still rejects immediately (expected to pass now)", async () => {
