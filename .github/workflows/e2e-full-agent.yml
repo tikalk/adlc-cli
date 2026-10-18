@@ -4,10 +4,12 @@ name: E2E Full Agent (nightly)
 # Scheduled only — never in the default push/PR path, which must stay free
 # of live LLM/network dependencies (see ci.yml e2e-skip-agent).
 #
-# NOTE (opencode auth): this job needs live `opencode` auth in the runner.
-# Configure the required secret/env in the repo settings (e.g. OPENCODE_API_KEY
-# or an authenticated opencode config) and reference it in the env below.
-# Without it the agent-led steps fail by design.
+# NOTE (opencode CLI): the agent-led steps spawn the `opencode` binary
+# (RUN_PROFILES.opencode in src/registry.mjs), so the runner installs the
+# CLI before running the script. Live runs use opencode's zero-auth default
+# model — no repository secret required. To pin a provider/model instead,
+# wire the provider's key env here (e.g. OPENCODE_API_KEY) and set `model`
+# in the opencode config.
 
 on:
   schedule:
@@ -24,6 +26,14 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 22
+
+      # Parts 3+4 run a live `opencode` agent; install the V2 CLI so the
+      # binary is on PATH. Version is logged so a breaking CLI release is
+      # visible from the run log (the nightly doubles as drift detection).
+      - name: Install opencode CLI
+        run: |
+          npm install -g @opencode/cli
+          opencode --version
 
       # Hermetic default: vendored skill fixture (tests/fixtures/skills-src).
       - name: Run workspace shell E2E (full agent)
