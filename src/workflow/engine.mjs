@@ -924,6 +924,16 @@ export class WorkflowEngine {
           truncated_count: result.output.truncated_count,
           decisions: result.output.decisions,
         });
+      } else if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.without_list === true) {
+        // Approved while the decision list was unavailable (S1): audited, but
+        // no sha is pinned, so last_approved_sha stays as it was.
+        await state.appendLog({
+          event: "gate_approved",
+          step_id: stepId,
+          without_list: true,
+          unavailable_reason: result.output.unavailable_reason ?? null,
+          decisions: [],
+        });
       }
       this.emit("step_completed", { run_id: state.runId, step_id: stepId, step_type: stepType, status: result.status });
 
@@ -942,6 +952,7 @@ export class WorkflowEngine {
                 since_sha: result.output.since_sha,
                 no_changes: result.output.no_changes,
                 truncated_count: result.output.truncated_count,
+                ...("mr_link" in result.output ? { mr_link: result.output.mr_link } : {}),
               }
             : {};
           this.emit("gate_paused", {

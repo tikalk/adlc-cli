@@ -7,7 +7,14 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { StepBase, StepResult, StepStatus, typeName } from "../base.mjs";
 import { evaluateExpression } from "../expressions.mjs";
-import { CONTROL_CHARS, buildGateManifest, currentHeadSha, renderGateMessage, validateGateContext } from "../gate-context.mjs";
+import {
+  CONTROL_CHARS,
+  buildGateManifest,
+  currentHeadSha,
+  renderGateMessage,
+  safeMrLink,
+  validateGateContext,
+} from "../gate-context.mjs";
 
 export class GateStep extends StepBase {
   static typeKey = "gate";
@@ -89,8 +96,12 @@ export class GateStep extends StepBase {
     // approver saw and is reused verbatim; otherwise a fresh one is built.
     let manifest = null;
     let shownManifest = null;
+    let shownUnavailable = false;
+    let unavailableReason = null;
     if ("context" in config) {
-      shownManifest = pausedManifest(context.steps?.[config.id]);
+      const previous = context.steps?.[config.id];
+      shownManifest = pausedManifest(previous);
+      shownUnavailable = shownManifest === null && pausedUnavailable(previous);
       if (shownManifest && currentHeadSha(context.projectRoot) === shownManifest.head_sha) {
         manifest = shownManifest;
       } else {
@@ -100,13 +111,16 @@ export class GateStep extends StepBase {
           lastApprovedSha: context.gateRun?.lastApprovedSha ?? null,
           runStartSha: context.gateRun?.runStartSha ?? null,
         });
+        unavailableReason = built.unavailable;
+        const mrLink = gateMrLink(config.context, context);
         manifest = {
-          message: renderGateMessage(message, built),
+          message: renderGateMessage(message, built, mrLink),
           decisions: built.decisions,
           since_sha: built.since_sha,
           no_changes: built.no_changes,
           truncated_count: built.truncated_count,
           head_sha: built.head_sha,
+          ...(mrLink ? { mr_link: mrLink } : {}),
         };
       }
       Object.assign(output, manifest);
@@ -141,10 +155,19 @@ export class GateStep extends StepBase {
     // earlier gate, or the pause had no list) or a stale one (HEAD moved since
     // the pause), clear the verdict and pause with the fresh manifest so the
     // approver decides on what is actually there (ADR-422: gates halt).
+    // Exception (S1): the pause said "Decision list unavailable" and the list
+    // is still unavailable — there is nothing more to show, so the approval
+    // stands "without list" (no approved_sha; audited by the engine) instead
+    // of deadlocking non-git projects and repos without a target branch.
+    // Caveat (S4): a context gate inside an if/loop body whose earlier step
+    // commits on every re-run cannot be approved headlessly — each resume
+    // re-runs that step, HEAD moves, and the gate re-pauses (livelock).
+    const withoutList = shownUnavailable && unavailableReason !== null;
     if (
       "context" in config &&
       boundVerdictInput !== null &&
       manifest !== shownManifest &&
+      !withoutList &&
       !isRejection(choice)
     ) {
       context.inputs[boundVerdictInput] = "";
@@ -192,6 +215,9 @@ export class GateStep extends StepBase {
     // (`since: last_approved`); the engine records it as last_approved_sha.
     if (manifest && manifest.head_sha) {
       output.approved_sha = manifest.head_sha;
+    } else if (withoutList && boundVerdictInput !== null) {
+      output.without_list = true;
+      output.unavailable_reason = unavailableReason;
     }
     return new StepResult({ status: StepStatus.COMPLETED, output });
   }
@@ -331,7 +357,32 @@ function pausedManifest(previous) {
     no_changes: out.no_changes,
     truncated_count: out.truncated_count,
     head_sha: out.head_sha,
+    ...(typeof out.mr_link === "string" && safeMrLink(out.mr_link) ? { mr_link: out.mr_link } : {}),
   };
+}
+
+// True when a context gate paused with "Decision list unavailable" (its
+// paused output carries a manifest whose head_sha is null/empty) — the
+// approver was shown that no list could be built (S1).
+function pausedUnavailable(previous) {
+  const out = previous?.output;
+  return (
+    previous?.status === StepStatus.PAUSED &&
+    Array.isArray(out?.decisions) &&
+    (out.head_sha === null || out.head_sha === undefined || out.head_sha === "")
+  );
+}
+
+// The gate's evaluated `context.link` when it is a safe http(s) URL, else
+// null. Templated like `message`; never throws (S5).
+function gateMrLink(ctx, context) {
+  if (typeof ctx?.link !== "string") return null;
+  try {
+    const value = ctx.link.includes("{{") ? evaluateExpression(ctx.link, context) : ctx.link;
+    return safeMrLink(value);
+  } catch {
+    return null;
+  }
 }
 
 function rid(config) {

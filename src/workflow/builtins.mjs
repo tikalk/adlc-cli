@@ -15,6 +15,9 @@ inputs:
   verdict:
     type: string
     enum: ["", approve, reject]
+  mr_url:
+    type: string
+    default: ""
 steps:
   - id: intent-product
     type: command
@@ -49,6 +52,7 @@ steps:
     context:
       records: [".adlc/drafts/chdr/*.md"]
       since: last_approved
+      link: "{{ inputs.mr_url }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict

@@ -20,7 +20,7 @@ import { basename, dirname } from "node:path";
 // (not gate.mjs) so both modules share it without an import cycle.
 export const CONTROL_CHARS = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/g;
 
-export const CONTEXT_KEYS = Object.freeze(["records", "since"]);
+export const CONTEXT_KEYS = Object.freeze(["records", "since", "link"]);
 export const SINCE_MODES = Object.freeze(["last_approved"]);
 
 // At most this many decisions are listed; the rest collapse into "…and N more".
@@ -57,7 +57,7 @@ export function validateGateContext(config, rid) {
   const ctx = config.context;
   const errors = [];
   if (typeof ctx !== "object" || ctx === null || Array.isArray(ctx)) {
-    return [`Gate step ${rid}: 'context' must be a mapping with 'records' (and optional 'since').`];
+    return [`Gate step ${rid}: 'context' must be a mapping with 'records' (and optional 'since', 'link').`];
   }
   for (const key of Object.keys(ctx)) {
     if (!CONTEXT_KEYS.includes(key)) {
@@ -71,7 +71,26 @@ export function validateGateContext(config, rid) {
   if ("since" in ctx && !SINCE_MODES.includes(ctx.since)) {
     errors.push(`Gate step ${rid}: 'context.since' must be one of ${SINCE_MODES.join(", ")}, got ${JSON.stringify(ctx.since)}.`);
   }
+  if ("link" in ctx && typeof ctx.link !== "string") {
+    errors.push(`Gate step ${rid}: 'context.link' must be a string (may be templated with {{ }}), got ${JSON.stringify(ctx.link)}.`);
+  }
   return errors;
+}
+
+// The merge-request link a gate's evaluated `context.link` names, or null.
+// Only a non-empty absolute http(s) URL with no whitespace, control or
+// invisible characters and no < > | is accepted — rejected, never escaped,
+// so the value cannot inject Slack link syntax or message lines (S5).
+export function safeMrLink(value) {
+  if (typeof value !== "string" || value === "") return null;
+  if (!/^https?:\/\/[^\s<>|\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]+$/i.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "") return null;
+  } catch {
+    return null;
+  }
+  return value;
 }
 
 // HEAD of the project root as a full sha, or null (no repo, no commits, git
@@ -144,7 +163,9 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
       // A path with a control character is never shown, not even in part.
       const shown = /[\x00-\x1f\x7f-\x9f]/.test(path) ? UNPRINTABLE_PATH : path;
       const link = shown === path ? linkFor(path) : UNPRINTABLE_PATH;
-      return { ...parseRecord(shown, text), change, path: shown, link };
+      // The shown path gets the record fields' Slack escaping (S2); the link
+      // is percent-encoded from the raw path instead.
+      return { ...parseRecord(shown, text), change, path: shown === path ? slackSafe(path) : shown, link };
     });
     return {
       decisions,
@@ -166,18 +187,25 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
 // Render the static gate message followed by the manifest. Only
 // id/title/decision/status/link are ever rendered: the record fields were
 // made single-line and Slack-safe at parse time (clean), and a link is
-// either percent-encoded or the unprintable-path placeholder.
-export function renderGateMessage(message, manifest) {
-  const lines = [String(message), ""];
+// either percent-encoded or the unprintable-path placeholder. A `mrLink`
+// already vetted by safeMrLink becomes the final line.
+export function renderGateMessage(message, manifest, mrLink = null) {
+  const lines = [String(message), "", ...manifestLines(manifest)];
+  if (mrLink) lines.push(`Merge request: ${mrLink}`);
+  return lines.join("\n");
+}
+
+function manifestLines(manifest) {
+  const lines = [];
   if (manifest.unavailable) {
     lines.push(`Decision list unavailable: ${manifest.unavailable}.`);
-    return lines.join("\n");
+    return lines;
   }
   const since = `${SINCE_LABELS[manifest.since_basis] ?? "merge-base"} @${manifest.since_sha.slice(0, 7)}`;
   const kind = manifest.kind ? `${manifest.kind} ` : "";
   if (manifest.no_changes) {
     lines.push(`No new or changed ${kind}decisions since ${since}.`);
-    return lines.join("\n");
+    return lines;
   }
   const n = manifest.total;
   lines.push(`${n} ${kind}${n === 1 ? "decision" : "decisions"} to approve (since ${since}):`);
@@ -190,7 +218,7 @@ export function renderGateMessage(message, manifest) {
   if (manifest.truncated_count > 0) {
     lines.push(`…and ${manifest.truncated_count} more: ${manifest.more_link}`);
   }
-  return lines.join("\n");
+  return lines;
 }
 
 // ── git helpers ──────────────────────────────────────────────────────────
@@ -398,14 +426,21 @@ function clean(value) {
   // strip whatever control and invisible characters remain.
   let s = value.replace(/\s+/g, " ").replace(CONTROL_CHARS, "").replace(INVISIBLE_CHARS, "").trim();
   if (s.length > MAX_FIELD_CHARS) s = `${s.slice(0, MAX_FIELD_CHARS - 1)}…`;
-  // Slack-safe (R1): record text is agent-written from untrusted input and
-  // the relay forwards it verbatim. Escaping & < > neutralises <!channel>,
-  // <@U…>, <!subteam^…> and <url|text>; U+2060 after '@' breaks @here /
-  // @channel / @everyone; backticks cannot open a code span or block.
-  return s
+  return slackSafe(s);
+}
+
+// Slack-safe (R1): record text is agent-written from untrusted input and the
+// relay forwards it verbatim. Escaping & < > neutralises <!channel>, <@U…>,
+// <!subteam^…> and <url|text>; U+2060 after '@' breaks @here / @channel /
+// @everyone; backticks cannot open a code span or block; U+2060 between ']'
+// and '(' keeps a markdown link `[text](url)` visible but unclickable (S3).
+function slackSafe(value) {
+  return value
+    .replace(INVISIBLE_CHARS, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/@(here|channel|everyone)\b/gi, "@\u2060$1")
-    .replace(/`/g, "\u02b9");
+    .replace(/`/g, "\u02b9")
+    .replace(/\]\(/g, "]\u2060(");
 }
