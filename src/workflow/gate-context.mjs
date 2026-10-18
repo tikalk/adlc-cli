@@ -133,7 +133,9 @@ export function hasContextGate(steps) {
 // Build the manifest for a context gate. Never throws.
 // `lastApprovedSha` / `runStartSha` are the run-level shas (state.json).
 // Returns { decisions, since_sha, since_basis, head_sha, no_changes,
-// truncated_count, total, unavailable, unavailable_kind, more_link, kind }.
+// truncated_count, total, unavailable, unavailable_kind, more_link, kind,
+// compare_url }. `compare_url` is the web compare page since_sha...head_sha
+// when the branch tracks a GitHub/GitLab remote, else null.
 // `unavailable` is the human reason the list could not be built (else null);
 // `unavailable_kind` classifies it (T2): PERMANENT_UNAVAILABLE kinds are
 // structural facts of the project, `error` is anything transient (git
@@ -152,6 +154,7 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
     unavailable_kind: unavailableKind,
     more_link: null,
     kind,
+    compare_url: null,
   });
   try {
     const cwd = projectRoot || ".";
@@ -189,7 +192,8 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
     // Sort by path (code-unit order: locale-independent) and parse only the
     // records that will be listed — the rest are counted, never read (N2).
     const changed = parseNameStatus(diff).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    const linkFor = makeLinker(git);
+    const web = webRemote(git);
+    const linkFor = makeLinker(web);
     const decisions = [];
     for (const { path, change } of changed.slice(0, MAX_DECISIONS)) {
       // Content comes from the commit the diff ends at, not the working tree.
@@ -214,6 +218,7 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
       unavailable_kind: null,
       more_link: linkFor(commonDir(records.map(globDir)) || ".", "tree"),
       kind,
+      compare_url: compareUrl(web, since, head),
     };
   } catch {
     return empty("manifest could not be built");
@@ -223,8 +228,13 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
 // Render the static gate message followed by the manifest. Only
 // id/title/decision/status/link are ever rendered: the record fields were
 // made single-line and Slack-safe at parse time (clean), and a link is
-// either percent-encoded or the unprintable-path placeholder. A `mrLink`
-// already vetted by safeMrLink becomes the final line.
+// either percent-encoded or the unprintable-path placeholder. The diff
+// suffix of a changed record is the manifest's compare_url, built from the
+// remote's web base and two hex shas only. A `mrLink` already vetted by
+// safeMrLink becomes the final line. Per decision (ADR §Decision Outcome):
+//   • <id> (<change>) — <title>
+//     Decision: <decision_line>
+//     <link> · status: <status>[ (diff: <compare_url>)]
 export function renderGateMessage(message, manifest, mrLink = null) {
   const lines = [String(message), "", ...manifestLines(manifest)];
   if (mrLink) lines.push(`Merge request: ${mrLink}`);
@@ -246,10 +256,11 @@ function manifestLines(manifest) {
   const n = manifest.total;
   lines.push(`${n} ${kind}${n === 1 ? "decision" : "decisions"} to approve (since ${since}):`);
   for (const d of manifest.decisions) {
-    const title = d.title && d.title !== d.id ? ` ${d.title}` : "";
+    const title = d.title && d.title !== d.id ? ` — ${d.title}` : "";
     lines.push(`• ${d.id} (${d.change})${title}`);
-    if (d.decision_line) lines.push(`  ${d.decision_line}`);
-    lines.push(`  Status: ${d.status ?? "unknown"} · ${d.link}`);
+    if (d.decision_line) lines.push(`  Decision: ${d.decision_line}`);
+    const diff = d.change === "changed" && manifest.compare_url ? ` (diff: ${manifest.compare_url})` : "";
+    lines.push(`  ${d.link} · status: ${d.status ?? "unknown"}${diff}`);
   }
   if (manifest.truncated_count > 0) {
     lines.push(`…and ${manifest.truncated_count} more: ${manifest.more_link}`);
@@ -345,18 +356,28 @@ function parseNameStatus(out) {
   return changed;
 }
 
+// The web remote the branch tracks — { base, branch, gitlab } for an
+// https/ssh GitHub or GitLab remote — else null.
+function webRemote(git) {
+  const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+  if (!upstream || !upstream.includes("/")) return null;
+  const remote = upstream.slice(0, upstream.indexOf("/"));
+  const branch = upstream.slice(upstream.indexOf("/") + 1);
+  const base = webBase(git(["remote", "get-url", remote]));
+  return base ? { base, branch, gitlab: /gitlab/i.test(base) } : null;
+}
+
+// Web compare page from `since` to `head` (hex shas only), or null.
+function compareUrl(web, since, head) {
+  const hex = /^[0-9a-f]{7,64}$/i;
+  if (!web || !hex.test(since) || !hex.test(head)) return null;
+  return `${web.base}${web.gitlab ? "/-/" : "/"}compare/${since}...${head}`;
+}
+
 // Link to a record: the file on the pushed branch's web page when the branch
 // tracks an https/ssh GitHub or GitLab remote, else the repo-relative path.
 // Either way each path segment is percent-encoded (R2).
-function makeLinker(git) {
-  let web = null;
-  const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
-  if (upstream && upstream.includes("/")) {
-    const remote = upstream.slice(0, upstream.indexOf("/"));
-    const branch = upstream.slice(upstream.indexOf("/") + 1);
-    const base = webBase(git(["remote", "get-url", remote]));
-    if (base) web = { base, branch, gitlab: /gitlab/i.test(base) };
-  }
+function makeLinker(web) {
   return (path, kind = "blob") => {
     const encoded = path.split("/").map(encodeURIComponent).join("/");
     if (!web) return encoded;
