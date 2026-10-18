@@ -59,6 +59,29 @@ function write(dir, rel, content) {
   writeFileSync(abs, content, "utf-8");
 }
 
+// Workflow `shell` steps run under /bin/sh on POSIX but cmd.exe on Windows,
+// so fixture steps must not use POSIX-only syntax (mkdir -p, printf, '…'
+// quoting, >> redirects). File edits go through a tiny node helper instead;
+// the content travels base64-encoded so no shell ever has to quote it. Only
+// `&&` and double-quoted paths are left, which both shells accept.
+let fixtureHelper = null;
+function fileStepCmd(op, rel, text) {
+  if (fixtureHelper === null) {
+    fixtureHelper = join(tempDir("gate-ctx2-fx-"), "fx.mjs");
+    writeFileSync(
+      fixtureHelper,
+      'import { appendFileSync, writeFileSync, mkdirSync } from "node:fs";\n' +
+        'import { dirname } from "node:path";\n' +
+        "const [op, file, b64] = process.argv.slice(2);\n" +
+        'const text = Buffer.from(b64, "base64").toString("utf-8");\n' +
+        "mkdirSync(dirname(file), { recursive: true });\n" +
+        'if (op === "append") appendFileSync(file, text); else writeFileSync(file, text);\n',
+      "utf-8",
+    );
+  }
+  return `node "${fixtureHelper}" ${op} "${rel}" ${Buffer.from(text, "utf-8").toString("base64")}`;
+}
+
 function commitAll(dir, msg) {
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", msg);
@@ -111,7 +134,7 @@ ${i}    since: last_approved
 function bumpYaml(id, file = ".adlc/drafts/pdr/PDR-127.md", indent = "  ") {
   return `${indent}- id: ${id}
 ${indent}  type: shell
-${indent}  run: "echo Addendum-${id} >> '${file}' && git add .adlc/drafts && git commit -q -m ${id}"
+${indent}  run: '${fileStepCmd("append", file, `Addendum-${id}\n`)} && git add .adlc/drafts && git commit -q -m ${id}'
 `;
 }
 
@@ -269,7 +292,7 @@ test("I3: run on main; a step commits a PDR before the gate → listed since run
   const startSha = commitAll(dir, "base");
   const steps = `  - id: draft
     type: shell
-    run: "mkdir -p .adlc/drafts/pdr && printf '# Drafted in run\\n\\n## Decision Outcome\\n\\nWe decide in run.\\n' > .adlc/drafts/pdr/PDR-200.md && git add .adlc/drafts && git commit -q -m draft"
+    run: '${fileStepCmd("write", ".adlc/drafts/pdr/PDR-200.md", "# Drafted in run\n\n## Decision Outcome\n\nWe decide in run.\n")} && git add .adlc/drafts && git commit -q -m draft'
 ` + gateYaml() + `  - id: fin
     type: shell
     run: "echo fin"
