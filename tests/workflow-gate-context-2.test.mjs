@@ -461,8 +461,18 @@ test("N2: 25 changed records → first 10 by sorted path listed; records 11-25 a
 // Its re-execution must diff from its own earlier approval (the most recent
 // approval in time), not from gate-a's older one — insertion order of
 // step_results is not approval order.
+//
+// Iteration 3 (R3, human-approved spec change): a verdict preset at a context
+// gate's first execution no longer approves — every context gate pauses with
+// its manifest first and is approved on resume. Because resume re-runs the
+// whole `if` body, the body's commit steps commit only once (a re-run that
+// changes nothing leaves HEAD, and so the shown manifest, current).
 test("N3: re-approval inside a re-run body → since = last_approved_sha (most recent in time); persisted at run level", async () => {
   const { dir, headSha } = featureRepo();
+  const onceYaml = (id, file, text, indent = "      ") => `${indent}- id: ${id}
+${indent}  type: shell
+${indent}  run: '${fileStepCmd("write", file, text)} && git add .adlc/drafts && (git diff --cached --quiet || git commit -q -m ${id})'
+`;
   const steps =
     gateYaml({ id: "gate-a", verdict: "va" }) +
     `  - id: blk
@@ -470,27 +480,45 @@ test("N3: re-approval inside a re-run body → since = last_approved_sha (most r
     condition: true
     then:
 ` +
-    bumpYaml("bump1", ".adlc/drafts/pdr/PDR-127.md", "      ") +
+    onceYaml("bump1", ".adlc/drafts/pdr/PDR-127.md", record({ title: "Self-serve onboarding", decision: "We ship it, bumped once." })) +
     gateYaml({ id: "gate-b", verdict: "vb", indent: "      " }) +
-    bumpYaml("bump2", ".adlc/drafts/pdr/PDR-100.md", "      ") +
+    onceYaml("bump2", ".adlc/drafts/pdr/PDR-100.md", record({ title: "Stale old decision", decision: "Changed once in the body." })) +
     gateYaml({ id: "gate-c", verdict: "vc", indent: "      " });
-  const { engine, state: s1 } = await runWorkflow(dir, steps, "gn300001", { va: "approve", vb: "approve", vc: "" }, ["va", "vb", "vc"]);
-  assert.equal(s1.status, RunStatus.PAUSED);
-  assert.equal(s1.currentStepId, "gate-c");
-  assert.equal(s1.stepResults["gate-a"].output.approved_sha, headSha);
-  const bFirst = s1.stepResults["gate-b"].output.approved_sha;
+  const { engine, state: s0 } = await runWorkflow(dir, steps, "gn300001", { va: "approve", vb: "approve", vc: "" }, ["va", "vb", "vc"]);
+  // Presets do not approve unseen manifests (R3): gate-a pauses first.
+  assert.equal(s0.status, RunStatus.PAUSED);
+  assert.equal(s0.currentStepId, "gate-a");
+  assert.equal(s0.stepResults["gate-a"].output.approved_sha, undefined);
+
+  const sA = await engine.resume("gn300001", { va: "approve" }, STEP_REGISTRY);
+  assert.equal(sA.stepResults["gate-a"].output.approved_sha, headSha);
+  assert.equal(sA.status, RunStatus.PAUSED);
+  assert.equal(sA.currentStepId, "gate-b", "gate-b's preset verdict does not approve its unseen manifest");
+  assert.equal(sA.stepResults["gate-b"].output.approved_sha, undefined);
+
+  const sB = await engine.resume("gn300001", { vb: "approve" }, STEP_REGISTRY);
+  assert.equal(sB.status, RunStatus.PAUSED);
+  assert.equal(sB.currentStepId, "gate-c");
+  const bFirst = sB.stepResults["gate-b"].output.approved_sha;
   assert.ok(bFirst && bFirst !== headSha, "fixture: gate-b approved after bump1");
   assert.equal(persistedState(dir, "gn300001").last_approved_sha, bFirst, "state.json last_approved_sha = most recent approval");
 
-  // Resume re-runs the `if` body: bump1 commits again, gate-b re-executes.
-  const s2 = await engine.resume("gn300001", { vc: "approve" }, STEP_REGISTRY);
-  const outB = s2.stepResults["gate-b"].output;
-  assert.equal(outB.since_sha, bFirst, "gate-b's re-approval diffs from the most recent approval (its own), not gate-a's");
+  // Resume re-runs the `if` body: gate-b re-executes (its earlier approval is
+  // not a shown pause) → pauses, diffing from the most recent approval (its
+  // own), not gate-a's.
+  const sC = await engine.resume("gn300001", { vb: "approve" }, STEP_REGISTRY);
+  assert.equal(sC.status, RunStatus.PAUSED);
+  assert.equal(sC.currentStepId, "gate-b");
+  assert.equal(sC.stepResults["gate-b"].output.since_sha, bFirst, "gate-b's re-execution diffs from the most recent approval (its own), not gate-a's");
+
+  // Approving the shown re-execution re-approves gate-b at the newer HEAD.
+  const sD = await engine.resume("gn300001", { vb: "approve" }, STEP_REGISTRY);
+  const outB = sD.stepResults["gate-b"].output;
+  assert.equal(outB.since_sha, bFirst);
   assert.ok(outB.approved_sha && outB.approved_sha !== bFirst);
-  // gate-c's view (paused before the body re-ran) is stale → re-pauses (I1).
-  assert.equal(s2.status, RunStatus.PAUSED);
-  assert.equal(s2.stepResults["gate-c"].output.since_sha, outB.approved_sha, "gate-c diffs from gate-b's re-approval");
   assert.equal(persistedState(dir, "gn300001").last_approved_sha, outB.approved_sha, "re-approval updates last_approved_sha");
+  assert.equal(sD.status, RunStatus.PAUSED);
+  assert.equal(sD.currentStepId, "gate-c");
 });
 
 // ── N5: more-link for multi-glob gates; ssh remotes with a port ───────────
