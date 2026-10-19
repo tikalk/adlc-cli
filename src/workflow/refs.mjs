@@ -90,18 +90,32 @@ export function parkRun(projectRoot, runId, { handleFile, remote = "origin" } = 
 export function restoreRun(projectRoot, runId, { remote = "origin", issueRef = null } = {}) {
   const runDir = runDirFor(projectRoot, runId);
   checkRemote(remote);
-  if (existsSync(runDir)) throw new Error(`restore: ${runDir} already exists; refusing to overwrite it`);
-  const ref = `refs/factory-runs/${runId}`;
-  gitOrThrow(projectRoot, ["fetch", "--quiet", remote, `+${ref}:${ref}`], "restore: fetch");
-  if (issueRef !== null && issueRef !== undefined && issueRef !== "") {
-    const inputs = JSON.parse(gitOrThrow(projectRoot, ["show", `${ref}:inputs.json`], "restore: read inputs").toString("utf-8"));
-    const recorded = inputs?.inputs?.issue_ref ?? null;
-    if (recorded !== issueRef) {
-      throw new Error(`restore: run ${runId} belongs to issue_ref ${JSON.stringify(recorded)}, not ${JSON.stringify(issueRef)}`);
-    }
-  }
-  const listing = gitOrThrow(projectRoot, ["ls-tree", "-r", "-z", ref], "restore: list").toString("utf-8");
+  // Exclusive claim, not existsSync-then-write: two pods restoring the same
+  // run_id concurrently (the scenario this feature exists for) would both
+  // pass an existsSync check before either had written anything, then
+  // interleave writes into the same directory. mkdirSync without recursive
+  // is an atomic directory-creation at the filesystem level (POSIX mkdir(2)
+  // guarantees exactly one of two concurrent callers gets ENOENT's sibling
+  // EEXIST); only the winner proceeds, the loser fails closed immediately
+  // without touching anything the winner wrote.
+  mkdirSync(dirname(runDir), { recursive: true });
   try {
+    mkdirSync(runDir);
+  } catch (err) {
+    if (err.code === "EEXIST") throw new Error(`restore: ${runDir} already exists; refusing to overwrite it`);
+    throw err;
+  }
+  try {
+    const ref = `refs/factory-runs/${runId}`;
+    gitOrThrow(projectRoot, ["fetch", "--quiet", remote, `+${ref}:${ref}`], "restore: fetch");
+    if (issueRef !== null && issueRef !== undefined && issueRef !== "") {
+      const inputs = JSON.parse(gitOrThrow(projectRoot, ["show", `${ref}:inputs.json`], "restore: read inputs").toString("utf-8"));
+      const recorded = inputs?.inputs?.issue_ref ?? null;
+      if (recorded !== issueRef) {
+        throw new Error(`restore: run ${runId} belongs to issue_ref ${JSON.stringify(recorded)}, not ${JSON.stringify(issueRef)}`);
+      }
+    }
+    const listing = gitOrThrow(projectRoot, ["ls-tree", "-r", "-z", ref], "restore: list").toString("utf-8");
     for (const entry of listing.split("\0")) {
       if (!entry) continue;
       const tab = entry.indexOf("\t");

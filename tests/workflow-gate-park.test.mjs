@@ -289,6 +289,26 @@ test("P5: restoreRun refuses an existing run dir", async () => {
   assert.throws(() => restoreRun(a, "p5-exists", { remote: "origin" }), /already exists/);
 });
 
+// The loser of a concurrent restore must fail closed without touching
+// anything the winner already wrote — restoreRun claims the run dir via a
+// non-recursive mkdirSync (atomic at the filesystem level) before fetching,
+// not an existsSync-then-write check that two racing calls could both pass.
+test("P5: a second restoreRun for the same run_id does not delete what the first one wrote", async () => {
+  const { a, b } = cloneSetup();
+  await run(a, GATE + FIN, "p5-race", { verdict: "", issue_ref: "acme/repo#7" });
+  parkRun(a, "p5-race", { handleFile: handleFile(), remote: "origin" });
+
+  // Simulate the winner of the race: claim the directory and drop a sentinel
+  // file nothing in restoreRun itself would ever write, standing in for
+  // whatever the winner has materialized so far.
+  const dir = runDir(b, "p5-race");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "sentinel"), "winner-was-here", "utf-8");
+
+  assert.throws(() => restoreRun(b, "p5-race", { remote: "origin" }), /already exists/);
+  assert.equal(readFileSync(join(dir, "sentinel"), "utf-8"), "winner-was-here", "the loser must not delete the winner's data");
+});
+
 test("P5: restoreRun refuses a mismatched issue ref and leaves no run dir", async () => {
   const { a, b } = cloneSetup();
   await run(a, GATE + FIN, "p5-issue", { verdict: "", issue_ref: "acme/repo#7" });
