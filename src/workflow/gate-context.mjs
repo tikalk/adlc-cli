@@ -116,6 +116,23 @@ export function currentHeadSha(projectRoot) {
   }
 }
 
+// Paths under the record globs that differ from HEAD — staged, modified,
+// deleted or untracked (not ignored) — sorted, relative to the project root.
+// A list built from git history cannot show them, so a context gate halts
+// on them instead of pausing (ADR-391-amendment-3 §7). Outside a work tree
+// (or on git failure) returns [] and the manifest reports unavailability.
+export function uncommittedRecords(projectRoot, records) {
+  const cwd = projectRoot || ".";
+  const pathspecs = records.map((g) => `:(glob)${g}`);
+  const worktree = runGit(cwd, ["ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard", "--", ...pathspecs]);
+  const staged = runGit(cwd, ["diff", "--cached", "--name-only", "--relative", "-z", "--", ...pathspecs]);
+  const paths = new Set();
+  for (const out of [worktree, staged]) {
+    for (const p of (out ?? "").split("\0")) if (p) paths.add(p);
+  }
+  return [...paths].sort();
+}
+
 // True when any step (at any nesting depth) of a workflow definition is a
 // gate declaring `context` — only such runs record run-level shas.
 export function hasContextGate(steps) {

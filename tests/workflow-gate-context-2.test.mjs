@@ -183,7 +183,10 @@ const short = (sha) => sha.slice(0, 7);
 
 // ── I1: the approval covers exactly what was shown ─────────────────────────
 
-test("I1: HEAD moves between pause and approve → gate re-pauses with a fresh manifest, nothing approved", async () => {
+// Superseded 2026-10-19 by ADR-391-amendment-3 §4 (was amendment-2 §7
+// "re-pause with a fresh manifest"): an approval answering a pause whose head
+// moved halts the run; nothing is approved and the fresh view is not offered.
+test("I1: HEAD moves between pause and approve → gate halts, nothing approved", async () => {
   const { dir, headSha } = featureRepo();
   const steps = gateYaml() + `  - id: fin
     type: shell
@@ -200,30 +203,13 @@ test("I1: HEAD moves between pause and approve → gate re-pauses with a fresh m
   write(dir, ".adlc/drafts/pdr/PDR-128.md", record({ title: "Never shown", decision: "Sneaky decision." }));
   const movedSha = commitAll(dir, "sneaky");
 
-  const events2 = [];
-  engine.onEvent = (e) => events2.push(e);
   const s2 = await engine.resume("gi100001", { verdict: "approve" }, STEP_REGISTRY);
-  assert.equal(s2.status, RunStatus.PAUSED, "a stale view must not be approved (ADR-422: gates halt)");
-  assert.equal(s2.currentStepId, "review");
-  const out2 = s2.stepResults.review.output;
-  assert.equal(s2.stepResults.review.status, StepStatus.PAUSED);
-  assert.equal(out2.approved_sha, undefined, "no approved_sha for the stale view");
+  assert.equal(s2.status, RunStatus.FAILED, "a stale view must not be approved (ADR-422: gates halt)");
+  assert.match(s2.error, new RegExp(`head moved since the gate paused \\(shown ${short(headSha)}, now ${short(movedSha)}\\)`));
+  assert.equal(s2.stepResults.review.status, StepStatus.FAILED);
+  assert.equal(s2.stepResults.review.output.approved_sha, undefined, "no approved_sha for the stale view");
   assert.equal(s2.stepResults.fin, undefined, "downstream steps must not run");
-  assert.deepEqual(ids(out2.decisions), ["PDR-127", "PDR-128"], "the fresh manifest lists B");
-  assert.equal(out2.head_sha, movedSha);
-  assert.ok(out2.message.includes("PDR-128"), out2.message);
-  const gp = events2.find((e) => e.type === "gate_paused");
-  assert.ok(gp, "a new gate_paused is emitted for the fresh manifest");
-  assert.deepEqual(ids(gp.decisions), ["PDR-127", "PDR-128"]);
   assert.ok(!logEntries(dir, "gi100001").some((e) => e.event === "gate_approved"), "no gate_approved audit for the stale view");
-
-  // Approving the fresh view (HEAD unchanged now) completes.
-  const s3 = await engine.resume("gi100001", { verdict: "approve" }, STEP_REGISTRY);
-  assert.equal(s3.status, RunStatus.COMPLETED);
-  assert.equal(s3.stepResults.review.output.approved_sha, movedSha);
-  const audit = logEntries(dir, "gi100001").filter((e) => e.event === "gate_approved");
-  assert.equal(audit.length, 1);
-  assert.deepEqual(ids(audit[0].decisions), ["PDR-127", "PDR-128"]);
 });
 
 test("I1: HEAD unchanged → approved_sha = paused head_sha and the audit copies the paused manifest", async () => {

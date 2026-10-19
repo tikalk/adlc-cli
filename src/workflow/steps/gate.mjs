@@ -14,6 +14,7 @@ import {
   currentHeadSha,
   renderGateMessage,
   safeMrLink,
+  uncommittedRecords,
   validateGateContext,
 } from "../gate-context.mjs";
 
@@ -101,6 +102,17 @@ export class GateStep extends StepBase {
     let unavailableReason = null;
     let unavailableKind = null;
     if ("context" in config) {
+      // The list comes from git history, so drafts not committed yet could
+      // never be shown, and an approval would not cover them: halt instead
+      // of pausing (ADR-391-amendment-3 §7).
+      const dirty = uncommittedRecords(context.projectRoot, config.context.records);
+      if (dirty.length > 0) {
+        return new StepResult({
+          status: StepStatus.FAILED,
+          output,
+          error: `Gate step ${rid(config)}: uncommitted drafts: ${dirty.map((p) => p.replace(CONTROL_CHARS, "")).join(", ")} — commit them before the gate.`,
+        });
+      }
       const previous = context.steps?.[config.id];
       shownManifest = pausedManifest(previous);
       shownUnavailableKind = shownManifest === null ? pausedUnavailableKind(previous) : null;
@@ -174,6 +186,28 @@ export class GateStep extends StepBase {
       unavailableReason !== null &&
       shownUnavailableKind === unavailableKind &&
       PERMANENT_UNAVAILABLE.includes(unavailableKind);
+    // An approval answering a pause whose list was built at a head that is no
+    // longer HEAD halts instead of re-pausing: nothing in the run commits
+    // while it waits, so something outside it moved the branch, and a person
+    // must look (ADR-391-amendment-3 §4, ADR-422; supersedes amendment-2 §7
+    // for gates answered after their pause). A rejection is still honoured.
+    // HEAD unknown (git could not answer) is transient: fall through and
+    // re-pause, fail-closed, as before.
+    const headNow = shownManifest !== null ? currentHeadSha(context.projectRoot) : null;
+    if (
+      "context" in config &&
+      boundVerdictInput !== null &&
+      headNow !== null &&
+      headNow !== shownManifest.head_sha &&
+      !isRejection(choice)
+    ) {
+      context.inputs[boundVerdictInput] = "";
+      return new StepResult({
+        status: StepStatus.FAILED,
+        output,
+        error: `Gate step ${rid(config)}: head moved since the gate paused (shown ${shortSha(shownManifest.head_sha)}, now ${shortSha(headNow)}); verdict not applied.`,
+      });
+    }
     if (
       "context" in config &&
       boundVerdictInput !== null &&
@@ -399,6 +433,10 @@ function gateMrLink(ctx, context) {
   } catch {
     return null;
   }
+}
+
+function shortSha(sha) {
+  return typeof sha === "string" && sha !== "" ? sha.slice(0, 7) : "none";
 }
 
 function rid(config) {

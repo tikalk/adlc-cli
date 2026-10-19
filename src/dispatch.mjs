@@ -158,6 +158,8 @@ function runNewTree({ command, args, flags }, argv) {
         case "status":
         case "validate":
         case "state":
+        case "park":
+        case "restore":
           return cmdWorkflow([sub, ...rest], flags, workflowArgv);
         case "help":
           printWorkflowHelp();

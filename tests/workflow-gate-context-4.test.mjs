@@ -232,7 +232,10 @@ test("S1: shown unavailable, list buildable by resume (main branch created) → 
   assert.ok(!logEntries(dir, "g4s10003").some((e) => e.event === "gate_approved"));
 });
 
-test("S1: shown a list, fresh build unavailable at resume → re-pause, not approved blind (expected to pass now)", async () => {
+// Superseded 2026-10-19 by ADR-391-amendment-3 §4: HEAD moved since the
+// shown list, so the approval halts (was: re-pause with "Decision list
+// unavailable"). Re-pause remains only when git cannot report HEAD at all.
+test("S1: shown a list, HEAD moved and fresh build unavailable at resume → halt, not approved blind", async () => {
   const { dir, headSha } = featureRepo();
   const { engine, state: s1 } = await runWorkflow(dir, gateYaml() + FIN, "g4s10004");
   assert.equal(s1.stepResults.review.output.head_sha, headSha, "fixture: first pause shows a list");
@@ -243,13 +246,9 @@ test("S1: shown a list, fresh build unavailable at resume → re-pause, not appr
   commitAll(dir, "more");
   git(dir, "branch", "-D", "main");
   const s2 = await engine.resume("g4s10004", { verdict: "approve" }, STEP_REGISTRY);
-  assert.equal(s2.status, RunStatus.PAUSED);
-  assert.equal(s2.currentStepId, "review");
-  const out2 = s2.stepResults.review.output;
-  assert.ok(out2.message.includes("Decision list unavailable"), out2.message);
-  assert.equal(out2.head_sha, null);
-  assert.equal(out2.approved_sha, undefined);
-  assert.equal(s2.inputs.verdict, "");
+  assert.equal(s2.status, RunStatus.FAILED);
+  assert.match(s2.error, /head moved since the gate paused/);
+  assert.equal(s2.stepResults.review.output.approved_sha, undefined);
   assert.equal(s2.stepResults.fin, undefined);
   assert.ok(!logEntries(dir, "g4s10004").some((e) => e.event === "gate_approved"));
 });
