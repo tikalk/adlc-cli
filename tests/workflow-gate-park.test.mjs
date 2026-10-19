@@ -306,3 +306,13 @@ test("P4/P5: `workflow park` and `workflow restore` CLI round-trip", async () =>
   assert.equal(restore.status, 0, restore.stderr);
   assert.ok(existsSync(join(runDir(b, "p45-cli"), "gate-handle.json")));
 });
+
+test("P5: restoreRun rejects a remote that looks like an option (no git option injection)", async () => {
+  const { a, b } = cloneSetup();
+  await run(a, GATE + FIN, "p5-inject", { verdict: "", issue_ref: "acme/repo#7" });
+  parkRun(a, "p5-inject", { handleFile: handleFile(), remote: "origin" });
+  const marker = join(tempDir("gate-park-inj-"), "pwned");
+  assert.throws(() => restoreRun(b, "p5-inject", { remote: `--upload-pack=touch ${marker}` }), /invalid remote/);
+  assert.equal(existsSync(marker), false, "the injected command must never run");
+  assert.throws(() => parkRun(a, "p5-inject", { handleFile: handleFile(), remote: "--receive-pack=x" }), /invalid remote/);
+});

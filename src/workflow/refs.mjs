@@ -69,6 +69,7 @@ const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function parkRun(projectRoot, runId, { handleFile, remote = "origin" } = {}) {
   const runDir = runDirFor(projectRoot, runId);
+  checkRemote(remote);
   const statePath = join(runDir, "state.json");
   if (!existsSync(statePath)) throw new Error(`park: run ${runId} not found at ${runDir}`);
   const status = JSON.parse(readFileSync(statePath, "utf-8")).status;
@@ -88,6 +89,7 @@ export function parkRun(projectRoot, runId, { handleFile, remote = "origin" } = 
 
 export function restoreRun(projectRoot, runId, { remote = "origin", issueRef = null } = {}) {
   const runDir = runDirFor(projectRoot, runId);
+  checkRemote(remote);
   if (existsSync(runDir)) throw new Error(`restore: ${runDir} already exists; refusing to overwrite it`);
   const ref = `refs/factory-runs/${runId}`;
   gitOrThrow(projectRoot, ["fetch", "--quiet", remote, `+${ref}:${ref}`], "restore: fetch");
@@ -120,6 +122,14 @@ export function restoreRun(projectRoot, runId, { remote = "origin", issueRef = n
 function runDirFor(projectRoot, runId) {
   if (typeof runId !== "string" || !RUN_ID_RE.test(runId)) throw new Error(`invalid run id ${JSON.stringify(runId)}`);
   return join(projectRoot, ".adlc", "workflows", "runs", runId);
+}
+
+// A remote is a name or URL, never an option: `git fetch --upload-pack=<cmd>`
+// would run <cmd>.
+function checkRemote(remote) {
+  if (typeof remote !== "string" || remote === "" || remote.startsWith("-") || /[\0\n]/.test(remote)) {
+    throw new Error(`invalid remote ${JSON.stringify(remote)}`);
+  }
 }
 
 // stdout (Buffer) of a successful git call; throws with git's stderr otherwise.
