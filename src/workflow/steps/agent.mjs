@@ -129,13 +129,16 @@ const MAX_OUTPUT_VALUE = 2048;
 // Generous bound on the raw file; any valid object is far smaller.
 const MAX_OUTPUT_FILE = 64 * 1024;
 
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
 function runContextEnv(context, config) {
   const env = {};
   const runId = typeof context.runId === "string" ? context.runId : null;
   const stepId = typeof config.id === "string" ? config.id : null;
   if (runId) env.ADLC_RUN_ID = runId;
   if (stepId) env.ADLC_STEP_ID = stepId;
-  if (runId && stepId && context.projectRoot) {
+  // Path-safe ids only: the file is deleted before the step and read after it.
+  if (runId && stepId && SAFE_ID.test(runId) && SAFE_ID.test(stepId) && context.projectRoot) {
     env.ADLC_STEP_OUTPUT = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "steps", `${stepId}.output.json`);
   }
   const issueRef = context.inputs?.issue_ref;

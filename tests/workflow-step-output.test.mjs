@@ -9,7 +9,8 @@
 //       value <= 2048 chars, <= 16 entries, no reserved key. Anything else
 //       (array, unparsable, reserved key, too many, too long, non-string)
 //       merges nothing. A failed step merges nothing.
-//   O3  The file is removed before the step runs (no stale value).
+//   O3  The file is removed before the step runs (no stale value); a run or
+//       step id that is not path-safe gets no ADLC_STEP_OUTPUT at all.
 //   O4  The bundled `factory` workflow's intent gates link the intent step's
 //       mr_url, and a context gate surfaces it as mr_link.
 
@@ -200,4 +201,25 @@ test("O4: a context gate surfaces the intent step's mr_url as mr_link", { skip: 
     const paused = events.find((e) => e.type === "gate_paused");
     assert.equal(paused.mr_link, "https://gl.test/g/p/-/merge_requests/9");
   });
+});
+
+test("O3: a step id that is not path-safe gets no output file (nothing deleted or read outside steps/)", { skip: !POSIX }, async () => {
+  const bin = installFakeAgent();
+  const dir = project();
+  const dump = join(tempDir("dump-"), "env.json");
+  // Would resolve to <root>/.adlc/workflows/runs/victim.output.json.
+  const victim = join(dir, ".adlc", "workflows", "runs", "victim.output.json");
+  mkdirSync(dirname(victim), { recursive: true });
+  writeFileSync(victim, "keep me");
+  const steps = `  - id: "../../victim"
+    type: command
+    command: factory-product
+`;
+  await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_DUMP: dump, FAKE_EXIT: "0", FAKE_OUTPUT: JSON.stringify({ mr_url: "u" }) }, async () => {
+    const engine = new WorkflowEngine(dir);
+    await engine.execute(engine.loadWorkflow(workflow(steps)), { issue_ref: "g/p#26" }, "r26", STEP_REGISTRY);
+  });
+  const seen = JSON.parse(readFileSync(dump, "utf-8"));
+  assert.equal("ADLC_STEP_OUTPUT" in seen, false);
+  assert.equal(readFileSync(victim, "utf-8"), "keep me");
 });
