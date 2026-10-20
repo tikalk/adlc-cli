@@ -51,7 +51,24 @@ function runLegacyTree({ command, args, flags }) {
   }
 }
 
-function runNewTree({ command, args, flags }, argv) {
+async function runNewTree({ command, args, flags }, argv) {
+  if (flags?.provider === "coder") {
+    const { cmdCoderWorkspaceSetup, cmdCoderAgentRun, cmdCoderWorkflowRun } = await import("./providers/coder-route.mjs");
+    if (command === "workspace" && (args[0] ?? "status") === "setup") {
+      return cmdCoderWorkspaceSetup(args.slice(1), flags, argv);
+    }
+    if (command === "agent" && (args[0] ?? "help") === "run") {
+      const rest = argv.slice(argv.indexOf("run") + 1);
+      return cmdCoderAgentRun(rest, argv);
+    }
+    if (command === "run") {
+      return cmdCoderAgentRun(argv.slice(1), argv);
+    }
+    if (command === "workflow" && (args[0] ?? "help") === "run") {
+      const workflowArgv = argv.slice(argv.indexOf("workflow") + 1);
+      return cmdCoderWorkflowRun(args.slice(1), flags, workflowArgv);
+    }
+  }
   switch (command) {
     case "skills": {
       const sub = args[0] ?? "status";
