@@ -157,6 +157,20 @@ function findFileRecursive(root, name) {
   return null;
 }
 
+// Any file whose name contains a backslash -- a path git stores as one
+// component but a Windows host splits into three.
+function findBackslashName(root) {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const abs = join(root, entry.name);
+    if (entry.name.includes("\\")) return abs;
+    if (entry.isDirectory()) {
+      const found = findBackslashName(abs);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function runDir(dir, runId) {
   return join(dir, ".adlc", "workflows", "runs", runId);
 }
@@ -382,6 +396,26 @@ test("P5: restoreRun ignores a path-traversal entry in a malicious parked ref", 
   assert.equal(findFileRecursive(b, "outside-evil.txt"), null, "the traversal entry must not be written anywhere under the clone");
 });
 
+// A tree path is stored verbatim by git: "a\..\b" is one component to git
+// but three to a Windows host, so a path that spells a ".." segment with a
+// backslash escapes the run dir on Windows even though the forward-slash
+// check never sees it.
+test("P5: restoreRun ignores a tree entry whose path spells traversal with a backslash", async () => {
+  const { a, b } = cloneSetup();
+  await run(a, GATE + FIN, "p5-backslash", { verdict: "", issue_ref: "acme/repo#7" });
+  parkRun(a, "p5-backslash", { handleFile: handleFile(), remote: "origin" });
+
+  const evilSha = gitIn(a, ["hash-object", "-w", "--stdin"], "pwned\n");
+  const topTree = gitIn(a, ["mktree"], `100644 blob ${evilSha}\tx\\..\\..\\evil.txt\n`);
+  const commit = gitIn(a, ["commit-tree", topTree, "-m", "malicious"], "");
+  git(a, "update-ref", "refs/factory-runs/p5-backslash", commit);
+  git(a, "push", "-q", "--force", "origin", "+refs/factory-runs/p5-backslash:refs/factory-runs/p5-backslash");
+
+  const dir = restoreRun(b, "p5-backslash", { remote: "origin" });
+  assert.equal(findBackslashName(dir), null, "a backslash-spelled path must be skipped, not materialized");
+  assert.equal(findFileRecursive(b, "evil.txt"), null, "the backslash entry must not land outside the run dir either");
+});
+
 test("P5: restoreRun refuses a mismatched issue ref and leaves no run dir", async () => {
   const { a, b } = cloneSetup();
   await run(a, GATE + FIN, "p5-issue", { verdict: "", issue_ref: "acme/repo#7" });
@@ -398,6 +432,22 @@ test("P4/P5: `workflow park` and `workflow restore` CLI round-trip", async () =>
   const restore = spawnSync(process.execPath, [CLI, "workflow", "restore", "p45-cli", "--remote", "origin", "--issue-ref", "acme/repo#7"], { cwd: b, encoding: "utf-8" });
   assert.equal(restore.status, 0, restore.stderr);
   assert.ok(existsSync(join(runDir(b, "p45-cli"), "gate-handle.json")));
+});
+
+// The run id is the positional argument, never a flag's value: parseArgs
+// strips a flag's name from the positional list but keeps its value, so
+// `workflow restore --remote origin <run_id>` used to read the remote's
+// name as the run id -- and a run named "origin" is a legal run id.
+test("P4/P5: the CLI reads the run id from the positional argument, not from a flag's value", async () => {
+  const { a, b } = cloneSetup();
+  await run(a, GATE + FIN, "p45-args", { verdict: "", issue_ref: "acme/repo#7" });
+  const park = spawnSync(process.execPath, [CLI, "workflow", "park", "--handle-file", handleFile(), "--remote", "origin", "p45-args"], { cwd: a, encoding: "utf-8" });
+  assert.equal(park.status, 0, park.stderr);
+  assert.ok(existsSync(join(runDir(a, "p45-args"), "gate-handle.json")), "the positional run id is the one that is parked");
+  const restore = spawnSync(process.execPath, [CLI, "workflow", "restore", "--remote", "origin", "--issue-ref", "acme/repo#7", "p45-args"], { cwd: b, encoding: "utf-8" });
+  assert.equal(restore.status, 0, restore.stderr);
+  assert.ok(existsSync(join(runDir(b, "p45-args"), "gate-handle.json")), "the positional run id is the one that is restored");
+  assert.equal(existsSync(runDir(b, "origin")), false, "the remote's name must never be taken as a run id");
 });
 
 test("P5: restoreRun rejects a remote that looks like an option (no git option injection)", async () => {

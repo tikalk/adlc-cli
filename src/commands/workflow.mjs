@@ -74,14 +74,21 @@ function parseInputs(rawArgv, subcommand) {
   return inputs;
 }
 
-// Extract a single --flag value (or null) from raw argv.
+// Extract a single --flag value (or null) from raw argv. Both forms are
+// accepted: "--flag value" and "--flag=value". The "=" form used to be
+// ignored, which silently fell back to the caller's default.
 function extractFlagValue(rawArgv, name) {
   const flag = `--${name}`;
   const idx = rawArgv.indexOf(flag);
-  if (idx === -1) return null;
-  const value = rawArgv[idx + 1];
-  if (value === undefined || value.startsWith("-")) return null;
-  return value;
+  if (idx !== -1) {
+    const value = rawArgv[idx + 1];
+    if (value === undefined || value.startsWith("-")) return null;
+    return value;
+  }
+  const inline = rawArgv.find((arg) => arg.startsWith(`${flag}=`));
+  if (inline === undefined) return null;
+  const value = inline.slice(flag.length + 1);
+  return value === "" ? null : value;
 }
 
 function hasFlag(rawArgv, name) {
@@ -242,7 +249,7 @@ async function cmdWorkflowResume(rest, rawArgv) {
 // Save a gate-paused run, with the gate's thread handle, to the remote run
 // ref so another pod can restore and resume it.
 async function cmdWorkflowPark(rest, rawArgv) {
-  const runId = firstPositional(rest);
+  const runId = firstPositional(rest, rawArgv);
   const handleFile = extractFlagValue(rawArgv, "handle-file");
   if (!runId || !handleFile) {
     console.error("Usage: adlc-cli workflow park <run_id> --handle-file <path> [--remote <name>]");
@@ -260,7 +267,7 @@ async function cmdWorkflowPark(rest, rawArgv) {
 
 // Materialize a parked run from the remote run ref into runs/<run_id>/.
 async function cmdWorkflowRestore(rest, rawArgv) {
-  const runId = firstPositional(rest);
+  const runId = firstPositional(rest, rawArgv);
   if (!runId) {
     console.error("Usage: adlc-cli workflow restore <run_id> [--remote <name>] [--issue-ref <ref>]");
     return 1;
@@ -279,13 +286,47 @@ async function cmdWorkflowRestore(rest, rawArgv) {
 }
 
 // The first argument that is neither a flag nor a flag's value.
-function firstPositional(rest) {
-  const valued = new Set(["--handle-file", "--remote", "--issue-ref"]);
-  for (let i = 0; i < rest.length; i++) {
-    if (valued.has(rest[i])) { i++; continue; }
-    if (!rest[i].startsWith("-")) return rest[i];
+//
+// parseArgs strips a flag's name from the positional list but keeps its
+// value, so the run id cannot simply be the first positional: in
+// `workflow restore --remote origin <run_id>` that would read the
+// remote's name as the run id. Every value the valued flags carry is
+// therefore excluded before the first positional is taken.
+function firstPositional(rest, rawArgv) {
+  const consumed = valuedFlagValues(rawArgv);
+  for (const token of rest) {
+    if (token.startsWith("-")) continue;
+    if (consumed.has(token)) continue;
+    return token;
   }
   return null;
+}
+
+// Flags whose value is a separate argument.
+const VALUED_FLAGS = ["handle-file", "remote", "issue-ref"];
+
+// Every value the valued flags carry, in either form ("--flag value" and
+// "--flag=value").
+function valuedFlagValues(rawArgv) {
+  const values = new Set();
+  for (const arg of rawArgv) {
+    for (const name of VALUED_FLAGS) {
+      const flag = `--${name}`;
+      if (arg === flag) continue;
+      if (arg.startsWith(`${flag}=`)) {
+        const value = arg.slice(flag.length + 1);
+        if (value !== "") values.add(value);
+      }
+    }
+  }
+  for (let i = 0; i < rawArgv.length; i++) {
+    for (const name of VALUED_FLAGS) {
+      if (rawArgv[i] !== `--${name}`) continue;
+      const value = rawArgv[i + 1];
+      if (value !== undefined && !value.startsWith("-")) values.add(value);
+    }
+  }
+  return values;
 }
 
 // ── status ───────────────────────────────────────────────────────────────
