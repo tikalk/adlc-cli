@@ -4,7 +4,7 @@
 // terminal states); best-effort: silently skipped outside a git repo.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export function pushRunRef(projectRoot, runId, runDir) {
@@ -120,13 +120,19 @@ export function restoreRun(projectRoot, runId, { remote = "origin", issueRef = n
       }
     }
     const listing = gitOrThrow(projectRoot, ["ls-tree", "-r", "-z", ref], "restore: list").toString("utf-8");
+    const baseDir = resolve(runDir);
     for (const entry of listing.split("\0")) {
       if (!entry) continue;
       const tab = entry.indexOf("\t");
       const [, type, sha] = entry.slice(0, tab).split(" ");
       const path = entry.slice(tab + 1);
-      if (type !== "blob" || path.split("/").includes("..")) continue;
-      const dest = join(runDir, path);
+      // Git stores a tree path verbatim, so a path that spells a ".."
+      // segment with a backslash ("a\..\b") is one component to git but
+      // three to a Windows host: it is rejected like the forward-slash
+      // form. The resolved destination must also stay inside the run dir.
+      if (type !== "blob" || path.split("/").includes("..") || path.includes("\\")) continue;
+      const dest = resolve(baseDir, path);
+      if (!dest.startsWith(baseDir + sep)) continue;
       mkdirSync(dirname(dest), { recursive: true });
       writeFileSync(dest, gitOrThrow(projectRoot, ["cat-file", "blob", sha], "restore: read"));
     }
