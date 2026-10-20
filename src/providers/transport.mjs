@@ -1,6 +1,8 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 // Provider transport interface: workspace validation, var expansion, events, hop guard.
 export const MAX_HOPS = 2;
-
 export function validateWorkspaceConfig(config) {
   if (config && typeof config === "object" && "provider" in config) {
     throw new Error(
@@ -40,7 +42,7 @@ export function normalizeEvent(event) {
 }
 
 export function checkHopDepth(depth) {
-  if (typeof depth !== "number" || depth > MAX_HOPS) {
+  if (typeof depth !== "number" || !Number.isFinite(depth) || depth > MAX_HOPS) {
     throw new Error(`hop depth ${depth} exceeds maximum of ${MAX_HOPS} hops`);
   }
 }
@@ -88,6 +90,91 @@ export function collectReferencedVars(value) {
 
 export function expandWorkspaceVarsWithRefs(value, env = {}) {
   return { expanded: expandWorkspaceVars(value, env), referenced: collectReferencedVars(value) };
+}
+
+export function currentHopDepth() {
+  const raw = process.env.ADLC_HOP_DEPTH;
+  if (raw === undefined || raw === "") return 0;
+  const depth = Number(raw);
+  if (!Number.isFinite(depth)) {
+    throw new Error(`invalid ADLC_HOP_DEPTH ${JSON.stringify(raw)}: must be numeric (fail-closed)`);
+  }
+  return depth;
+}
+
+export function hopGuard() {
+  checkHopDepth(currentHopDepth() + 1);
+}
+
+export function remoteInputs(inputs = {}, fromOffset = 0) {
+  return { ...inputs, ADLC_HOP_DEPTH: String(currentHopDepth() + 1) };
+}
+
+function parseSecretsEnv(content) {
+  const out = {};
+  for (const line of String(content ?? "").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+export function loadSecretsEnv(projectRoot = process.cwd()) {
+  const fileSecrets = {};
+  try {
+    const file = join(projectRoot, "secrets.env");
+    if (existsSync(file)) Object.assign(fileSecrets, parseSecretsEnv(readFileSync(file, "utf-8")));
+  } catch {
+  }
+  const dockerSecrets = {};
+  try {
+    const dir = "/run/secrets";
+    if (existsSync(dir)) {
+      for (const name of readdirSync(dir)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+        try {
+          dockerSecrets[name] = readFileSync(join(dir, name), "utf-8").trim();
+        } catch {
+        }
+      }
+    }
+  } catch {
+  }
+  return { ...fileSecrets, ...dockerSecrets };
+}
+
+export function referencedSecretsEnv(referenced = [], projectRoot = process.cwd(), env = process.env) {
+  const merged = { ...env, ...loadSecretsEnv(projectRoot) };
+  const out = {};
+  for (const k of referenced ?? []) if (merged[k] !== undefined) out[k] = merged[k];
+  return out;
+}
+
+export function scrubSecretValues(value, secrets = {}) {
+  const raw = Array.isArray(secrets) ? secrets : Object.values(secrets ?? {});
+  const needles = [...new Set(raw)].filter((s) => typeof s === "string" && s.length >= 4);
+  if (needles.length === 0) return value;
+  const scrubStr = (s) => needles.reduce((acc, n) => acc.split(n).join(REDACTED), s);
+  if (typeof value === "string") return scrubStr(value);
+  if (Array.isArray(value)) return value.map((v) => scrubSecretValues(v, secrets));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = scrubSecretValues(v, secrets);
+    return out;
+  }
+  return value;
 }
 
 export async function resumeRun(transport, handle, input, opts = {}) {

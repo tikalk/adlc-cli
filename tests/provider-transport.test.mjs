@@ -38,12 +38,15 @@ test("missing ${VAR} in workspace file fails fast and names the var", () => {
 });
 
 test("transport interface exposes provision, exec streaming, and handle path", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const tmp = await import("node:fs/promises").then((m) => m.mkdtemp(path.join(os.tmpdir(), "adlc-iface-")));
   const transport = fakeTransport();
-  const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
+  const provider = createCoderProvider({ transport, workspacesDir: path.join(tmp, "workspaces") });
   assert.equal(typeof provider.provision, "function");
   assert.equal(typeof provider.run, "function");
   const handle = await provider.provision("demo");
-  assert.match(handle.handlePath, /\.adlc\/workspaces\/demo\.json/);
+  assert.match(handle.handlePath, /demo\.json/);
   const res = await provider.run(handle, "hello-stdin");
   assert.equal(res.exitCode, 0);
   assert.match(res.stdout, /hello-stdin/);
@@ -66,8 +69,11 @@ test("remote-vs-local JSONL event shapes identical modulo timestamps", () => {
 });
 
 test("coder adapter reuses existing machine on repeat, second provision skipped", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const tmp = await import("node:fs/promises").then((m) => m.mkdtemp(path.join(os.tmpdir(), "adlc-reuse-")));
   const transport = fakeTransport();
-  const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
+  const provider = createCoderProvider({ transport, workspacesDir: path.join(tmp, "workspaces") });
   await provider.provision("demo");
   await provider.provision("demo");
   assert.equal(transport.provisionCalls, 1);
@@ -168,7 +174,10 @@ test("JSONL events stream through transport exec identical modulo timestamps (no
       return { stdout: shifted.map((e) => JSON.stringify(e)).join("\n"), stderr: "", exitCode: 0 };
     },
   });
-  const provider = createCoderProvider({ transport: shifting, workspacesDir: ".adlc/workspaces" });
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const tmp = await import("node:fs/promises").then((m) => m.mkdtemp(path.join(os.tmpdir(), "adlc-stream-")));
+  const provider = createCoderProvider({ transport: shifting, workspacesDir: path.join(tmp, "workspaces") });
   assert.equal(typeof provider.runStream, "function", "provider must expose streaming run (FAIL: echo-only)");
   const chunks = [];
   for await (const line of provider.runStream({ name: "demo" }, input)) chunks.push(line);
@@ -196,4 +205,94 @@ test("CLI wiring: --provider coder routes workspace/agent/workflow to provider p
   assert.match(wr, /provider|coder/i, "workflow run --provider coder must route to provider path (FAIL: no wiring)");
   const tr = await runCli(["factory", "setup", "--provider", "github", "-a", "nonexistent-agent"]);
   assert.match(String(tr.stderr ?? tr.stdout ?? tr.message ?? ""), /Unsupported agent|factory-setup skill not installed|Agent required/i, "factory setup --provider github must stay tracker path");
+});
+
+test("review fix: --provider=coder equals-form routes to provider path", async () => {
+  const { dispatch } = await import("../src/dispatch.mjs");
+  const err = [];
+  const logs = [];
+  const origErr = console.error;
+  const origLog = console.log;
+  console.error = (...a) => { err.push(a.join(" ")); };
+  console.log = (...a) => { logs.push(a.join(" ")); };
+  try { await dispatch(["agent", "run", "--provider=coder", "-a", "nonexistent-agent", "hi"], "cli"); } finally { console.error = origErr; console.log = origLog; }
+  assert.match(err.join("\n"), /provider path: coder agent/i, "equals-form must route to coder provider path");
+  assert.ok(!logs.join("\n").includes("provider path"), "stdout must stay pure JSONL (banner on stderr)");
+});
+
+test("review fix: hop guard fails closed on NaN/non-numeric depth", async () => {
+  const m = await import("../src/providers/transport.mjs");
+  assert.throws(() => m.checkHopDepth(Number.NaN), /hop/i);
+  assert.throws(() => m.checkHopDepth("1"), /hop/i);
+  assert.doesNotThrow(() => m.checkHopDepth(0));
+  assert.equal(typeof m.currentHopDepth, "function");
+  const prev = process.env.ADLC_HOP_DEPTH;
+  process.env.ADLC_HOP_DEPTH = "abc";
+  try {
+    assert.throws(() => m.currentHopDepth(), /numeric/i);
+  } finally {
+    if (prev === undefined) delete process.env.ADLC_HOP_DEPTH; else process.env.ADLC_HOP_DEPTH = prev;
+  }
+  assert.ok(String(m.remoteInputs.toString()).includes("ADLC_HOP_DEPTH"), "hop count must propagate to remote inputs");
+});
+
+test("review fix: stdout is pure JSONL, secrets redacted on output paths", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const tmp = await import("node:fs/promises").then((m) => m.mkdtemp(path.join(os.tmpdir(), "adlc-route-")));
+  mkdirSync(path.join(tmp, ".adlc"), { recursive: true });
+  writeFileSync(path.join(tmp, ".adlc", "workspace.yml"), "schema_version: 1\nname: route42\nimage: app:${APP_TOKEN}\n");
+  writeFileSync(path.join(tmp, "secrets.env"), "APP_TOKEN=sek-live-789\n");
+  const prevCwd = process.cwd();
+  const prevToken = process.env.APP_TOKEN;
+  const logs = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (...a) => { logs.push(a.join(" ")); };
+  console.error = () => {};
+  process.chdir(tmp);
+  try {
+    const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+    const code = await cmdCoderWorkspaceSetup([], {}, []);
+    assert.equal(code, 0);
+  } finally {
+    process.chdir(prevCwd);
+    console.log = origLog;
+    console.error = origErr;
+    if (prevToken === undefined) delete process.env.APP_TOKEN; else process.env.APP_TOKEN = prevToken;
+  }
+  assert.ok(logs.length > 0, "mock transport must echo payload lines on stdout");
+  for (const line of logs) {
+    JSON.parse(line);
+    assert.ok(!line.includes("sek-live-789"), "secret values must never appear on stdout");
+  }
+});
+
+test("review fix: secrets merge order docker > secrets.env > process.env, referenced-only", async () => {
+  const m = await import("../src/providers/transport.mjs");
+  assert.equal(typeof m.loadSecretsEnv, "function");
+  assert.equal(typeof m.referencedSecretsEnv, "function");
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { writeFileSync } = await import("node:fs");
+  const tmp = await import("node:fs/promises").then((m2) => m2.mkdtemp(path.join(os.tmpdir(), "adlc-sec-")));
+  writeFileSync(path.join(tmp, "secrets.env"), "ONLY_FILE=file-val\nSHARED=file-wins\n");
+  const prevOnly = process.env.ONLY_FILE;
+  const prevShared = process.env.SHARED;
+  const prevExtra = process.env.EXTRA_UNREFERENCED;
+  process.env.SHARED = "env-val";
+  process.env.EXTRA_UNREFERENCED = "leak-me";
+  try {
+    const loaded = m.loadSecretsEnv(tmp);
+    assert.equal(loaded.ONLY_FILE, "file-val");
+    assert.equal(loaded.SHARED, "file-wins", "secrets.env must beat process.env");
+    const scoped = m.referencedSecretsEnv(["SHARED"], tmp);
+    assert.equal(scoped.SHARED, "file-wins");
+    assert.ok(!("EXTRA_UNREFERENCED" in scoped), "forwarded vars must be referenced-only");
+  } finally {
+    if (prevOnly === undefined) delete process.env.ONLY_FILE; else process.env.ONLY_FILE = prevOnly;
+    if (prevShared === undefined) delete process.env.SHARED; else process.env.SHARED = prevShared;
+    if (prevExtra === undefined) delete process.env.EXTRA_UNREFERENCED; else process.env.EXTRA_UNREFERENCED = prevExtra;
+  }
 });

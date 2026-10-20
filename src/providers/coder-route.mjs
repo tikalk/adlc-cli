@@ -5,7 +5,12 @@ import {
   validateWorkspaceConfig,
   expandWorkspaceVars,
   collectReferencedVars,
-  checkHopDepth,
+  hopGuard,
+  currentHopDepth,
+  redactSecrets,
+  loadSecretsEnv,
+  scrubSecretValues,
+  referencedSecretsEnv,
 } from "./transport.mjs";
 import { createCoderProvider } from "./coder.mjs";
 
@@ -28,7 +33,7 @@ export function resolveCoderTransport() {
 function createMockTransport() {
   return {
     async provision(name) {
-      return { name, host: `mock-${name}`, handlePath: `.adlc/workspaces/${name}.json` };
+      return { name, host: `mock-${name}` };
     },
     async exec(handle, input) {
       return { stdout: String(input ?? ""), stderr: "", exitCode: 0 };
@@ -36,9 +41,13 @@ function createMockTransport() {
   };
 }
 
-function hopGuard() {
-  const depth = Number(process.env.ADLC_HOP_DEPTH ?? 0) + 1;
-  checkHopDepth(depth);
+function redactLogLine(line, secrets = {}) {
+  if (typeof line !== "string") return redactSecrets(scrubSecretValues(line, secrets));
+  try {
+    return JSON.stringify(redactSecrets(scrubSecretValues(JSON.parse(line), secrets)));
+  } catch {
+    return scrubSecretValues(line, secrets);
+  }
 }
 
 function liveRequired(argv = []) {
@@ -69,7 +78,7 @@ async function loadWorkspaceSource(source, projectRoot) {
 }
 
 export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
-  console.log("provider path: coder workspace");
+  console.error("provider path: coder workspace");
   try {
     hopGuard();
   } catch (err) {
@@ -113,7 +122,7 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   }
   let expanded;
   try {
-    expanded = expandWorkspaceVars(wsfile, process.env);
+    expanded = expandWorkspaceVars(wsfile, { ...loadSecretsEnv(projectRoot), ...process.env });
   } catch (err) {
     console.error(`Error: ${err.message}`);
     return 1;
@@ -130,11 +139,15 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     console.error(`Error: coder provision failed: ${err.message}`);
     return 1;
   }
-  const vars = {};
-  for (const k of referenced) if (process.env[k] !== undefined) vars[k] = process.env[k];
-  const payload = JSON.stringify({ op: "workspace.setup", config: expanded, vars });
+  const vars = referencedSecretsEnv(referenced, projectRoot);
+  const payload = JSON.stringify({
+    op: "workspace.setup",
+    config: expanded,
+    vars: redactSecrets(vars),
+    hop: currentHopDepth() + 1,
+  });
   try {
-    for await (const line of provider.runStream(handle, payload)) console.log(line);
+    for await (const line of provider.runStream(handle, payload)) console.log(redactLogLine(line, vars));
   } catch (err) {
     console.error(`Error: remote setup failed: ${err.message}`);
     return 1;
@@ -143,7 +156,7 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
 }
 
 export async function cmdCoderAgentRun(runArgs, argv = []) {
-  console.log("provider path: coder agent");
+  console.error("provider path: coder agent");
   try {
     hopGuard();
   } catch (err) {
@@ -172,9 +185,15 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     if (runArgs[i].startsWith("--provider=")) continue;
     cleanArgs.push(runArgs[i]);
   }
-  const payload = JSON.stringify({ op: "agent.run", args: cleanArgs });
+  const agentVars = redactSecrets(referencedSecretsEnv(collectReferencedVars(cleanArgs)));
+  const payload = JSON.stringify({
+    op: "agent.run",
+    args: cleanArgs,
+    vars: agentVars,
+    hop: currentHopDepth() + 1,
+  });
   try {
-    for await (const line of provider.runStream(handle, payload)) console.log(line);
+    for await (const line of provider.runStream(handle, payload)) console.log(redactLogLine(line, agentVars));
   } catch (err) {
     console.error(`Error: remote agent run failed: ${err.message}`);
     return 1;
@@ -183,7 +202,7 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
 }
 
 export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
-  console.log("provider path: coder workflow");
+  console.error("provider path: coder workflow");
   try {
     hopGuard();
   } catch (err) {
@@ -220,9 +239,16 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     console.error(`Error: coder provision failed: ${err.message}`);
     return 1;
   }
-  const payload = JSON.stringify({ op: "workflow.run", source, inputs });
+  const wfVars = redactSecrets(referencedSecretsEnv(collectReferencedVars(inputs)));
+  const payload = JSON.stringify({
+    op: "workflow.run",
+    source,
+    inputs: scrubSecretValues(redactSecrets(inputs), wfVars),
+    vars: wfVars,
+    hop: currentHopDepth() + 1,
+  });
   try {
-    for await (const line of provider.runStream(handle, payload)) console.log(line);
+    for await (const line of provider.runStream(handle, payload)) console.log(redactLogLine(line, wfVars));
   } catch (err) {
     console.error(`Error: remote workflow run failed: ${err.message}`);
     return 1;

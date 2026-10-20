@@ -232,6 +232,8 @@ function parseArgs(argv) {
       flags.skipSkills = true;
     } else if (arg === "--provider") {
       flags.provider = rest[++i];
+    } else if (arg.startsWith("--provider=")) {
+      flags.provider = arg.slice("--provider=".length);
     } else if (arg === "--update-confidence") {
       flags.updateConfidence = true;
     } else if (arg === "--build-to-delete") {
