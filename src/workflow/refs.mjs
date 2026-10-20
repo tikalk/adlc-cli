@@ -3,8 +3,8 @@
 // main history stays untouched. Called at session exit points (pause and
 // terminal states); best-effort: silently skipped outside a git repo.
 
-import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export function pushRunRef(projectRoot, runId, runDir) {
@@ -56,4 +56,109 @@ export function pushRunRef(projectRoot, runId, runDir) {
     console.error(`[workflow] git-refs push skipped: ${err.message}`);
     return false;
   }
+}
+
+// Park and restore (ADR-391-amendment-3 §2–3): a run paused at a gate past
+// its in-pod wait is saved — with the gate's Slack thread handle — to
+// refs/factory-runs/<run_id> on a git remote, so a later pod in another clone
+// can restore runs/<run_id>/ and resume it. Both throw on any failure: unlike
+// the best-effort pushRunRef, a park or restore that silently did nothing
+// would lose the approver's answer or resume the wrong run.
+//
+// pushRunRef hashes the whole runDir, inputs.json included: whatever was
+// passed via --input lands on the remote verbatim. A secret-valued input
+// must never be parked to a broadly-readable remote.
+
+const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function parkRun(projectRoot, runId, { handleFile, remote = "origin" } = {}) {
+  const runDir = runDirFor(projectRoot, runId);
+  checkRemote(remote);
+  const statePath = join(runDir, "state.json");
+  if (!existsSync(statePath)) throw new Error(`park: run ${runId} not found at ${runDir}`);
+  const status = JSON.parse(readFileSync(statePath, "utf-8")).status;
+  if (status !== "paused") throw new Error(`park: run ${runId} is not paused (status: ${status})`);
+  const handle = JSON.parse(readFileSync(handleFile, "utf-8"));
+  if (handle === null || typeof handle !== "object" || Array.isArray(handle)) {
+    throw new Error("park: the handle file must hold a JSON object");
+  }
+  writeFileSync(join(runDir, "gate-handle.json"), JSON.stringify(handle, null, 2) + "\n", "utf-8");
+  if (!pushRunRef(projectRoot, runId, runDir)) throw new Error(`park: could not record refs/factory-runs/${runId}`);
+  const ref = `refs/factory-runs/${runId}`;
+  // The run ref is rebuilt from scratch at every save, so it never descends
+  // from the previous one: force-update it on the remote.
+  gitOrThrow(projectRoot, ["push", "--quiet", remote, `+${ref}:${ref}`], "park: push");
+  return ref;
+}
+
+export function restoreRun(projectRoot, runId, { remote = "origin", issueRef = null } = {}) {
+  const runDir = runDirFor(projectRoot, runId);
+  checkRemote(remote);
+  // Exclusive claim, not existsSync-then-write: two pods restoring the same
+  // run_id concurrently (the scenario this feature exists for) would both
+  // pass an existsSync check before either had written anything, then
+  // interleave writes into the same directory. mkdirSync without recursive
+  // is an atomic directory-creation at the filesystem level (POSIX mkdir(2)
+  // guarantees exactly one of two concurrent callers gets ENOENT's sibling
+  // EEXIST); only the winner proceeds, the loser fails closed immediately
+  // without touching anything the winner wrote.
+  mkdirSync(dirname(runDir), { recursive: true });
+  try {
+    mkdirSync(runDir);
+  } catch (err) {
+    if (err.code === "EEXIST") throw new Error(`restore: ${runDir} already exists; refusing to overwrite it`);
+    throw err;
+  }
+  try {
+    const ref = `refs/factory-runs/${runId}`;
+    gitOrThrow(projectRoot, ["fetch", "--quiet", remote, `+${ref}:${ref}`], "restore: fetch");
+    if (issueRef !== null && issueRef !== undefined && issueRef !== "") {
+      const inputs = JSON.parse(gitOrThrow(projectRoot, ["show", `${ref}:inputs.json`], "restore: read inputs").toString("utf-8"));
+      const recorded = inputs?.inputs?.issue_ref ?? null;
+      if (recorded !== issueRef) {
+        throw new Error(`restore: run ${runId} belongs to issue_ref ${JSON.stringify(recorded)}, not ${JSON.stringify(issueRef)}`);
+      }
+    }
+    const listing = gitOrThrow(projectRoot, ["ls-tree", "-r", "-z", ref], "restore: list").toString("utf-8");
+    for (const entry of listing.split("\0")) {
+      if (!entry) continue;
+      const tab = entry.indexOf("\t");
+      const [, type, sha] = entry.slice(0, tab).split(" ");
+      const path = entry.slice(tab + 1);
+      if (type !== "blob" || path.split("/").includes("..")) continue;
+      const dest = join(runDir, path);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, gitOrThrow(projectRoot, ["cat-file", "blob", sha], "restore: read"));
+    }
+  } catch (err) {
+    rmSync(runDir, { recursive: true, force: true });
+    throw err;
+  }
+  return runDir;
+}
+
+function runDirFor(projectRoot, runId) {
+  if (typeof runId !== "string" || !RUN_ID_RE.test(runId)) throw new Error(`invalid run id ${JSON.stringify(runId)}`);
+  return join(projectRoot, ".adlc", "workflows", "runs", runId);
+}
+
+// A remote is a name or URL, never an option: `git fetch --upload-pack=<cmd>`
+// would run <cmd>. This does not defend against an `ext::<command>` remote
+// (git's remote-helper transport runs <command> directly) -- `remote` is
+// operator-supplied here (a local CLI flag), never attacker data from a
+// parked ref, so that trust assumption is accepted, not defended against.
+function checkRemote(remote) {
+  if (typeof remote !== "string" || remote === "" || remote.startsWith("-") || /[\0\n]/.test(remote)) {
+    throw new Error(`invalid remote ${JSON.stringify(remote)}`);
+  }
+}
+
+// stdout (Buffer) of a successful git call; throws with git's stderr otherwise.
+function gitOrThrow(cwd, args, what) {
+  const r = spawnSync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
+  if (r.error || r.status !== 0) {
+    const detail = r.error ? r.error.message : String(r.stderr ?? "").trim();
+    throw new Error(`${what} failed: ${detail}`);
+  }
+  return r.stdout;
 }

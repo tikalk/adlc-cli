@@ -953,6 +953,11 @@ export class WorkflowEngine {
                 since_sha: result.output.since_sha,
                 no_changes: result.output.no_changes,
                 truncated_count: result.output.truncated_count,
+                // The head the shown list was built at. A reply resumes only
+                // while HEAD still equals it; if HEAD moved, the gate halts
+                // instead of silently re-pausing with a fresh view
+                // (ADR-391-amendment-3 §4).
+                head_sha: result.output.head_sha,
                 ...("mr_link" in result.output ? { mr_link: result.output.mr_link } : {}),
               }
             : {};

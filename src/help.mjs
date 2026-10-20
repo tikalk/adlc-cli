@@ -23,6 +23,8 @@ COMMANDS:
   workspace status                 Audit workspace health (branch, dirty, unpushed, drift)
   workflow run <src> --input k=v   Execute a workflow (gates pause+resume; --format json streams events)
   workflow resume <run_id>         Resume a paused/failed run (optionally with --input)
+  workflow park <run_id>           Save a gate-paused run + thread handle to the remote run ref
+  workflow restore <run_id>        Restore a parked run from the remote run ref
   workflow status [run_id]         List runs / show one run's step states
   workflow validate <src>          Validate a workflow definition (--headless checks gate verdicts)
   workflow state …                 LLM-executor helpers: start/advance/pause/fail/show
@@ -220,6 +222,11 @@ COMMANDS:
   run <source>           Execute a workflow (YAML path, installed ID, or built-in
                          like 'factory' — the outer loop)
   resume <run_id>        Resume a paused/failed run (gates re-prompt)
+  park <run_id>          Save a gate-paused run (+ --handle-file <json>) to
+                         refs/factory-runs/<run_id> on --remote (default origin)
+  restore <run_id>       Fetch refs/factory-runs/<run_id> from --remote into
+                         .adlc/workflows/runs/<run_id>/ (refuses an existing
+                         run dir or a different --issue-ref)
   status [run_id]        List all runs / show one run's step states
   validate <source>      Validate a workflow definition
   state <command>        LLM-executor helpers (see below)

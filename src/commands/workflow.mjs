@@ -20,6 +20,7 @@ import {
   stateFail,
   stateShow,
 } from "../workflow/state.mjs";
+import { parkRun, restoreRun } from "../workflow/refs.mjs";
 import { printWorkflowHelp } from "../help.mjs";
 import { classifyWorkflowStatus } from "../exit-codes.mjs";
 
@@ -39,6 +40,10 @@ export async function cmdWorkflow(args, flags, rawArgv) {
       return cmdWorkflowValidate(rest, rawArgv);
     case "state":
       return cmdWorkflowState(rest, rawArgv);
+    case "park":
+      return cmdWorkflowPark(rest, rawArgv);
+    case "restore":
+      return cmdWorkflowRestore(rest, rawArgv);
     case "help":
       printWorkflowHelp();
       return 0;
@@ -230,6 +235,57 @@ async function cmdWorkflowResume(rest, rawArgv) {
   } finally {
     removeHandlers();
   }
+}
+
+// ── park / restore (ADR-391-amendment-3) ─────────────────────────────────
+
+// Save a gate-paused run, with the gate's thread handle, to the remote run
+// ref so another pod can restore and resume it.
+async function cmdWorkflowPark(rest, rawArgv) {
+  const runId = firstPositional(rest);
+  const handleFile = extractFlagValue(rawArgv, "handle-file");
+  if (!runId || !handleFile) {
+    console.error("Usage: adlc-cli workflow park <run_id> --handle-file <path> [--remote <name>]");
+    return 1;
+  }
+  try {
+    const ref = parkRun(process.cwd(), runId, { handleFile, remote: extractFlagValue(rawArgv, "remote") ?? "origin" });
+    console.log(`parked ${runId} → ${ref}`);
+    return 0;
+  } catch (exc) {
+    console.error(`Error: ${exc.message}`);
+    return 1;
+  }
+}
+
+// Materialize a parked run from the remote run ref into runs/<run_id>/.
+async function cmdWorkflowRestore(rest, rawArgv) {
+  const runId = firstPositional(rest);
+  if (!runId) {
+    console.error("Usage: adlc-cli workflow restore <run_id> [--remote <name>] [--issue-ref <ref>]");
+    return 1;
+  }
+  try {
+    const dir = restoreRun(process.cwd(), runId, {
+      remote: extractFlagValue(rawArgv, "remote") ?? "origin",
+      issueRef: extractFlagValue(rawArgv, "issue-ref"),
+    });
+    console.log(`restored ${runId} → ${dir}`);
+    return 0;
+  } catch (exc) {
+    console.error(`Error: ${exc.message}`);
+    return 1;
+  }
+}
+
+// The first argument that is neither a flag nor a flag's value.
+function firstPositional(rest) {
+  const valued = new Set(["--handle-file", "--remote", "--issue-ref"]);
+  for (let i = 0; i < rest.length; i++) {
+    if (valued.has(rest[i])) { i++; continue; }
+    if (!rest[i].startsWith("-")) return rest[i];
+  }
+  return null;
 }
 
 // ── status ───────────────────────────────────────────────────────────────
