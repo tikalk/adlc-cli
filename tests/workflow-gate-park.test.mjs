@@ -20,7 +20,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -140,6 +140,21 @@ async function resume(dir, runId, inputs) {
   engine.onEvent = (e) => events.push(e);
   const state = await engine.resume(runId, inputs, STEP_REGISTRY);
   return { events, state };
+}
+
+// Pure-JS recursive search, not a shelled-out `find` -- Windows' FIND.EXE is
+// a text-search tool, not a filesystem one, and rejects -name/path syntax.
+function findFileRecursive(root, name) {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const abs = join(root, entry.name);
+    if (entry.isDirectory()) {
+      const found = findFileRecursive(abs, name);
+      if (found) return found;
+    } else if (entry.name === name) {
+      return abs;
+    }
+  }
+  return null;
 }
 
 function runDir(dir, runId) {
@@ -364,8 +379,7 @@ test("P5: restoreRun ignores a path-traversal entry in a malicious parked ref", 
 
   const dir = restoreRun(b, "p5-traversal", { remote: "origin" });
   assert.equal(readFileSync(join(dir, "legit.txt"), "utf-8"), "legit content\n", "the legit entry still restores");
-  const found = execFileSync("find", [b, "-name", "outside-evil.txt"], { encoding: "utf-8" }).trim();
-  assert.equal(found, "", "the traversal entry must not be written anywhere under the clone");
+  assert.equal(findFileRecursive(b, "outside-evil.txt"), null, "the traversal entry must not be written anywhere under the clone");
 });
 
 test("P5: restoreRun refuses a mismatched issue ref and leaves no run dir", async () => {
