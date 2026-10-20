@@ -189,6 +189,15 @@ test("P2: a modified record under context.records fails the gate", async () => {
   assert.match(state.error, /uncommitted drafts: .*\.adlc\/drafts\/pdr\/PDR-001\.md/);
 });
 
+test("P2: a staged (git add, uncommitted) record under context.records fails the gate", async () => {
+  const { dir } = repo();
+  write(dir, ".adlc/drafts/pdr/PDR-003.md", pdr("Staged only"));
+  git(dir, "add", ".adlc/drafts/pdr/PDR-003.md");
+  const { state } = await run(dir, GATE + FIN, "p2-staged");
+  assert.equal(state.status, RunStatus.FAILED);
+  assert.match(state.error, /uncommitted drafts: .*\.adlc\/drafts\/pdr\/PDR-003\.md/);
+});
+
 test("P2: uncommitted files outside context.records do not block the gate", async () => {
   const { dir } = repo();
   write(dir, "src/scratch.js", "wip\n");

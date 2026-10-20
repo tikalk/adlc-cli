@@ -64,6 +64,10 @@ export function pushRunRef(projectRoot, runId, runDir) {
 // can restore runs/<run_id>/ and resume it. Both throw on any failure: unlike
 // the best-effort pushRunRef, a park or restore that silently did nothing
 // would lose the approver's answer or resume the wrong run.
+//
+// pushRunRef hashes the whole runDir, inputs.json included: whatever was
+// passed via --input lands on the remote verbatim. A secret-valued input
+// must never be parked to a broadly-readable remote.
 
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -139,7 +143,10 @@ function runDirFor(projectRoot, runId) {
 }
 
 // A remote is a name or URL, never an option: `git fetch --upload-pack=<cmd>`
-// would run <cmd>.
+// would run <cmd>. This does not defend against an `ext::<command>` remote
+// (git's remote-helper transport runs <command> directly) -- `remote` is
+// operator-supplied here (a local CLI flag), never attacker data from a
+// parked ref, so that trust assumption is accepted, not defended against.
 function checkRemote(remote) {
   if (typeof remote !== "string" || remote === "" || remote.startsWith("-") || /[\0\n]/.test(remote)) {
     throw new Error(`invalid remote ${JSON.stringify(remote)}`);

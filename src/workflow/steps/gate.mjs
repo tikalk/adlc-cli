@@ -169,9 +169,10 @@ export class GateStep extends StepBase {
 
     // A context gate's headless approval covers exactly the manifest shown at
     // its pause. With no shown manifest (verdict preset or shared with an
-    // earlier gate, or the pause had no list) or a stale one (HEAD moved since
-    // the pause), clear the verdict and pause with the fresh manifest so the
-    // approver decides on what is actually there (ADR-422: gates halt).
+    // earlier gate, or the pause had no list), clear the verdict and pause
+    // with the fresh manifest so the approver decides on what is actually
+    // there (ADR-422: gates halt). A moved head is handled separately below
+    // (ADR-391-amendment-3 §4): it halts rather than landing here.
     // Exception (S1, T2): the pause said "Decision list unavailable" for a
     // permanent, structural reason (not-a-git-repo / no-target-branch) and
     // the fresh build reports the identical kind — there is nothing more to

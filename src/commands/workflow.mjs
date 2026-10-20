@@ -242,7 +242,7 @@ async function cmdWorkflowResume(rest, rawArgv) {
 // Save a gate-paused run, with the gate's thread handle, to the remote run
 // ref so another pod can restore and resume it.
 async function cmdWorkflowPark(rest, rawArgv) {
-  const runId = firstPositional(rest, rawArgv);
+  const runId = firstPositional(rest);
   const handleFile = extractFlagValue(rawArgv, "handle-file");
   if (!runId || !handleFile) {
     console.error("Usage: adlc-cli workflow park <run_id> --handle-file <path> [--remote <name>]");
@@ -260,7 +260,7 @@ async function cmdWorkflowPark(rest, rawArgv) {
 
 // Materialize a parked run from the remote run ref into runs/<run_id>/.
 async function cmdWorkflowRestore(rest, rawArgv) {
-  const runId = firstPositional(rest, rawArgv);
+  const runId = firstPositional(rest);
   if (!runId) {
     console.error("Usage: adlc-cli workflow restore <run_id> [--remote <name>] [--issue-ref <ref>]");
     return 1;
@@ -279,7 +279,7 @@ async function cmdWorkflowRestore(rest, rawArgv) {
 }
 
 // The first argument that is neither a flag nor a flag's value.
-function firstPositional(rest, rawArgv) {
+function firstPositional(rest) {
   const valued = new Set(["--handle-file", "--remote", "--issue-ref"]);
   for (let i = 0; i < rest.length; i++) {
     if (valued.has(rest[i])) { i++; continue; }
