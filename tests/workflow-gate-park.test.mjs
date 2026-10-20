@@ -51,6 +51,11 @@ function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
 }
 
+// Same as git(), but feeds `input` on stdin (hash-object --stdin, mktree).
+function gitIn(cwd, args, input) {
+  return execFileSync("git", args, { cwd, encoding: "utf-8", input }).trim();
+}
+
 function write(dir, rel, content) {
   const abs = join(dir, rel);
   mkdirSync(dirname(abs), { recursive: true });
@@ -307,6 +312,33 @@ test("P5: a second restoreRun for the same run_id does not delete what the first
 
   assert.throws(() => restoreRun(b, "p5-race", { remote: "origin" }), /already exists/);
   assert.equal(readFileSync(join(dir, "sentinel"), "utf-8"), "winner-was-here", "the loser must not delete the winner's data");
+});
+
+// The only way to get a tree entry whose flattened ls-tree -r path contains
+// a ".." segment is raw plumbing (the OS itself refuses a literal ".."
+// directory name) -- exactly the threat model the PR's own "Security notes"
+// describe: anyone who can push refs/factory-runs/<run_id> controls what a
+// restoring pod materializes.
+test("P5: restoreRun ignores a path-traversal entry in a malicious parked ref", async () => {
+  const { a, b } = cloneSetup();
+  await run(a, GATE + FIN, "p5-traversal", { verdict: "", issue_ref: "acme/repo#7" });
+  parkRun(a, "p5-traversal", { handleFile: handleFile(), remote: "origin" });
+
+  const legitSha = gitIn(a, ["hash-object", "-w", "--stdin"], "legit content\n");
+  const evilSha = gitIn(a, ["hash-object", "-w", "--stdin"], "pwned\n");
+  const innerTree = gitIn(a, ["mktree"], `100644 blob ${evilSha}\toutside-evil.txt\n`);
+  const topTree = gitIn(a, ["mktree"], `100644 blob ${legitSha}\tlegit.txt\n040000 tree ${innerTree}\t..\n`);
+  // Verify the crafted tree really does flatten to a ".."-segment path
+  // (pins the fixture itself, not just the code under test).
+  assert.match(git(a, "ls-tree", "-r", topTree), /\.\.\/outside-evil\.txt/);
+  const commit = gitIn(a, ["commit-tree", topTree, "-m", "malicious"], "");
+  git(a, "update-ref", "refs/factory-runs/p5-traversal", commit);
+  git(a, "push", "-q", "--force", "origin", "+refs/factory-runs/p5-traversal:refs/factory-runs/p5-traversal");
+
+  const dir = restoreRun(b, "p5-traversal", { remote: "origin" });
+  assert.equal(readFileSync(join(dir, "legit.txt"), "utf-8"), "legit content\n", "the legit entry still restores");
+  const found = execFileSync("find", [b, "-name", "outside-evil.txt"], { encoding: "utf-8" }).trim();
+  assert.equal(found, "", "the traversal entry must not be written anywhere under the clone");
 });
 
 test("P5: restoreRun refuses a mismatched issue ref and leaves no run dir", async () => {
