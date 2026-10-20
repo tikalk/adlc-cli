@@ -46,7 +46,7 @@ export function createCoderProvider({ transport, workspacesDir = ".adlc/workspac
     const full =
       handle && typeof handle === "object" ? { ...handle, name: handle.name ?? name } : { name };
     const persistedPath = join(workspacesDir, `${name}.json`);
-    full.handlePath = persistedPath;
+    if (!full.handlePath) full.handlePath = persistedPath;
     writeHandleFile(workspacesDir, name, full);
     handles.set(name, full);
     return full;

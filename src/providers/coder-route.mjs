@@ -11,6 +11,7 @@ import {
   loadSecretsEnv,
   scrubSecretValues,
   referencedSecretsEnv,
+  remoteInputs,
 } from "./transport.mjs";
 import { createCoderProvider } from "./coder.mjs";
 
@@ -122,7 +123,7 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   }
   let expanded;
   try {
-    expanded = expandWorkspaceVars(wsfile, { ...loadSecretsEnv(projectRoot), ...process.env });
+    expanded = expandWorkspaceVars(wsfile, { ...process.env, ...loadSecretsEnv(projectRoot) });
   } catch (err) {
     console.error(`Error: ${err.message}`);
     return 1;
@@ -144,6 +145,7 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     op: "workspace.setup",
     config: expanded,
     vars: redactSecrets(vars),
+    env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
   try {
@@ -185,13 +187,15 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     if (runArgs[i].startsWith("--provider=")) continue;
     cleanArgs.push(runArgs[i]);
   }
-  const agentVars = redactSecrets(referencedSecretsEnv(collectReferencedVars(cleanArgs)));
+  const rawAgentVars = referencedSecretsEnv(collectReferencedVars(cleanArgs));
   const payload = JSON.stringify({
     op: "agent.run",
     args: cleanArgs,
-    vars: agentVars,
+    vars: redactSecrets(rawAgentVars),
+    env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
+  const agentVars = rawAgentVars;
   try {
     for await (const line of provider.runStream(handle, payload)) console.log(redactLogLine(line, agentVars));
   } catch (err) {
@@ -239,14 +243,16 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     console.error(`Error: coder provision failed: ${err.message}`);
     return 1;
   }
-  const wfVars = redactSecrets(referencedSecretsEnv(collectReferencedVars(inputs)));
+  const rawWfVars = referencedSecretsEnv(collectReferencedVars(inputs));
   const payload = JSON.stringify({
     op: "workflow.run",
     source,
-    inputs: scrubSecretValues(redactSecrets(inputs), wfVars),
-    vars: wfVars,
+    inputs: scrubSecretValues(redactSecrets(inputs), rawWfVars),
+    vars: redactSecrets(rawWfVars),
+    env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
+  const wfVars = rawWfVars;
   try {
     for await (const line of provider.runStream(handle, payload)) console.log(redactLogLine(line, wfVars));
   } catch (err) {

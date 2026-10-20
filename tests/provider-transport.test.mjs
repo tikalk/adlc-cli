@@ -296,3 +296,39 @@ test("review fix: secrets merge order docker > secrets.env > process.env, refere
     if (prevExtra === undefined) delete process.env.EXTRA_UNREFERENCED; else process.env.EXTRA_UNREFERENCED = prevExtra;
   }
 });
+
+test("iter-2: raw secret values never leak even when key is non-secret", async () => {
+  const m = await import("../src/providers/transport.mjs");
+  const scrubbed = m.scrubSecretValues("echo sek-live-789 done", { APP_TOKEN: "sek-live-789" });
+  assert.ok(!scrubbed.includes("sek-live-789"), "scrub must use raw values, not [REDACTED]");
+  assert.match(scrubbed, /\[REDACTED\]/);
+  const noOp = m.scrubSecretValues("echo sek-live-789 done", { APP_TOKEN: "[REDACTED]" });
+  assert.ok(noOp.includes("sek-live-789"), "scrubbing [REDACTED] literal proves the old bug");
+});
+
+test("iter-2: coder-route payloads carry env.ADLC_HOP_DEPTH for nested hopGuard", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../src/providers/coder-route.mjs", import.meta.url), "utf-8");
+  assert.ok(/remoteInputs\(\)/.test(src), "payloads must wire remoteInputs()");
+  assert.ok(/env:\s*remoteInputs\(\)/.test(src), "remote hop env must be set on payload");
+});
+
+test("iter-2: expansion merge order is process.env < secrets.env (docker wins)", async () => {
+  const m = await import("../src/providers/transport.mjs");
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../src/providers/coder-route.mjs", import.meta.url), "utf-8");
+  assert.ok(/\{\s*\.\.\.process\.env,\s*\.\.\.loadSecretsEnv/.test(src),
+    "coder-route must use {...process.env, ...loadSecretsEnv} to match transport");
+  const out = m.expandWorkspaceVars({ v: "${SHARED}" }, { ...{ SHARED: "env-val" }, ...{ SHARED: "file-wins" } });
+  assert.equal(out.v, "file-wins");
+});
+
+test("iter-2: coder.mjs preserves transport-provided handlePath", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const tmp = await import("node:fs/promises").then((mk) => mk.mkdtemp(path.join(os.tmpdir(), "adlc-handle-")));
+  const t = { async provision(n) { return { name: n, host: "h", handlePath: "/custom/path.json" }; } };
+  const p = createCoderProvider({ transport: t, workspacesDir: path.join(tmp, "w") });
+  const h = await p.provision("demo");
+  assert.equal(h.handlePath, "/custom/path.json", "transport-provided handlePath must win");
+});
