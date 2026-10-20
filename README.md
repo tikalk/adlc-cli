@@ -147,6 +147,27 @@ Known constraint (inherited upstream): a gate nested inside
 step and its nested body on resume. Keep gates at the top level, or bind a
 `verdict_input` on the gate.
 
+**Agent-step run context and output (ADR-444).** `command` and `prompt` steps
+run the agent with these environment variables:
+
+- `ADLC_RUN_ID` and `ADLC_STEP_ID`.
+- `ADLC_STEP_OUTPUT`, the path `.adlc/workflows/runs/<run_id>/steps/<step_id>.output.json`. Any leftover file there is deleted before the step starts.
+- `ADLC_ISSUE_REF`, only when the run has an `issue_ref` input.
+
+A step can return a few named strings by writing a JSON object to
+`ADLC_STEP_OUTPUT`. The rules:
+
+- At most 16 fields.
+- Keys must match `^[a-z][a-z0-9_]{0,39}$`.
+- Values must be strings of at most 2048 characters.
+- No reserved keys (`stdout`, `exit_code`, …).
+
+After a successful exit, these fields are merged into the step output, so a
+later step or gate can read them, for example
+`context.link: "{{ steps.intent-product.output.mr_url }}"`. If any field breaks
+a rule, the file is ignored with a log line. Stdout is never parsed for
+results.
+
 ### Top-level
 
 | Command | Description |

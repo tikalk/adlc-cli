@@ -460,9 +460,11 @@ test("S5: builtin factory declares optional input mr_url and gate-completion con
   assert.notEqual(inputs.mr_url.required, true);
   const completion = def.steps.find((s) => s.id === "gate-completion");
   assert.equal(completion.context.link, "{{ inputs.mr_url }}");
-  for (const id of ["gate-product", "gate-architecture"]) {
+  // Superseded 2026-10-20 (ADR-444, ADR-431-amendment): the intent gates
+  // link the intent step's draft MR from its structured step output.
+  for (const [id, step] of [["gate-product", "intent-product"], ["gate-architecture", "intent-architecture"]]) {
     const g = def.steps.find((s) => s.id === id);
-    assert.ok(!("link" in g.context), `${id} has no link`);
+    assert.equal(g.context.link, `{{ steps.${step}.output.mr_url }}`, `${id} links ${step}'s mr_url`);
   }
   assert.deepEqual(validateWorkflow(def, STEP_REGISTRY), []);
   assert.deepEqual(headlessGateErrors(def), []);

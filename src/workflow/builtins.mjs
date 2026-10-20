@@ -28,6 +28,8 @@ steps:
     context:
       records: [".adlc/drafts/pdr/*.md"]
       since: last_approved
+      # The intent step's draft MR (ADR-444 step output, ADR-431-amendment).
+      link: "{{ steps.intent-product.output.mr_url }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
@@ -40,6 +42,7 @@ steps:
     context:
       records: [".adlc/drafts/adr/*.md"]
       since: last_approved
+      link: "{{ steps.intent-architecture.output.mr_url }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
