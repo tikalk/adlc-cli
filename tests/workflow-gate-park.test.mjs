@@ -236,6 +236,24 @@ test("P3: a verdict preset before any pause still re-pauses (unchanged)", async 
   assert.equal(state.status, RunStatus.PAUSED);
 });
 
+// git failure is transient, unlike a genuinely moved head: fall through and
+// re-pause, fail-closed, rather than halting (gate.mjs: headNow === null
+// skips the moved-head-halt check entirely). Run state itself lives outside
+// .git (gitignored per repo()'s .gitignore), so destroying .git only takes
+// out git -- not the paused run's own files.
+test("P3: HEAD unknown at resume (git destroyed) → re-pause, fail-closed", async () => {
+  const { dir } = repo();
+  const { state } = await run(dir, GATE + FIN, "p3-git-gone");
+  assert.equal(state.status, RunStatus.PAUSED);
+  rmSync(join(dir, ".git"), { recursive: true, force: true });
+  const { state: after } = await resume(dir, "p3-git-gone", { verdict: "approve" });
+  assert.equal(after.status, RunStatus.PAUSED, "HEAD unknown must not be approved blind");
+  const gate = persisted(dir, "p3-git-gone").step_results.review;
+  assert.equal(gate.status, StepStatus.PAUSED);
+  assert.equal(gate.output.approved_sha, undefined);
+  assert.equal(after.inputs.verdict, "", "the stale verdict is cleared, not silently reused on a later resume");
+});
+
 // ── P4/P5: park to a remote, restore in another clone ─────────────────────
 
 // origin (bare) ← a: the run pauses and parks; b: a fresh clone restores.
