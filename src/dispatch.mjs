@@ -62,19 +62,33 @@ async function runNewTree({ command, args, flags }, argv) {
   }
   if (flags?.provider === "coder") {
     const { cmdCoderWorkspaceSetup, cmdCoderAgentRun, cmdCoderWorkflowRun } = await import("./providers/coder-route.mjs");
+    let routed = false;
     if (command === "workspace" && (args[0] ?? "status") === "setup") {
+      routed = true;
       return cmdCoderWorkspaceSetup(args.slice(1), flags, argv);
     }
     if (command === "agent" && (args[0] ?? "help") === "run") {
+      routed = true;
       const rest = argv.slice(argv.indexOf("run") + 1);
       return cmdCoderAgentRun(rest, argv);
     }
     if (command === "run") {
+      routed = true;
       return cmdCoderAgentRun(argv.slice(1), argv);
     }
     if (command === "workflow" && (args[0] ?? "help") === "run") {
+      routed = true;
       const workflowArgv = argv.slice(argv.indexOf("workflow") + 1);
       return cmdCoderWorkflowRun(args.slice(1), flags, workflowArgv);
+    }
+    if (!routed) {
+      // `--provider coder` on a command with no provider route would silently
+      // run locally — the operator asked for a remote workspace.
+      console.error(
+        `Error: --provider coder is not supported for '${command}` +
+        `${args[0] ? ` ${args[0]}` : ""}' (provider routes: workspace setup, agent run, run, workflow run).`
+      );
+      return 1;
     }
   }
   switch (command) {

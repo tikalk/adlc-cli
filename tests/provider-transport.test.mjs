@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { validateWorkspaceConfig, expandWorkspaceVars, normalizeEvent, checkHopDepth, MAX_HOPS } from "../src/providers/transport.mjs";
 import { createCoderProvider } from "../src/providers/coder.mjs";
@@ -8,6 +8,15 @@ import { createCoderProvider } from "../src/providers/coder.mjs";
 const exec = promisify(execFile);
 const runCli = (args) =>
   exec(process.execPath, ["bin/adlc-cli.mjs", ...args]).catch((e) => e);
+// A child whose stdin is closed immediately (spawnSync + input) — needed for
+// the stdin task form, where an open pipe would block the read.
+const runCliWithClosedStdin = (args) => {
+  const r = spawnSync(process.execPath, ["bin/adlc-cli.mjs", ...args], {
+    input: "",
+    encoding: "utf-8",
+  });
+  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+};
 
 function fakeTransport(overrides = {}) {
   return {
@@ -984,4 +993,56 @@ test("iter-5: the dispatch consumes an --input value (not a positional)", async 
     !`${r.stdout}${r.stderr}`.includes("Workflow not found: FOO=bar"),
     `the --input value must not be taken as the workflow source: ${r.stdout}${r.stderr}`
   );
+});
+
+test("iter-6: the repo's own workspace file is satisfiable by the documented lane command", async () => {
+  // The shipped .adlc/workspace.yml must only reference variables the lane
+  // contract supplies (WORKSPACE_NAME, BRANCH) — otherwise the documented
+  // command fails on arrival.
+  const { readFileSync } = await import("node:fs");
+  const { collectReferencedVars } = await import("../src/providers/transport.mjs");
+  const content = readFileSync(".adlc/workspace.yml", "utf-8");
+  const refs = collectReferencedVars(content);
+  const laneVars = ["WORKSPACE_NAME", "BRANCH"];
+  for (const ref of refs) {
+    assert.ok(
+      laneVars.includes(ref),
+      `the repo's workspace file references ${ref}, which the lane does not supply (lane supplies: ${laneVars.join(", ")})`
+    );
+  }
+});
+
+test("iter-6: the stdin task form is reachable (an empty stdin fails loudly)", async () => {
+  // Run the CLI as a child: reading fd 0 in-process would block on the
+  // test runner's terminal. The child's stdin is closed -> the task is empty.
+  const r = runCliWithClosedStdin([
+    "agent", "run", "--provider", "coder", "--workspace", "stdin-ws", "-",
+  ]);
+  assert.equal(r.code, 1, "an empty stdin must fail, not dispatch an empty task");
+  assert.match(`${r.stdout}${r.stderr}`, /task is required/i);
+});
+
+test("iter-6: a flag value is never dispatched as the task", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderAgentRun } = await import("../src/providers/coder-route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderAgentRun(
+      ["--provider", "coder", "--workspace", "flag-ws", "-a", "opencode"],
+      ["agent", "run", "--provider", "coder", "--workspace", "flag-ws", "-a", "opencode"]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 1, "a taskless run must fail even when a flag value is present");
+  assert.match(cap.errs.join("\n"), /task is required/i);
+  assert.equal(transport.calls.filter((c) => c.op === "exec").length, 0, "nothing may be dispatched");
+});
+
+test("iter-6: --provider coder on a command with no provider route is refused", async () => {
+  const r = await runCli(["agent", "list", "--provider", "coder"]);
+  assert.equal(r.code, 1, "an unrouted provider command must not run locally");
+  assert.match(`${r.stdout}${r.stderr}`, /not supported/i);
 });

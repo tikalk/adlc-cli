@@ -205,7 +205,17 @@ export async function cmdWorkspaceSetup(args, flags) {
       changed = true;
       const gitArgs = ["clone", repo, mod.path];
       if (mod.branch) gitArgs.push("--branch", resolveSecrets(mod.branch));
-      console.log(`│  $ git ${scrubSecretValues(gitArgs.join(" "), secretValues)}`);
+      // The printed plan must never carry a secret — not even a 2-character
+      // one (the value-based scrub only masks needles of 3+ characters).
+      const maskCredentials = (url) => {
+        const carriesSecret = Object.values(secretValues).some(
+          (v) => typeof v === "string" && v !== "" && url.includes(v)
+        );
+        if (!carriesSecret) return url;
+        return url.replace(/(^[a-z+]+:\/\/)[^/@]+@/, `$1[REDACTED]@`);
+      };
+      const printable = maskCredentials(scrubSecretValues(gitArgs.join(" "), secretValues));
+      console.log(`│  $ git ${printable}`);
       if (!dryRun) {
         const result = spawnSync("git", gitArgs, { stdio: "inherit", cwd: projectRoot });
         if (result.status !== 0) {

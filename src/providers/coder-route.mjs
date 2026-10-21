@@ -55,7 +55,11 @@ function redactLogLine(line, secrets = {}) {
 
 // Flags whose value is a separate argument. Their values must never be
 // mistaken for a positional (the workflow source, the agent task).
-const VALUED_FLAGS = ["--provider", "--workspace", "-w", "--input", "-i", "-a", "--agent"];
+const VALUED_FLAGS = [
+  "--provider", "--workspace", "-w", "--input", "-i",
+  "-a", "--agent", "--model", "--format", "--cwd", "--timeout",
+  "--require-approval", "--effort", "--skill", "-s",
+];
 
 function valuedFlagValues(rawArgv = []) {
   const values = new Set();
@@ -136,6 +140,16 @@ function workspaceName(rawArgv = []) {
   return explicitWorkspaceName(rawArgv) ?? "default";
 }
 
+// explicitWorkspaceName() throws on an unusable name — the callers report it
+// as a CLI error, never a stack trace.
+function tryExplicitWorkspaceName(rawArgv = []) {
+  try {
+    return explicitWorkspaceName(rawArgv);
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 // Strip the provider/workspace flags from an argument list.
 function stripProviderArgs(args = []) {
   const out = [];
@@ -168,7 +182,10 @@ function scrubValues(values) {
 //                          handle, otherwise the route would silently create
 //                          a second machine next to the provisioned one.
 async function resolveTargetWorkspace(provider, rawArgv, what) {
-  const explicit = explicitWorkspaceName(rawArgv);
+  const explicit = tryExplicitWorkspaceName(rawArgv);
+  if (typeof explicit === "object" && explicit !== null && "error" in explicit) {
+    return { ok: false, error: `Error: ${explicit.error}` };
+  }
   if (explicit) return { ok: true, name: explicit };
   const implicit = implicitWorkspaceName(process.cwd());
   const name = implicit ?? "default";
@@ -284,7 +301,12 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   const { transport, live } = resolveCoderTransport();
   if (live || !transport) return failLive("workspace setup");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
-  const requested = explicitWorkspaceName(argv ?? []);
+  const requestedRaw = tryExplicitWorkspaceName(argv ?? []);
+  const requested = typeof requestedRaw === "string" ? requestedRaw : null;
+  if (requestedRaw && typeof requestedRaw === "object" && "error" in requestedRaw) {
+    console.error(`Error: ${requestedRaw.error}`);
+    return 1;
+  }
   let name;
   try {
     name = normalizeWorkspaceName(expanded.name ?? wsfile.name ?? "default");
@@ -337,8 +359,15 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
   // The provider/workspace flags are not part of the task: strip them before
   // the task is read, or the provider name is mistaken for the task.
   const cleanArgs = stripProviderArgs(runArgs ?? []);
-  let prompt = cleanArgs.filter((a) => !a.startsWith("-")).pop();
-  if (prompt === "-") {
+  // The task is the first positional that is not the value of a valued flag
+  // (`-a opencode`, `--model x`, …) — otherwise a flag value is dispatched
+  // as the prompt and a taskless run looks successful.
+  const taskValues = valuedFlagValues(runArgs ?? []);
+  const positionals = cleanArgs.filter(
+    (a) => !a.startsWith("-") && !taskValues.has(a)
+  );
+  let prompt = positionals.pop();
+  if (prompt === undefined && cleanArgs.includes("-")) {
     // The documented stdin form: read the task from stdin.
     try {
       prompt = readFileSync(0, "utf-8");
@@ -380,7 +409,7 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
   });
   // The outbound stream is redacted: referenced values, the task text and
   // the workspace name never reach the operator's terminal verbatim.
-  const agentVars = { ...rawAgentVars, ...scrubValues(cleanArgs) };
+  const agentVars = { ...rawAgentVars, ...scrubValues([prompt]) };
   try {
     const { exitCode } = await streamRemote(provider, handle, payload, agentVars);
     if (exitCode !== 0) return exitCode || 1;
