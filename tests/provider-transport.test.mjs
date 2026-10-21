@@ -332,3 +332,63 @@ test("iter-2: coder.mjs preserves transport-provided handlePath", async () => {
   const h = await p.provision("demo");
   assert.equal(h.handlePath, "/custom/path.json", "transport-provided handlePath must win");
 });
+
+test("iter-3: workspace name expands ${VAR} from env (per-mission workspace names)", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-name-"));
+  const wsFile = path.join(tmp, "workspace.yml");
+  await fs.writeFile(
+    wsFile,
+    ["schema_version: 1", "name: ${WORKSPACE_NAME}", "workspace:", "  dirs: []", ""].join("\n")
+  );
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const prev = process.env.WORKSPACE_NAME;
+  process.env.WORKSPACE_NAME = "repo-mission-42";
+  const cwd = process.cwd();
+  process.chdir(tmp);
+  try {
+    const code = await cmdCoderWorkspaceSetup([wsFile], {}, []);
+    assert.equal(code, 0, "workspace setup must succeed");
+  } finally {
+    process.chdir(cwd);
+    if (prev === undefined) delete process.env.WORKSPACE_NAME;
+    else process.env.WORKSPACE_NAME = prev;
+  }
+  const handles = await fs.readdir(path.join(tmp, ".adlc", "workspaces"));
+  assert.ok(
+    handles.includes("repo-mission-42.json"),
+    `expanded name must drive the handle file, got ${JSON.stringify(handles)}`
+  );
+});
+
+test("iter-3: workspace name is sanitized before use as a handle filename", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-name2-"));
+  const wsFile = path.join(tmp, "workspace.yml");
+  await fs.writeFile(
+    wsFile,
+    ["schema_version: 1", "name: ../../etc/passwd", "workspace:", "  dirs: []", ""].join("\n")
+  );
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const cwd = process.cwd();
+  process.chdir(tmp);
+  try {
+    const code = await cmdCoderWorkspaceSetup([wsFile], {}, []);
+    assert.equal(code, 0, "workspace setup must succeed");
+  } finally {
+    process.chdir(cwd);
+  }
+  const handles = await fs.readdir(path.join(tmp, ".adlc", "workspaces"));
+  for (const h of handles) {
+    assert.ok(!h.includes("/") && !h.includes(".."), `unsafe handle filename: ${h}`);
+  }
+  const escaped = await fs
+    .stat(path.join(path.dirname(tmp), "etc", "passwd.json"))
+    .then(() => true)
+    .catch(() => false);
+  assert.equal(escaped, false, "handle file must not escape the workspaces dir");
+});

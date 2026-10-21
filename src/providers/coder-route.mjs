@@ -9,6 +9,7 @@ import {
   currentHopDepth,
   redactSecrets,
   loadSecretsEnv,
+  normalizeWorkspaceName,
   scrubSecretValues,
   referencedSecretsEnv,
   remoteInputs,
@@ -132,7 +133,14 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   const { transport, live } = resolveCoderTransport();
   if (live || !transport) return failLive("workspace setup");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
-  const name = wsfile.name ?? "default";
+  let name;
+  try {
+    name = normalizeWorkspaceName(expanded.name ?? wsfile.name ?? "default");
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
+  expanded.name = name;
   let handle;
   try {
     handle = await provider.provision(name);

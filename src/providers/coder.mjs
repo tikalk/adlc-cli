@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { resumeRun } from "./transport.mjs";
+import { resumeRun, normalizeWorkspaceName } from "./transport.mjs";
 
 export { resumeRun };
 export const resume = resumeRun;
 
+// The name is used as a handle filename — normalize so it can never
+// traverse outside the workspaces directory.
 function handleFilePath(workspacesDir, name) {
-  return join(workspacesDir, `${name}.json`);
+  return join(workspacesDir, `${normalizeWorkspaceName(name)}.json`);
 }
 
 function readHandleFile(workspacesDir, name) {
@@ -45,7 +47,7 @@ export function createCoderProvider({ transport, workspacesDir = ".adlc/workspac
     const handle = await transport.provision(name);
     const full =
       handle && typeof handle === "object" ? { ...handle, name: handle.name ?? name } : { name };
-    const persistedPath = join(workspacesDir, `${name}.json`);
+    const persistedPath = handleFilePath(workspacesDir, name);
     if (!full.handlePath) full.handlePath = persistedPath;
     writeHandleFile(workspacesDir, name, full);
     handles.set(name, full);

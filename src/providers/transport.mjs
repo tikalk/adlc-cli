@@ -3,6 +3,23 @@ import { join } from "node:path";
 
 // Provider transport interface: workspace validation, var expansion, events, hop guard.
 export const MAX_HOPS = 2;
+
+// Workspace names become remote resource names and local handle filenames.
+// Normalize to a safe charset so a name can never escape the workspaces dir
+// and always satisfies provider naming rules (lowercase, digits, dashes).
+export function normalizeWorkspaceName(name) {
+  const raw = String(name ?? "").trim();
+  if (!raw) throw new Error("workspace name is required");
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!normalized) {
+    throw new Error(`workspace name ${JSON.stringify(raw)} has no usable characters`);
+  }
+  return normalized;
+}
+
 export function validateWorkspaceConfig(config) {
   if (config && typeof config === "object" && "provider" in config) {
     throw new Error(
