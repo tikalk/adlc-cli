@@ -12,11 +12,16 @@ function handleFilePath(workspacesDir, name) {
 }
 
 function readHandleFile(workspacesDir, name) {
+  const path = handleFilePath(workspacesDir, name);
+  if (!existsSync(path)) return null;
   try {
-    if (!existsSync(handleFilePath(workspacesDir, name))) return null;
-    return JSON.parse(readFileSync(handleFilePath(workspacesDir, name), "utf-8"));
-  } catch {
-    return null;
+    return JSON.parse(readFileSync(path, "utf-8"));
+  } catch (err) {
+    // A corrupt handle is not "no handle" — re-provisioning would silently
+    // create a second machine. Fail loudly instead.
+    throw new Error(
+      `workspace handle at ${path} is unreadable (${err.message}) — refusing to provision a second workspace`
+    );
   }
 }
 
@@ -66,6 +71,12 @@ export function createCoderProvider({ transport, workspacesDir = ".adlc/workspac
     for (const line of stdout.split("\n")) {
       if (line !== "") yield line;
     }
+    // The remote's exit code and stderr are the caller's verdict: a remote
+    // failure must never read as a local success.
+    return {
+      exitCode: Number.isFinite(Number(res?.exitCode)) ? Number(res.exitCode) : 0,
+      stderr: String(res?.stderr ?? ""),
+    };
   }
 
   return { provision, run, runStream };

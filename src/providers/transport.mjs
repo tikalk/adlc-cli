@@ -33,7 +33,9 @@ export function expandWorkspaceVars(value, env = {}) {
   if (typeof value === "string") {
     return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => {
       const v = env[name] ?? process.env[name];
-      if (v === undefined) {
+      // An unset OR empty value is missing: silently substituting "" would
+      // turn a typo into a broken workspace instead of a named failure.
+      if (v === undefined || v === "") {
         throw new Error(`Missing required workspace variable: ${name}`);
       }
       return v;
@@ -59,7 +61,10 @@ export function normalizeEvent(event) {
 }
 
 export function checkHopDepth(depth) {
-  if (typeof depth !== "number" || !Number.isFinite(depth) || depth > MAX_HOPS) {
+  if (typeof depth !== "number" || !Number.isFinite(depth) || depth < 0) {
+    throw new Error(`hop depth ${depth} is invalid (must be a non-negative number)`);
+  }
+  if (depth > MAX_HOPS) {
     throw new Error(`hop depth ${depth} exceeds maximum of ${MAX_HOPS} hops`);
   }
 }
@@ -116,6 +121,9 @@ export function currentHopDepth() {
   if (!Number.isFinite(depth)) {
     throw new Error(`invalid ADLC_HOP_DEPTH ${JSON.stringify(raw)}: must be numeric (fail-closed)`);
   }
+  if (depth < 0) {
+    throw new Error(`invalid ADLC_HOP_DEPTH ${JSON.stringify(raw)}: must be non-negative (fail-closed)`);
+  }
   return depth;
 }
 
@@ -123,7 +131,7 @@ export function hopGuard() {
   checkHopDepth(currentHopDepth() + 1);
 }
 
-export function remoteInputs(inputs = {}, fromOffset = 0) {
+export function remoteInputs(inputs = {}) {
   return { ...inputs, ADLC_HOP_DEPTH: String(currentHopDepth() + 1) };
 }
 
@@ -176,6 +184,19 @@ export function referencedSecretsEnv(referenced = [], projectRoot = process.cwd(
   const merged = { ...env, ...loadSecretsEnv(projectRoot) };
   const out = {};
   for (const k of referenced ?? []) if (merged[k] !== undefined) out[k] = merged[k];
+  return out;
+}
+
+// The expansion environment for a workspace file. Values sourced from a
+// secrets file (secrets.env / docker secrets) are secret by definition: they
+// are NOT substituted into the config — the placeholder is kept so the value
+// travels only in the transport's vars channel, never inlined into a
+// non-secret field. Process-env values are not secret-sourced and expand in
+// place (e.g. name: ${WORKSPACE_NAME}).
+export function expansionEnv(projectRoot = process.cwd(), env = process.env) {
+  const secretSourced = loadSecretsEnv(projectRoot);
+  const out = { ...env };
+  for (const key of Object.keys(secretSourced)) out[key] = `\${${key}}`;
   return out;
 }
 

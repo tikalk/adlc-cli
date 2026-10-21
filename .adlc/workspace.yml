@@ -11,4 +11,4 @@ workspace:
 skills:
   sources:
     - tikalk/adlc-team-skills
-goal: Verify the remote workspace is ready: the repo is cloned at the pinned branch, the adlc-team-skills are installed for opencode, and `adlc-cli --help` plus `opencode --version` both resolve. Report the toolchain versions.
+goal: Verify the remote workspace is ready: the repo is cloned at the pinned branch, the adlc-team-skills are installed for opencode, and `adlc-cli version` plus `opencode --version` both resolve. Report the toolchain versions.

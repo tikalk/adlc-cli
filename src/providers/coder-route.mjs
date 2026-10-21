@@ -4,6 +4,7 @@ import { parseYaml } from "../utils/yaml.mjs";
 import {
   validateWorkspaceConfig,
   expandWorkspaceVars,
+  expansionEnv,
   collectReferencedVars,
   hopGuard,
   currentHopDepth,
@@ -50,6 +51,97 @@ function redactLogLine(line, secrets = {}) {
   } catch {
     return scrubSecretValues(line, secrets);
   }
+}
+
+// Flags whose value is a separate argument. Their values must never be
+// mistaken for a positional (the workflow source, the agent task).
+const VALUED_FLAGS = ["--provider", "--workspace", "-w", "--input", "-i", "-a", "--agent"];
+
+function valuedFlagValues(rawArgv = []) {
+  const values = new Set();
+  for (let i = 0; i < rawArgv.length; i++) {
+    const arg = rawArgv[i];
+    if (!arg.startsWith("-")) continue;
+    for (const name of VALUED_FLAGS) {
+      if (arg === name) {
+        const value = rawArgv[i + 1];
+        if (value !== undefined && !value.startsWith("-")) values.add(value);
+        i++;
+        break;
+      }
+      if (arg.startsWith(`${name}=`)) {
+        const value = arg.slice(name.length + 1);
+        if (value !== "") values.add(value);
+        break;
+      }
+    }
+  }
+  return values;
+}
+
+// The first real positional token — flag values excluded.
+function firstPositional(tokens = [], rawArgv = []) {
+  const consumed = valuedFlagValues(rawArgv);
+  for (const token of tokens) {
+    if (typeof token !== "string") continue;
+    if (token.startsWith("-")) continue;
+    if (consumed.has(token)) continue;
+    return token;
+  }
+  return null;
+}
+
+// The workspace a route targets: --workspace <name> when given, else
+// "default". A named workspace reuses the handle persisted by
+// `workspace setup` (.adlc/workspaces/<name>.json) instead of provisioning
+// a second machine.
+function workspaceName(rawArgv = []) {
+  for (let i = 0; i < rawArgv.length; i++) {
+    const arg = rawArgv[i];
+    if (arg === "--workspace" || arg === "-w") {
+      const value = rawArgv[i + 1];
+      if (value && !value.startsWith("-")) return value;
+    }
+    if (arg.startsWith("--workspace=")) {
+      const value = arg.slice("--workspace=".length);
+      if (value !== "") return value;
+    }
+  }
+  return "default";
+}
+
+// Strip the provider/workspace flags from an argument list.
+function stripProviderArgs(args = []) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--provider" || arg === "--workspace" || arg === "-w") {
+      i++;
+      continue;
+    }
+    if (arg.startsWith("--provider=") || arg.startsWith("--workspace=")) continue;
+    out.push(arg);
+  }
+  return out;
+}
+
+// Stream the remote's output and report its verdict. A remote failure is a
+// local failure: the exit code and stderr are surfaced, never swallowed.
+async function streamRemote(provider, handle, payload, secrets = {}) {
+  const iter = provider.runStream(handle, payload);
+  let step = await iter.next();
+  while (!step.done) {
+    console.log(redactLogLine(step.value, secrets));
+    step = await iter.next();
+  }
+  const result = step.value ?? { exitCode: 0, stderr: "" };
+  const exitCode = Number(result.exitCode ?? 0);
+  const stderr = String(result.stderr ?? "");
+  if (exitCode !== 0) {
+    if (stderr.trim() !== "") console.error(redactLogLine(stderr, secrets));
+    console.error(`Error: remote command failed (exit ${exitCode})`);
+  }
+  return { exitCode, stderr };
 }
 
 function liveRequired(argv = []) {
@@ -124,7 +216,7 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   }
   let expanded;
   try {
-    expanded = expandWorkspaceVars(wsfile, { ...process.env, ...loadSecretsEnv(projectRoot) });
+    expanded = expandWorkspaceVars(wsfile, expansionEnv(projectRoot));
   } catch (err) {
     console.error(`Error: ${err.message}`);
     return 1;
@@ -152,12 +244,13 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   const payload = JSON.stringify({
     op: "workspace.setup",
     config: expanded,
-    vars: redactSecrets(vars),
+    vars,
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
   try {
-    for await (const line of provider.runStream(handle, payload)) console.log(redactLogLine(line, vars));
+    const { exitCode } = await streamRemote(provider, handle, payload, vars);
+    if (exitCode !== 0) return exitCode || 1;
   } catch (err) {
     console.error(`Error: remote setup failed: ${err.message}`);
     return 1;
@@ -174,7 +267,10 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     return 1;
   }
   if (liveRequired(argv ?? runArgs ?? [])) return failLive("agent run");
-  const prompt = (runArgs ?? []).filter((a) => !a.startsWith("-")).pop();
+  // The provider/workspace flags are not part of the task: strip them before
+  // the task is read, or the provider name is mistaken for the task.
+  const cleanArgs = stripProviderArgs(runArgs ?? []);
+  const prompt = cleanArgs.filter((a) => !a.startsWith("-")).pop();
   if (!prompt) {
     console.error("Error: task is required (provider path: coder agent)");
     return 1;
@@ -184,28 +280,23 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   let handle;
   try {
-    handle = await provider.provision("default");
+    handle = await provider.provision(workspaceName(argv));
   } catch (err) {
     console.error(`Error: coder provision failed: ${err.message}`);
     return 1;
-  }
-  const cleanArgs = [];
-  for (let i = 0; i < (runArgs ?? []).length; i++) {
-    if (runArgs[i] === "--provider") { i++; continue; }
-    if (runArgs[i].startsWith("--provider=")) continue;
-    cleanArgs.push(runArgs[i]);
   }
   const rawAgentVars = referencedSecretsEnv(collectReferencedVars(cleanArgs));
   const payload = JSON.stringify({
     op: "agent.run",
     args: cleanArgs,
-    vars: redactSecrets(rawAgentVars),
+    vars: rawAgentVars,
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
   const agentVars = rawAgentVars;
   try {
-    for await (const line of provider.runStream(handle, payload)) console.log(redactLogLine(line, agentVars));
+    const { exitCode } = await streamRemote(provider, handle, payload, agentVars);
+    if (exitCode !== 0) return exitCode || 1;
   } catch (err) {
     console.error(`Error: remote agent run failed: ${err.message}`);
     return 1;
@@ -222,7 +313,9 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     return 1;
   }
   if (liveRequired(rawArgv)) return failLive("workflow run");
-  const source = (args ?? []).find((a) => !a.startsWith("-"));
+  // The source is the first real positional — an --input/--provider value is
+  // never the source.
+  const source = firstPositional(args ?? [], rawArgv ?? []);
   if (!source) {
     console.error(
       "Error: workflow source required (file path, installed ID, or built-in like 'factory') (provider path: coder workflow)",
@@ -246,7 +339,7 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   let handle;
   try {
-    handle = await provider.provision("default");
+    handle = await provider.provision(workspaceName(rawArgv));
   } catch (err) {
     console.error(`Error: coder provision failed: ${err.message}`);
     return 1;
@@ -255,14 +348,15 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
   const payload = JSON.stringify({
     op: "workflow.run",
     source,
-    inputs: scrubSecretValues(redactSecrets(inputs), rawWfVars),
-    vars: redactSecrets(rawWfVars),
+    inputs,
+    vars: rawWfVars,
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
   const wfVars = rawWfVars;
   try {
-    for await (const line of provider.runStream(handle, payload)) console.log(redactLogLine(line, wfVars));
+    const { exitCode } = await streamRemote(provider, handle, payload, wfVars);
+    if (exitCode !== 0) return exitCode || 1;
   } catch (err) {
     console.error(`Error: remote workflow run failed: ${err.message}`);
     return 1;

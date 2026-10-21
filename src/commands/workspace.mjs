@@ -103,6 +103,10 @@ export async function cmdWorkspaceSetup(args, flags) {
       throw new Error("tab indentation is not valid YAML (use spaces)");
     }
     wsfile = parseYaml(content);
+    // Workspace files are location-free: a `provider:` key is REJECTED, never
+    // ignored — the same contract the provider path enforces.
+    const { validateWorkspaceConfig } = await import("../providers/transport.mjs");
+    validateWorkspaceConfig(wsfile);
   } catch (err) {
     console.error(`Error: invalid workspace file: ${err.message}`);
     return 1;

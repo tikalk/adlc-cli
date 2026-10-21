@@ -234,6 +234,16 @@ function parseArgs(argv) {
       flags.provider = rest[++i];
     } else if (arg.startsWith("--provider=")) {
       flags.provider = arg.slice("--provider=".length);
+    } else if (arg === "--workspace" || arg === "-w") {
+      flags.workspace = rest[++i];
+    } else if (arg.startsWith("--workspace=")) {
+      flags.workspace = arg.slice("--workspace=".length);
+    } else if (arg === "--input" || arg === "-i") {
+      flags.inputs = flags.inputs ?? [];
+      flags.inputs.push(rest[++i]);
+    } else if (arg.startsWith("--input=")) {
+      flags.inputs = flags.inputs ?? [];
+      flags.inputs.push(arg.slice("--input=".length));
     } else if (arg === "--update-confidence") {
       flags.updateConfidence = true;
     } else if (arg === "--build-to-delete") {

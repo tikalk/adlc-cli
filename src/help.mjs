@@ -128,6 +128,12 @@ RUN FLAGS:
   --timeout <s>       Timeout in seconds
   --require-approval <tools>  Comma-separated tool list
   -                   Read task from stdin
+
+PROVIDER FLAGS (remote transport):
+  --provider coder     run the task on the remote workspace via the provider
+                       transport (SSH). Secrets stay env-only and are redacted
+                       from the output.
+  --workspace <name>   target workspace (default: default)
 `);
 }
 
@@ -166,10 +172,17 @@ WORKSPACE FILE (.adlc/workspace.yml):
   When the goal is absent or skipped, run your intent via
   'adlc-cli agent run "<prompt>"' after setup.
 
+PROVIDER FLAGS (remote transport):
+  --provider coder     route through the coder provider transport (SSH).
+                       The workspace file stays location-free — a 'provider:'
+                       key inside it is rejected, never ignored.
+  --workspace <name>   target workspace (default: the workspace file's name).
+
 EXAMPLES:
   adlc-cli workspace setup                          # use .adlc/workspace.yml
   adlc-cli workspace setup https://host/w.yml       # fetch workspace file over HTTP
   adlc-cli workspace setup -a opencode --dry-run    # preview planned actions
+  adlc-cli workspace setup --provider coder          # remote workspace setup
 `);
 }
 

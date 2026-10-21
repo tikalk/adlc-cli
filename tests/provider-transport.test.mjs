@@ -313,14 +313,26 @@ test("iter-2: coder-route payloads carry env.ADLC_HOP_DEPTH for nested hopGuard"
   assert.ok(/env:\s*remoteInputs\(\)/.test(src), "remote hop env must be set on payload");
 });
 
-test("iter-2: expansion merge order is process.env < secrets.env (docker wins)", async () => {
+test("iter-4: expansion keeps secret-sourced values out of the config, process-env values expand in place", async () => {
   const m = await import("../src/providers/transport.mjs");
-  const fs = await import("node:fs/promises");
-  const src = await fs.readFile(new URL("../src/providers/coder-route.mjs", import.meta.url), "utf-8");
-  assert.ok(/\{\s*\.\.\.process\.env,\s*\.\.\.loadSecretsEnv/.test(src),
-    "coder-route must use {...process.env, ...loadSecretsEnv} to match transport");
-  const out = m.expandWorkspaceVars({ v: "${SHARED}" }, { ...{ SHARED: "env-val" }, ...{ SHARED: "file-wins" } });
-  assert.equal(out.v, "file-wins");
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-expandenv-"));
+  await fs.writeFile(path.join(tmp, "secrets.env"), "SHARED=file-val\nONLY_FILE=file-only\n");
+  const env = { SHARED: "env-val", PLAIN: "plain-val" };
+  const expandEnv = m.expansionEnv(tmp, env);
+  const out = m.expandWorkspaceVars(
+    { secret: "${SHARED}", fromFile: "${ONLY_FILE}", plain: "${PLAIN}" },
+    expandEnv
+  );
+  assert.equal(out.plain, "plain-val", "a process-env value expands in place");
+  assert.equal(out.secret, "${SHARED}", "a secret-sourced value must not be inlined into the config");
+  assert.equal(out.fromFile, "${ONLY_FILE}", "a secrets.env value must not be inlined into the config");
+  // The value still travels in the vars channel, referenced-only.
+  const vars = m.referencedSecretsEnv(["SHARED", "ONLY_FILE"], tmp, env);
+  assert.equal(vars.SHARED, "file-val", "the secret-sourced value wins for forwarding");
+  assert.equal(vars.ONLY_FILE, "file-only");
 });
 
 test("iter-2: coder.mjs preserves transport-provided handlePath", async () => {
@@ -454,4 +466,250 @@ test("iter-3: local workspace setup fails fast on a missing ${VAR}", async () =>
   }
   assert.equal(code, 1, "a missing variable must fail the setup");
   assert.match(errs.join(" "), /WS_NAME_MISSING/, "the error must name the missing variable");
+});
+
+// ── iter-4: review findings (independent reviewer @ head 5f406f2) ────────
+
+function captureRoute(fn) {
+  const logs = [];
+  const errs = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (...a) => { logs.push(a.join(" ")); };
+  console.error = (...a) => { errs.push(a.join(" ")); };
+  return {
+    logs,
+    errs,
+    restore() { console.log = origLog; console.error = origErr; },
+  };
+}
+
+function injectedTransport(overrides = {}) {
+  const calls = [];
+  const transport = {
+    calls,
+    async provision(name) {
+      calls.push({ op: "provision", name });
+      return { name, host: `mock-${name}` };
+    },
+    async exec(handle, input) {
+      calls.push({ op: "exec", handle, input });
+      return { stdout: String(input ?? ""), stderr: "", exitCode: 0, ...overrides };
+    },
+  };
+  globalThis.__ADLC_CODER_TRANSPORT__ = transport;
+  return transport;
+}
+
+test("iter-4: a remote failure exits non-zero and surfaces the remote stderr", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-fail-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    "schema_version: 1\nname: fail-ws\nworkspace:\n  dirs: []\n"
+  );
+  injectedTransport({ stdout: "remote step FAILED\n", stderr: "fatal: clone failed\n", exitCode: 1 });
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const prevCwd = process.cwd();
+  const cap = captureRoute();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderWorkspaceSetup(["workspace.yml"], {}, []);
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.notEqual(code, 0, "a remote failure must not exit 0");
+  assert.match(cap.errs.join("\n"), /clone failed/, "the remote stderr must be surfaced");
+});
+
+test("iter-4: outbound vars carry the real value — redaction belongs on the output path", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderAgentRun } = await import("../src/providers/coder-route.mjs");
+  const prev = process.env.MY_API_TOKEN;
+  process.env.MY_API_TOKEN = "tok-secret-999";
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderAgentRun(["--provider", "coder", "deploy with ${MY_API_TOKEN}"], []);
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+    if (prev === undefined) delete process.env.MY_API_TOKEN;
+    else process.env.MY_API_TOKEN = prev;
+  }
+  assert.equal(code, 0);
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const payload = JSON.parse(exec.input);
+  assert.equal(
+    payload.vars.MY_API_TOKEN,
+    "tok-secret-999",
+    "the referenced var value must reach the transport, not a redacted placeholder"
+  );
+  assert.ok(
+    !cap.logs.join("\n").includes("tok-secret-999"),
+    "the secret must still be scrubbed from the output path"
+  );
+});
+
+test("iter-4: secret-sourced vars are not inlined into the config payload", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-inline-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    "schema_version: 1\nname: inline-ws\nimage: app:${APP_TOKEN}\nworkspace:\n  dirs: []\n"
+  );
+  await fs.writeFile(path.join(tmp, "secrets.env"), "APP_TOKEN=sek-live-789\n");
+  const transport = injectedTransport();
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const prevCwd = process.cwd();
+  const prevToken = process.env.APP_TOKEN;
+  const cap = captureRoute();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderWorkspaceSetup(["workspace.yml"], {}, []);
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+    if (prevToken === undefined) delete process.env.APP_TOKEN;
+    else process.env.APP_TOKEN = prevToken;
+  }
+  assert.equal(code, 0);
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const payload = JSON.parse(exec.input);
+  assert.ok(
+    !String(payload.config.image).includes("sek-live-789"),
+    "a secret must not be inlined into the config channel"
+  );
+  assert.equal(
+    payload.vars.APP_TOKEN,
+    "sek-live-789",
+    "the secret travels in the vars channel instead"
+  );
+});
+
+test("iter-4: the local setup path rejects a provider: key instead of ignoring it", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-provkey-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    "schema_version: 1\nname: prov-ws\nprovider: coder\nworkspace:\n  dirs: []\n"
+  );
+  const { cmdWorkspaceSetup } = await import("../src/commands/workspace.mjs");
+  const prevCwd = process.cwd();
+  const cap = captureRoute();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdWorkspaceSetup(["workspace.yml"], { agents: ["opencode"], dryRun: true });
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+  }
+  assert.equal(code, 1, "a provider: key must fail the local path too");
+  assert.match(cap.errs.join("\n"), /provider/, "the error must name the provider key");
+});
+
+test("iter-4: an --input value is never mistaken for the workflow source", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderWorkflowRun(
+      ["FOO=bar", "factory"],
+      {},
+      ["--provider", "coder", "--input", "FOO=bar", "factory"]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0);
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const payload = JSON.parse(exec.input);
+  assert.equal(payload.source, "factory", "the workflow source must not be an --input value");
+  assert.deepEqual(payload.inputs, { FOO: "bar" });
+});
+
+test("iter-4: agent run without a task fails even when --provider is given", async () => {
+  injectedTransport();
+  const { cmdCoderAgentRun } = await import("../src/providers/coder-route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderAgentRun(["--provider", "coder"], []);
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 1, "a missing task must fail, not run with the provider as the task");
+  assert.match(cap.errs.join("\n"), /task is required/i);
+});
+
+test("iter-4: a negative hop depth fails closed", async () => {
+  const m = await import("../src/providers/transport.mjs");
+  const prev = process.env.ADLC_HOP_DEPTH;
+  process.env.ADLC_HOP_DEPTH = "-1";
+  try {
+    assert.throws(() => m.currentHopDepth(), /ADLC_HOP_DEPTH|hop depth/i);
+  } finally {
+    if (prev === undefined) delete process.env.ADLC_HOP_DEPTH;
+    else process.env.ADLC_HOP_DEPTH = prev;
+  }
+});
+
+test("iter-4: a corrupt handle file fails loudly instead of re-provisioning", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-corrupt-"));
+  await fs.mkdir(path.join(tmp, "w"), { recursive: true });
+  await fs.writeFile(path.join(tmp, "w", "demo.json"), "{not json");
+  const transport = injectedTransport();
+  const { createCoderProvider } = await import("../src/providers/coder.mjs");
+  const p = createCoderProvider({ transport, workspacesDir: path.join(tmp, "w") });
+  await assert.rejects(() => p.provision("demo"), /handle|corrupt|unreadable/i);
+  assert.equal(
+    transport.calls.filter((c) => c.op === "provision").length,
+    0,
+    "a corrupt handle must not trigger a second provision"
+  );
+});
+
+test("iter-4: --workspace selects the workspace for the agent/workflow routes", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-wssel-"));
+  const transport = injectedTransport();
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const cap = captureRoute();
+  const prevCwd = process.cwd();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderWorkflowRun(
+      ["factory"],
+      {},
+      ["--provider", "coder", "--workspace", "repo-mission-42", "factory"]
+    );
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0);
+  const prov = transport.calls.find((c) => c.op === "provision");
+  assert.equal(prov.name, "repo-mission-42", "the route must provision the selected workspace");
 });

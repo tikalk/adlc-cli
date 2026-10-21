@@ -29,3 +29,7 @@ graphify-out/
 # Provider transport runtime artifacts (handles, run state)
 .adlc/workspaces/
 .adlc/workflows/runs/
+
+# Secret material read by the provider transport (env-only convention)
+secrets.env
+.secrets.env
