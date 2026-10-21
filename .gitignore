@@ -32,4 +32,3 @@ graphify-out/
 
 # Secret material read by the provider transport (env-only convention)
 secrets.env
-.secrets.env

@@ -15,7 +15,11 @@ function readHandleFile(workspacesDir, name) {
   const path = handleFilePath(workspacesDir, name);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("handle file does not contain a workspace object");
+    }
+    return parsed;
   } catch (err) {
     // A corrupt handle is not "no handle" — re-provisioning would silently
     // create a second machine. Fail loudly instead.
@@ -67,6 +71,9 @@ export function createCoderProvider({ transport, workspacesDir = ".adlc/workspac
   async function* runStream(handle, input) {
     const h = typeof handle === "string" ? handles.get(handle) ?? { name: handle } : handle;
     const res = await transport.exec(h, input);
+    if (!res || typeof res !== "object") {
+      throw new Error("transport returned no result — the remote call cannot be trusted");
+    }
     const stdout = String(res?.stdout ?? "");
     for (const line of stdout.split("\n")) {
       if (line !== "") yield line;
@@ -79,5 +86,13 @@ export function createCoderProvider({ transport, workspacesDir = ".adlc/workspac
     };
   }
 
-  return { provision, run, runStream };
+  function hasHandle(name) {
+    try {
+      return readHandleFile(workspacesDir, name) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  return { provision, run, runStream, hasHandle };
 }

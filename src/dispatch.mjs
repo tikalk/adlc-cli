@@ -52,6 +52,14 @@ function runLegacyTree({ command, args, flags }) {
 }
 
 async function runNewTree({ command, args, flags }, argv) {
+  // `--provider` on the workspace/agent/workflow commands selects the remote
+  // transport. An unknown value must be refused — silently running locally
+  // would hand the operator a local run they asked for remotely.
+  const providerCommands = ["workspace", "agent", "run", "workflow"];
+  if (flags?.provider && flags.provider !== "coder" && providerCommands.includes(command)) {
+    console.error(`Error: unknown --provider "${flags.provider}" (known: coder) for '${command}'.`);
+    return 1;
+  }
   if (flags?.provider === "coder") {
     const { cmdCoderWorkspaceSetup, cmdCoderAgentRun, cmdCoderWorkflowRun } = await import("./providers/coder-route.mjs");
     if (command === "workspace" && (args[0] ?? "status") === "setup") {

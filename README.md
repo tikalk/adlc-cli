@@ -92,16 +92,16 @@ adlc-cli workflow run factory --input run_id=r-7 --provider coder --workspace re
 
 | Flag | Meaning |
 |------|---------|
-| `--provider coder` | Route through the provider transport (SSH) instead of running locally |
-| `--workspace <name>` | Target workspace; the handle persisted at `.adlc/workspaces/<name>.json` is reused, never re-provisioned |
+| `--provider coder` | Route through the provider transport (SSH) instead of running locally. An unknown value is **refused** (never silently run locally) |
+| `--workspace <name>` | Target workspace. `workspace setup` uses the workspace file's name (a conflicting `--workspace` is refused); `agent run` / `workflow run` reuse the handle persisted at `.adlc/workspaces/<name>.json` and **refuse to provision a second machine** when no handle exists |
 
 Contract:
 
-- **Location-free workspace files** — a `provider:` key inside a workspace file is **rejected**, never ignored; the provider is selected only by the flag.
-- **`${VAR}` expansion, fail-fast** — a missing variable fails with its name. Process-env values expand in place; values sourced from `secrets.env`/Docker secrets are never inlined into the config — they travel only in the transport's `vars` channel, referenced-only.
-- **Secrets env-only** — `secrets.env` (gitignored) → Docker secrets → process env. Referenced values are forwarded to the remote and scrubbed from every output path.
-- **Recursion guard** — at most 2 hops (`ADLC_HOP_DEPTH`); a malformed or negative depth fails closed.
-- **Loud failure** — a remote non-zero exit, a corrupt handle, or an invalid workspace file exits non-zero with the remote's stderr. There is no silent fallback.
+- **Location-free workspace files** — a `provider:` key (at any level) inside a workspace file is **rejected**, never ignored; the provider is selected only by the flag.
+- **`${VAR}` expansion, fail-fast** — a missing or empty variable fails with its name. Process-env values expand in place; values sourced from `secrets.env`/Docker secrets are never inlined into the config — they travel only in the transport's `vars` channel, referenced-only. A secret-sourced variable may not *name* a workspace (it would leak into the handle filename).
+- **Secrets env-only** — `secrets.env` (gitignored) → Docker secrets → process env. Referenced values are forwarded to the remote; the outbound stream is scrubbed (referenced values, `--input` values and the task text never reach the terminal verbatim).
+- **Recursion guard** — at most 2 hops (`ADLC_HOP_DEPTH`); a malformed, negative or whitespace depth fails closed.
+- **Loud failure** — a remote non-zero exit (its code is propagated), a corrupt handle, a missing handle, an invalid workspace file, or a transport that returns no result exits non-zero with the remote's stderr. There is no silent fallback.
 
 The live SSH transport is not implemented yet: `--live` (or `ADLC_CODER_LIVE=1`) exits non-zero with `not implemented: live coder transport` rather than pretending to provision. Tests run against the mock transport.
 

@@ -10,6 +10,14 @@ export const MAX_HOPS = 2;
 export function normalizeWorkspaceName(name) {
   const raw = String(name ?? "").trim();
   if (!raw) throw new Error("workspace name is required");
+  if (raw.includes("${")) {
+    // An unresolved placeholder is never a name: normalizing it would
+    // silently produce a different workspace than the operator asked for.
+    throw new Error(
+      `workspace name ${JSON.stringify(raw)} still contains an unresolved variable — ` +
+        "set it in the environment (a secret-sourced variable cannot name a workspace)"
+    );
+  }
   const normalized = raw
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -21,7 +29,22 @@ export function normalizeWorkspaceName(name) {
 }
 
 export function validateWorkspaceConfig(config) {
-  if (config && typeof config === "object" && "provider" in config) {
+  // The rule is "no provider key anywhere": a nested `provider:` would be
+  // read as a location by some consumers and silently ignored by others.
+  const findProviderKey = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (findProviderKey(item)) return true;
+      }
+      return false;
+    }
+    if (value && typeof value === "object") {
+      if ("provider" in value) return true;
+      return Object.values(value).some((v) => findProviderKey(v));
+    }
+    return false;
+  };
+  if (config && typeof config === "object" && findProviderKey(config)) {
     throw new Error(
       'workspace config "provider" key is not allowed: workspace files are location-free; select the provider via --provider flag'
     );
@@ -69,7 +92,7 @@ export function checkHopDepth(depth) {
   }
 }
 
-const SECRET_KEY_PATTERN = /token|secret|passwd|password|pwd|api[_-]?key|private[_-]?key|auth[_-]?token|bearer|credential/i;
+const SECRET_KEY_PATTERN = /token|secret|passwd|password|pwd|api[_-]?key|private[_-]?key|auth[_-]?token|bearer|credential|(^|[^a-z])tok([^a-z]|$)/i;
 
 export const REDACTED = "[REDACTED]";
 
@@ -117,7 +140,10 @@ export function expandWorkspaceVarsWithRefs(value, env = {}) {
 export function currentHopDepth() {
   const raw = process.env.ADLC_HOP_DEPTH;
   if (raw === undefined || raw === "") return 0;
-  const depth = Number(raw);
+  if (raw.trim() === "") {
+    throw new Error(`invalid ADLC_HOP_DEPTH ${JSON.stringify(raw)}: must be numeric (fail-closed)`);
+  }
+  const depth = Number(raw.trim());
   if (!Number.isFinite(depth)) {
     throw new Error(`invalid ADLC_HOP_DEPTH ${JSON.stringify(raw)}: must be numeric (fail-closed)`);
   }
@@ -202,7 +228,7 @@ export function expansionEnv(projectRoot = process.cwd(), env = process.env) {
 
 export function scrubSecretValues(value, secrets = {}) {
   const raw = Array.isArray(secrets) ? secrets : Object.values(secrets ?? {});
-  const needles = [...new Set(raw)].filter((s) => typeof s === "string" && s.length >= 4);
+  const needles = [...new Set(raw)].filter((s) => typeof s === "string" && s.length >= 3);
   if (needles.length === 0) return value;
   const scrubStr = (s) => needles.reduce((acc, n) => acc.split(n).join(REDACTED), s);
   if (typeof value === "string") return scrubStr(value);
