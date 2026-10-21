@@ -48,6 +48,21 @@ pass() { echo "  PASS: $1"; }
 fail() { echo "  FAIL: $1"; echo "E2E FAILED (artifacts: $ROOT)"; exit 1; }
 assert_exists() { [ -e "$1" ] && pass "exists $1" || fail "missing $1"; }
 
+# Run an agent-led command, keeping stdout and stderr apart.
+#
+# stdout goes in $OUT (the assertions grep it); stderr goes to a file that is
+# dumped only on failure. The CLI reports agent failures on stderr, so without
+# this the log showed the agent's transcript and then a bare "exited
+# non-zero" with no indication of the actual cause.
+ERRLOG="$ROOT/agent-stderr.log"
+run_agent() {
+  OUT="$( cd "$WS" && "$@" 2>"$ERRLOG" )" || {
+    echo "$OUT"
+    [ -s "$ERRLOG" ] && { echo "--- agent stderr ---"; cat "$ERRLOG"; }
+    fail "$AGENT_FAIL_MSG"
+  }
+}
+
 # ── Fixtures ────────────────────────────────────────────────────────────
 echo "== Building fixtures =="
 # backend.git — bare repo, main + tag v1.0 (on a second commit), plus a dev branch off main
@@ -142,13 +157,14 @@ if [ "$SKIP_AGENT" = "--skip-agent" ]; then
   echo; echo "== 3+4. skipped (--skip-agent) =="
 else
   echo; echo "== 3. goal via direct agent run (real opencode) =="
-  OUT="$( cd "$WS" && node "$BIN" agent run "Reply with exactly: E2E-OK and nothing else." -a opencode )" \
-    || { echo "$OUT"; fail "agent run exited non-zero"; }
+  AGENT_FAIL_MSG="agent run exited non-zero"
+  run_agent node "$BIN" agent run "Reply with exactly: E2E-OK and nothing else." -a opencode
   echo "$OUT" | grep -q "E2E-OK" && pass "agent run output contains E2E-OK" || { echo "$OUT"; fail "E2E-OK missing from agent run output"; }
 
   # ── 4. Agent-led workspace init (installed skill runs its bash script) ──
   echo; echo "== 4. workspace init (agent-led, /workspace skill) =="
-  OUT="$( cd "$WS" && node "$BIN" workspace init -a opencode )" || { echo "$OUT"; fail "workspace init exited non-zero"; }
+  AGENT_FAIL_MSG="workspace init exited non-zero"
+  run_agent node "$BIN" workspace init -a opencode
   assert_exists "$WS/.adlc/product"
   assert_exists "$WS/.adlc/architecture"
   assert_exists "$WS/.adlc/context"

@@ -16,6 +16,17 @@ on:
     - cron: "0 3 * * *"
   workflow_dispatch:
 
+env:
+  # The opencode CLI version this nightly is verified against.
+  #
+  # It was deliberately unpinned so a new release would show up in the run log
+  # as drift. That backfired: v2.1.2 landed between two nightlies, the
+  # agent-led step failed, and the failure was unreadable (the CLI dropped
+  # the provider error message). Pin the version so a release bump is a
+  # reviewed change, not an overnight behaviour change. Bump this value in a
+  # normal PR — the nightly re-verifies on the next run.
+  OPENCODE_CLI_VERSION: "2.1.2"
+
 jobs:
   e2e-full-agent:
     runs-on: ubuntu-latest
@@ -32,7 +43,7 @@ jobs:
       # visible from the run log (the nightly doubles as drift detection).
       - name: Install opencode CLI
         run: |
-          npm install -g @opencode/cli
+          npm install -g "@opencode/cli@$OPENCODE_CLI_VERSION"
           opencode --version
 
       # Hermetic default: vendored skill fixture (tests/fixtures/skills-src).

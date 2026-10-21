@@ -8,6 +8,14 @@ description: Use when coordinating a multi-repo workspace — init the .adlc/ st
 > Vendored E2E fixture: trimmed from the upstream workspace skill for
 > hermetic `tests/e2e-workspace.sh` runs. Covers init/link/status only;
 > see the upstream skill for the full coordinator reference.
+>
+> `scripts/bash/` is vendored from
+> `tikalk/adlc-team-skills @ 8f7b4c5ab1ca4197137c44805eb5d502034e5aaa`
+> (`skills/team/workspace/scripts/bash/`, MIT). It is vendored rather than
+> referenced so the E2E never fetches from the network: without it the
+> agent cannot run the documented init step and goes hunting across the
+> filesystem and GitHub, which costs several minutes and makes the run
+> depend on upstream staying reachable. Re-vendor on upstream change.
 
 ## Overview
 

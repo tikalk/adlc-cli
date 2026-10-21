@@ -56,7 +56,11 @@ function mapOpenCode(raw) {
       return []; // suppress — intermediate step boundary
     }
     case "error":
-      return [{ type: "error", message: raw.message ?? raw.part?.error ?? String(raw) }];
+      // opencode v2 nests the message under error.message; v1 used a flat
+      // message. Read both, and never fall back to String(raw) while a
+      // message is present — that renders "[object Object]" and hides the
+      // real cause of the failure.
+      return [{ type: "error", message: errorMessage(raw) }];
     case "complete":
     case "completed":
       return [{ type: "complete" }];
@@ -64,6 +68,24 @@ function mapOpenCode(raw) {
       // Spread after type/raw_type to prevent the raw.type from overwriting "log"
       return [{ ...raw, type: "log", raw_type: type }];
   }
+}
+
+// Extract a human-readable message from an agent error event.
+// Shape varies by agent and version:
+//   opencode v2  { type:"error", error:{ type, message, status } }
+//   opencode v1  { type:"error", message }
+//   claude-code  { type:"error", error:"..." }  |  { type:"error", message }
+function errorMessage(raw) {
+  const nested = raw.error;
+  if (typeof nested === "string" && nested.trim()) return nested;
+  if (nested && typeof nested === "object" && typeof nested.message === "string" && nested.message.trim()) {
+    const type = typeof nested.type === "string" && nested.type ? `${nested.type}: ` : "";
+    const status = typeof nested.status === "number" ? ` (status ${nested.status})` : "";
+    return `${type}${nested.message}${status}`;
+  }
+  if (typeof raw.message === "string" && raw.message.trim()) return raw.message;
+  if (raw.part && typeof raw.part.error === "string" && raw.part.error.trim()) return raw.part.error;
+  return String(raw);
 }
 
 function mapStreamJson(raw) {
@@ -93,7 +115,7 @@ function mapStreamJson(raw) {
     case "permission_request":
       return [{ type: "permission_request", tool: raw.tool ?? raw.tool_name ?? raw.name, request_id: raw.id ?? raw.request_id }];
     case "error":
-      return [{ type: "error", message: raw.message ?? raw.error ?? String(raw) }];
+      return [{ type: "error", message: errorMessage(raw) }];
     case "result":
       return [{ type: "complete" }];
     case "system":
