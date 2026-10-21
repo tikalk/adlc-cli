@@ -162,3 +162,27 @@ test("live transport: a failing remote propagates its exit code and stderr", asy
 test("live transport: the transport file exists and exports the factory", () => {
   assert.ok(existsSync(join(process.cwd(), "src/providers/coder-ssh.mjs")));
 });
+
+test("live transport: the referenced vars are persisted for the developer's later session", async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    await transport.exec(
+      { name: "demo" },
+      JSON.stringify({ op: "workspace.setup", configYaml: "schema_version: 1\n", vars: { GITLAB_TOKEN: "tok-1" } })
+    );
+    const chunks = readFileSync(record.stdinFile, "utf-8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return Buffer.from(l, "base64").toString("utf-8");
+        } catch {
+          return "";
+        }
+      });
+    const step = chunks.join("\n");
+    assert.match(step, /secrets\.env/, "the step must persist the vars for the session");
+    assert.match(step, /chmod 600/, "the persisted vars file must be 0600");
+  });
+});

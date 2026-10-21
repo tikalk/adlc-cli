@@ -194,6 +194,13 @@ exit "$_rc"
       return `${prelude}  workspace.setup)
     jq -r '.configYaml // empty' "$_d/payload.json" > "$_d/workspace.yml"
     _export_vars
+    # The developer's LATER session (a separate shell) must inherit the same
+    # env the transport used: persist the referenced vars 0600 for the session
+    # to source. Values stay in the workspace's env — never in a command line.
+    mkdir -p "$HOME/.adlc"
+    jq -r '(.vars // {}) | to_entries[] | "export \(.key)=\(.value | @sh)"' \
+      "$_d/payload.json" > "$HOME/.adlc/secrets.env"
+    chmod 600 "$HOME/.adlc/secrets.env"
     adlc-cli workspace setup "$_d/workspace.yml"
     _rc=$?
     ;;${tail}`;
