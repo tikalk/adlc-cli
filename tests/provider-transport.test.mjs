@@ -1012,6 +1012,95 @@ test("iter-6: the repo's own workspace file is satisfiable by the documented lan
   }
 });
 
+test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () => {
+  // The remote agent must receive the task text, not the "-" marker.
+  const { spawnSync } = await import("node:child_process");
+  const { writeFileSync, mkdirSync, rmSync } = await import("node:fs");
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const tmp = await import("node:fs/promises").then((m) =>
+    m.mkdtemp(path.join(os.tmpdir(), "adlc-stdin-"))
+  );
+  // A fake transport that records the payload it receives.
+  const payloadFile = path.join(tmp, "payload.json");
+  const transport = path.join(tmp, "transport.mjs");
+  writeFileSync(
+    transport,
+    [
+      "import { writeFileSync } from 'node:fs';",
+      "globalThis.__ADLC_CODER_TRANSPORT__ = {",
+      "  async provision(name) { return { name, host: 'h' }; },",
+      "  async exec(handle, input) {",
+      `    writeFileSync(${JSON.stringify(payloadFile)}, input);`,
+      "    return { stdout: '', stderr: '', exitCode: 0 };",
+      "  },",
+      "};",
+      "",
+    ].join("\n")
+  );
+  const cli = path.join(tmp, "cli.mjs");
+  writeFileSync(
+    cli,
+    [
+      `import(${JSON.stringify(transport)});`,
+      `const { cmdCoderAgentRun } = await import(${JSON.stringify(
+        new URL("../src/providers/coder-route.mjs", import.meta.url).pathname
+      )});`,
+      "const code = await cmdCoderAgentRun(['--provider','coder','--workspace','stdin-ws','-'], ['agent','run','--provider','coder','--workspace','stdin-ws','-']);",
+      "process.exit(code);",
+      "",
+    ].join("\n")
+  );
+  const r = spawnSync(process.execPath, [cli], {
+    input: "TASK-FROM-STDIN-12345 do it",
+    encoding: "utf-8",
+    cwd: tmp,
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const payload = JSON.parse((await import("node:fs")).readFileSync(payloadFile, "utf-8"));
+  assert.equal(
+    payload.args[0],
+    "TASK-FROM-STDIN-12345 do it",
+    "the stdin task must reach the transport, not the '-' marker"
+  );
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("iter-7: a short secret in a git URL is masked in the printed plan", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-shortsecret-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    [
+      "schema_version: 1",
+      "name: short-secret",
+      "workspace:",
+      "  git:",
+      "    - repo: https://x-access-token:${GIT_TOKEN}@github.com/org/repo.git",
+      "      path: repo",
+      "",
+    ].join("\n")
+  );
+  await fs.writeFile(path.join(tmp, "secrets.env"), "GIT_TOKEN=xy\n");
+  const { cmdWorkspaceSetup } = await import("../src/commands/workspace.mjs");
+  const prevCwd = process.cwd();
+  const cap = captureRoute();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdWorkspaceSetup(["workspace.yml"], { agents: ["opencode"], dryRun: true });
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+  }
+  assert.equal(code, 0);
+  const out = cap.logs.join("\n");
+  assert.ok(!out.includes("x-access-token:xy@"), `a 2-char secret must be masked too: ${out}`);
+  assert.ok(out.includes("[REDACTED]"), `the credentials must be masked: ${out}`);
+});
+
 test("iter-6: the stdin task form is reachable (an empty stdin fails loudly)", async () => {
   // Run the CLI as a child: reading fd 0 in-process would block on the
   // test runner's terminal. The child's stdin is closed -> the task is empty.

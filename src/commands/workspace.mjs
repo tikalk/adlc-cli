@@ -212,7 +212,7 @@ export async function cmdWorkspaceSetup(args, flags) {
           (v) => typeof v === "string" && v !== "" && url.includes(v)
         );
         if (!carriesSecret) return url;
-        return url.replace(/(^[a-z+]+:\/\/)[^/@]+@/, `$1[REDACTED]@`);
+        return url.replace(/([a-z+]+:\/\/)[^/@\s]+@/, `$1[REDACTED]@`);
       };
       const printable = maskCredentials(scrubSecretValues(gitArgs.join(" "), secretValues));
       console.log(`│  $ git ${printable}`);

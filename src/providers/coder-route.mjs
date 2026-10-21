@@ -367,8 +367,10 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     (a) => !a.startsWith("-") && !taskValues.has(a)
   );
   let prompt = positionals.pop();
+  let args = cleanArgs;
   if (prompt === undefined && cleanArgs.includes("-")) {
-    // The documented stdin form: read the task from stdin.
+    // The documented stdin form: read the task from stdin and SEND it — the
+    // remote agent must receive the task text, not the "-" marker.
     try {
       prompt = readFileSync(0, "utf-8");
     } catch (err) {
@@ -379,6 +381,7 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
       console.error("Error: task is required (stdin was empty; provider path: coder agent)");
       return 1;
     }
+    args = cleanArgs.map((a) => (a === "-" ? prompt : a));
   }
   if (!prompt) {
     console.error("Error: task is required (provider path: coder agent)");
@@ -402,7 +405,7 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
   const rawAgentVars = referencedSecretsEnv(collectReferencedVars(cleanArgs));
   const payload = JSON.stringify({
     op: "agent.run",
-    args: cleanArgs,
+    args,
     vars: rawAgentVars,
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
