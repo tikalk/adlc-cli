@@ -1139,3 +1139,53 @@ test("iter-6: --provider coder on a command with no provider route is refused", 
   assert.equal(r.code, 1, "an unrouted provider command must not run locally");
   assert.match(`${r.stdout}${r.stderr}`, /not supported/i);
 });
+
+test("iter-7: a secret-shaped var is delivered in the vars channel, never inlined in the config", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-secretname-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    [
+      "schema_version: 1",
+      "name: ${WORKSPACE_NAME}",
+      "goal: |",
+      "  the tracker credential is ${GITLAB_TOKEN}",
+      "",
+    ].join("\n")
+  );
+  const transport = injectedTransport();
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const prevCwd = process.cwd();
+  const prevToken = process.env.GITLAB_TOKEN;
+  const prevName = process.env.WORKSPACE_NAME;
+  const cap = captureRoute();
+  process.env.GITLAB_TOKEN = "glpat-secret-value";
+  process.env.WORKSPACE_NAME = "probe-ws";
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderWorkspaceSetup(["workspace.yml"], {}, []);
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+    if (prevToken === undefined) delete process.env.GITLAB_TOKEN;
+    else process.env.GITLAB_TOKEN = prevToken;
+    if (prevName === undefined) delete process.env.WORKSPACE_NAME;
+    else process.env.WORKSPACE_NAME = prevName;
+  }
+  assert.equal(code, 0);
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const payload = JSON.parse(exec.input);
+  assert.equal(payload.vars.GITLAB_TOKEN, "glpat-secret-value", "the value must be delivered");
+  assert.ok(
+    !JSON.stringify(payload.config).includes("glpat-secret-value"),
+    "the value must never be inlined into the config that travels to the remote"
+  );
+  assert.ok(
+    JSON.stringify(payload.config).includes("${GITLAB_TOKEN}"),
+    "the config keeps the placeholder"
+  );
+});

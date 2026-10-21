@@ -237,6 +237,12 @@ export function expansionEnv(projectRoot = process.cwd(), env = process.env) {
   const secretSourced = loadSecretsEnv(projectRoot);
   const out = { ...env };
   for (const key of Object.keys(secretSourced)) out[key] = `\${${key}}`;
+  // A secret-SHAPED name is a secret wherever it came from: a token in the
+  // process env is as secret as one in secrets.env, and it must not be
+  // inlined into the config that travels to the remote.
+  for (const key of Object.keys(env)) {
+    if (SECRET_KEY_PATTERN.test(key)) out[key] = `\${${key}}`;
+  }
   return out;
 }
 

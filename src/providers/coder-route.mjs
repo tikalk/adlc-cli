@@ -306,7 +306,9 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     return 1;
   }
   const expanded = wsfile;
-  const referenced = collectReferencedVars(wsfile);
+  // The references come from the ORIGINAL file: after expansion the
+  // placeholders are gone, and nothing would be forwarded to the remote.
+  const referenced = collectReferencedVars(parseYaml(content));
   const { transport } = resolveCoderTransport();
   if (!transport) return failLive("workspace setup");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
