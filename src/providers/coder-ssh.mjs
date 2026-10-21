@@ -56,11 +56,18 @@ function runCoder(args, { input = "", timeoutMs = 120000 } = {}) {
   });
 }
 
-// A workspace is usable when it is running (not starting/stopped/failed).
+// A workspace is usable once its build is running (or finished running).
+// `coder list -o json` reports the build status in latest_build.status;
+// `coder show` has no JSON output.
+function workspaceStatus(workspace) {
+  return String(
+    workspace?.latest_build?.status ?? workspace?.status ?? workspace?.state ?? ""
+  ).toLowerCase();
+}
+
 function isRunning(workspace) {
-  const status = String(workspace?.status ?? workspace?.state ?? "").toLowerCase();
-  if (!status) return false;
-  return status === "running" || status === "started";
+  const status = workspaceStatus(workspace);
+  return status === "running" || status === "succeeded" || status === "started";
 }
 
 export function createCoderSshTransport({
@@ -70,9 +77,13 @@ export function createCoderSshTransport({
 } = {}) {
   async function provision(name) {
     if (!name) throw new Error("provision requires a workspace name");
-    const created = await runCoder(["create", name, "--template", template, "--yes"], {
-      timeoutMs: 300000,
-    });
+    // --use-parameter-defaults: the template declares rich parameters (CPU,
+    // memory, disk); without it `coder create` prompts and a non-TTY run
+    // dies with "prepare build: EOF".
+    const created = await runCoder(
+      ["create", name, "--template", template, "--use-parameter-defaults", "--yes"],
+      { timeoutMs: 300000 }
+    );
     if (created.code !== 0 && !/already exists/i.test(created.stderr + created.stdout)) {
       throw new Error(
         `coder create ${name} failed (exit ${created.code}): ${(created.stderr || created.stdout).trim()}`
@@ -81,19 +92,23 @@ export function createCoderSshTransport({
     const deadline = Date.now() + timeoutMs;
     let last = "no status yet";
     while (Date.now() < deadline) {
-      const show = await runCoder(["show", name, "--output", "json"]);
-      if (show.code === 0) {
+      const list = await runCoder(["list", "--all", "-o", "json"]);
+      if (list.code === 0) {
         try {
-          const workspace = JSON.parse(show.stdout);
-          if (isRunning(workspace)) {
-            return { name, host: `coder.${name}.main` };
+          const workspaces = JSON.parse(list.stdout);
+          const workspace = (Array.isArray(workspaces) ? workspaces : []).find(
+            (w) => w && w.name === name
+          );
+          if (workspace && isRunning(workspace)) {
+            // The coder SSH address for this template is <workspace>.main.
+            return { name, host: `${name}.main` };
           }
-          last = String(workspace?.status ?? workspace?.state ?? "unknown");
+          last = workspace ? workspaceStatus(workspace) || "unknown" : "not listed";
         } catch (err) {
-          last = `unparseable workspace json: ${err.message}`;
+          last = `unparseable workspace list: ${err.message}`;
         }
       } else {
-        last = (show.stderr || show.stdout).trim().split("\n").slice(-1)[0] ?? "unknown";
+        last = (list.stderr || list.stdout).trim().split("\n").slice(-1)[0] ?? "unknown";
       }
       await sleep(pollMs);
     }
@@ -106,10 +121,30 @@ export function createCoderSshTransport({
     const name = typeof handle === "string" ? handle : handle?.name;
     if (!name) throw new Error("exec requires a workspace name");
     const payload = JSON.parse(String(input ?? "{}"));
-    const command = remoteCommand(payload.op);
-    const envelope = `${Buffer.from(JSON.stringify(payload), "utf-8").toString("base64")}\n`;
-    const result = await runCoder(["ssh", name, "--", "sh", "-c", command], {
+    // Two hops, because `coder ssh` re-interprets its command line through
+    // the remote shell: a multi-line script passed as an argument does not
+    // survive. So the ENVELOPE (payload + step script, base64) is written to
+    // a file with a trivial command, and the runner script arrives on
+    // stdin of a second, equally trivial command.
+    const token = Math.random().toString(36).slice(2, 10);
+    const envelopePath = `/tmp/adlc-envelope-${token}.b64`;
+    const envelope = [
+      Buffer.from(JSON.stringify(payload), "utf-8").toString("base64"),
+      Buffer.from(remoteStep(payload.op), "utf-8").toString("base64"),
+    ].join("\n") + "\n";
+    const written = await runCoder(["ssh", name, "--", "tee", envelopePath], {
       input: envelope,
+      timeoutMs,
+    });
+    if (written.code !== 0) {
+      return {
+        stdout: written.stdout,
+        stderr: `${written.stderr}\n(failed to write the transport envelope to ${envelopePath})`,
+        exitCode: written.code,
+      };
+    }
+    const result = await runCoder(["ssh", name, "--", "sh"], {
+      input: remoteRunner(envelopePath),
       timeoutMs,
     });
     return { stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
@@ -118,57 +153,66 @@ export function createCoderSshTransport({
   return { provision, exec };
 }
 
-// The remote script: one base64 line on stdin, the payload decoded into a
-// file, the referenced vars exported (shell-quoted), the step executed, the
-// exit code propagated.
-const REMOTE_PRELUDE = `
+// The runner: read on stdin (so it never passes through a shell command
+// line), decode the envelope that was written to a file, run the step.
+function remoteRunner(envelopePath) {
+  return `
 set -u
 _d=$(mktemp -d)
-IFS= read -r _b64
-printf '%s' "$_b64" | base64 -d > "$_d/payload.json"
+_p=$(sed -n 1p ${envelopePath})
+_s=$(sed -n 2p ${envelopePath})
+printf '%s' "$_p" | base64 -d > "$_d/payload.json"
+printf '%s' "$_s" | base64 -d > "$_d/step.sh"
+sh "$_d/step.sh" "$_d"
+_rc=$?
+rm -rf "$_d" ${envelopePath}
+exit "$_rc"
+`;
+}
+
+// The per-op step script. It receives the payload directory as $1 and
+// returns the remote exit code.
+function remoteStep(op) {
+  const prelude = `
+set -u
+_d="$1"
 _op=$(jq -r '.op // empty' "$_d/payload.json")
-_jq_vars() { jq -r '(.vars // {}) | to_entries[] | "export \\(.key)=\\(.value | @sh)"' "$_d/payload.json" > "$_d/vars.sh"; . "$_d/vars.sh"; }
+_export_vars() { jq -r '(.vars // {}) | to_entries[] | "export \\(.key)=\\(.value | @sh)"' "$_d/payload.json" > "$_d/vars.sh"; . "$_d/vars.sh"; }
 _rc=1
 case "$_op" in
 `;
-
-function remoteCommand(op) {
   const tail = `
 *)
   echo "adlc: unsupported op '$_op'" >&2
   _rc=2
   ;;
 esac
-rm -rf "$_d"
 exit "$_rc"
 `;
   switch (op) {
     case "workspace.setup":
-      return `${REMOTE_PRELUDE}  workspace.setup)
+      return `${prelude}  workspace.setup)
     jq -r '.configYaml // empty' "$_d/payload.json" > "$_d/workspace.yml"
-    _jq_vars
+    _export_vars
     adlc-cli workspace setup "$_d/workspace.yml"
     _rc=$?
     ;;${tail}`;
     case "agent.run":
-      return `${REMOTE_PRELUDE}  agent.run)
-    _jq_vars
+      return `${prelude}  agent.run)
+    _export_vars
     _task=$(jq -r '.task // empty' "$_d/payload.json")
     adlc-cli agent run "$_task"
     _rc=$?
     ;;${tail}`;
     case "workflow.run":
-      return `${REMOTE_PRELUDE}  workflow.run)
-    _jq_vars
+      return `${prelude}  workflow.run)
+    _export_vars
     _source=$(jq -r '.source // empty' "$_d/payload.json")
-    _inputs=$(jq -r '(.inputs // {}) | to_entries[] | "\\(.key)=\\(.value)"' "$_d/payload.json")
-    set -- "$_source"
-    for _kv in $_inputs; do set -- "$@" --input "$_kv"; done
-    adlc-cli workflow run "$@"
+    adlc-cli workflow run "$_source" $(jq -r '(.inputs // {}) | to_entries[] | "--input \\(.key)=\\(.value)"' "$_d/payload.json")
     _rc=$?
     ;;${tail}`;
     default:
-      return `${REMOTE_PRELUDE}  *)
+      return `${prelude}  *)
   echo "adlc: unsupported op '$_op'" >&2
   _rc=2
   ;;${tail}`;

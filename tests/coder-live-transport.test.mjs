@@ -23,14 +23,14 @@ case "\${1:-}" in
   create)
     echo "create $*" >> "$FAKE_CODER_RECORD"
     exit 0 ;;
-  show)
-    echo "show $*" >> "$FAKE_CODER_RECORD"
-    printf '%s' '${JSON.stringify({ name: "demo", status })}'
+  list)
+    echo "list $*" >> "$FAKE_CODER_RECORD"
+    printf '%s' '${JSON.stringify([{ name: "demo", latest_build: { status } }])}'
     exit 0 ;;
   ssh)
     shift
     echo "ssh $*" >> "$FAKE_CODER_RECORD"
-    cat > "$FAKE_CODER_STDIN"
+    cat >> "$FAKE_CODER_STDIN"
     printf '%s' '${sshStdout}'
     printf '%s' '${sshStderr}' >&2
     exit ${sshExit} ;;
@@ -76,10 +76,10 @@ test("live transport: provisions the workspace and waits for it to run", async (
     const transport = createCoderSshTransport({ pollMs: 10 });
     const handle = await transport.provision("demo");
     assert.equal(handle.name, "demo");
-    assert.equal(handle.host, "coder.demo.main");
+    assert.equal(handle.host, "demo.main");
     const calls = readFileSync(record.recordFile, "utf-8");
-    assert.match(calls, /create demo --template general --yes/);
-    assert.match(calls, /show demo/);
+    assert.match(calls, /create demo --template general --use-parameter-defaults --yes/);
+    assert.match(calls, /list --all -o json/);
   });
 });
 
@@ -113,22 +113,40 @@ test("live transport: the payload travels on stdin, the secret never in argv", a
     const calls = readFileSync(record.recordFile, "utf-8");
     assert.ok(!calls.includes("tok-secret-999"), "a secret must never appear in argv");
     // ...it is in the stdin envelope, base64-encoded.
-    const envelope = readFileSync(record.stdinFile, "utf-8").trim();
+    const envelope = readFileSync(record.stdinFile, "utf-8").trim().split("\n")[0];
     const decoded = JSON.parse(Buffer.from(envelope, "base64").toString("utf-8"));
     assert.equal(decoded.vars.MY_API_TOKEN, "tok-secret-999");
     assert.equal(decoded.task, "deploy the thing");
   });
 });
 
-test("live transport: the remote command is op-specific", async () => {
+test("live transport: the step script is op-specific and travels in the envelope", async () => {
   await withFakeCoder({}, async (record) => {
     const transport = createCoderSshTransport();
     await transport.exec({ name: "demo" }, JSON.stringify({ op: "workspace.setup", configYaml: "schema_version: 1\n" }));
     await transport.exec({ name: "demo" }, JSON.stringify({ op: "workflow.run", source: "factory", inputs: { run_id: "r-7" } }));
+    // The remote command lines are trivial (tee / sh) — the per-op script
+    // travels in the envelope, because `coder ssh` re-interprets its
+    // command line through the remote shell.
     const calls = readFileSync(record.recordFile, "utf-8");
-    assert.match(calls, /adlc-cli workspace setup/);
-    assert.match(calls, /adlc-cli workflow run/);
-    assert.match(calls, /--input/);
+    assert.ok(!calls.includes("adlc-cli workspace setup"), "the step script must not be in argv");
+    assert.match(calls, /tee \/tmp\/adlc-envelope-/);
+    const chunks = readFileSync(record.stdinFile, "utf-8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return Buffer.from(line, "base64").toString("utf-8");
+        } catch {
+          return "";
+        }
+      });
+    const all = chunks.join("\n");
+    assert.match(all, /"op":"workspace.setup"/);
+    assert.match(all, /adlc-cli workspace setup/);
+    assert.match(all, /adlc-cli workflow run/);
+    assert.match(all, /--input/);
   });
 });
 
