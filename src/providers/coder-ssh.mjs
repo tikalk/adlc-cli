@@ -124,30 +124,53 @@ export function createCoderSshTransport({
     // Two hops, because `coder ssh` re-interprets its command line through
     // the remote shell: a multi-line script passed as an argument does not
     // survive. So the ENVELOPE (payload + step script, base64) is written to
-    // a file with a trivial command, and the runner script arrives on
-    // stdin of a second, equally trivial command.
+    // a file with a trivial command, and the runner script arrives on stdin
+    // of a second, equally trivial command.
     const token = Math.random().toString(36).slice(2, 10);
     const envelopePath = `/tmp/adlc-envelope-${token}.b64`;
     const envelope = [
       Buffer.from(JSON.stringify(payload), "utf-8").toString("base64"),
       Buffer.from(remoteStep(payload.op), "utf-8").toString("base64"),
     ].join("\n") + "\n";
-    const written = await runCoder(["ssh", name, "--", "tee", envelopePath], {
-      input: envelope,
-      timeoutMs,
-    });
-    if (written.code !== 0) {
-      return {
-        stdout: written.stdout,
-        stderr: `${written.stderr}\n(failed to write the transport envelope to ${envelopePath})`,
-        exitCode: written.code,
-      };
+
+    const attempt = async () => {
+      const written = await runCoder(["ssh", name, "--", "tee", envelopePath], {
+        input: envelope,
+        timeoutMs,
+      });
+      if (written.code !== 0) return { written, result: null };
+      const result = await runCoder(["ssh", name, "--", "sh"], {
+        input: remoteRunner(envelopePath),
+        timeoutMs,
+      });
+      return { written, result };
+    };
+
+    let { written, result } = await attempt();
+    const code = result ? result.code : written.code;
+    const stderr = result ? result.stderr : written.stderr;
+    // The workspace may have been deleted out of band while the handle
+    // survived (the pilot hit exactly this: a stale handle + a deleted
+    // workspace = "Resource not found"). Re-create it once and retry.
+    if (code !== 0 && /not found|no longer exists|resource not found/i.test(stderr)) {
+      console.error(`[provider] workspace '${name}' is gone — re-creating it and retrying once`);
+      try {
+        await this.provision(name);
+      } catch (err) {
+        return {
+          stdout: result ? result.stdout : written.stdout,
+          stderr: `${stderr}\n(re-creating the workspace failed: ${err.message})`,
+          exitCode: code,
+        };
+      }
+      ({ written, result } = await attempt());
     }
-    const result = await runCoder(["ssh", name, "--", "sh"], {
-      input: remoteRunner(envelopePath),
-      timeoutMs,
-    });
-    return { stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
+    const finalResult = result ?? written;
+    return {
+      stdout: finalResult.stdout,
+      stderr: result ? finalResult.stderr : `${finalResult.stderr}\n(failed to write the transport envelope to ${envelopePath})`,
+      exitCode: finalResult.code,
+    };
   }
 
   return { provision, exec };

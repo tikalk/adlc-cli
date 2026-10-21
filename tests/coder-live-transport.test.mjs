@@ -22,6 +22,7 @@ set -u
 case "\${1:-}" in
   create)
     echo "create $*" >> "$FAKE_CODER_RECORD"
+    touch "$FAKE_CODER_RECORD.created"
     exit 0 ;;
   list)
     echo "list $*" >> "$FAKE_CODER_RECORD"
@@ -185,4 +186,64 @@ test("live transport: the referenced vars are persisted for the developer's late
     assert.match(step, /secrets\.env/, "the step must persist the vars for the session");
     assert.match(step, /chmod 600/, "the persisted vars file must be 0600");
   });
+});
+
+test("live transport: a workspace deleted out of band is re-created and the step retried", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-gone-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const recordFile = join(dir, "record.txt");
+  const script = join(bin, "coder");
+  writeFileSync(
+    script,
+    `#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  create)
+    echo "create $*" >> "$FAKE_CODER_RECORD"
+    touch "$FAKE_CODER_RECORD.created"
+    exit 0 ;;
+  show)
+    echo "show $*" >> "$FAKE_CODER_RECORD"
+    printf '%s' '{"name":"demo","latest_build":{"status":"running"}}'
+    exit 0 ;;
+  list)
+    echo "list $*" >> "$FAKE_CODER_RECORD"
+    printf '%s' '[{"name":"demo","latest_build":{"status":"running"}}]'
+    exit 0 ;;
+  ssh)
+    shift
+    cat >> "$FAKE_CODER_STDIN"
+    if [ ! -f "$FAKE_CODER_RECORD.created" ]; then
+      echo "Resource not found or you do not have access to this resource" >&2
+      exit 1
+    fi
+    echo "ssh ok" >> "$FAKE_CODER_RECORD"
+    printf '%s' "remote ran the step"
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+`
+  );
+  chmodSync(script, 0o755);
+  writeFileSync(recordFile, "");
+  const prevPath = process.env.PATH;
+  const prevRecord = process.env.FAKE_CODER_RECORD;
+  process.env.PATH = `${bin}:${prevPath}`;
+  process.env.FAKE_CODER_RECORD = recordFile;
+  try {
+    const transport = createCoderSshTransport({ pollMs: 10 });
+    const result = await transport.exec(
+      { name: "demo" },
+      JSON.stringify({ op: "agent.run", task: "x", vars: {} })
+    );
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /remote ran the step/);
+    const calls = readFileSync(recordFile, "utf-8");
+    assert.match(calls, /create demo/, "the missing workspace must be re-created");
+  } finally {
+    process.env.PATH = prevPath;
+    if (prevRecord === undefined) delete process.env.FAKE_CODER_RECORD;
+    else process.env.FAKE_CODER_RECORD = prevRecord;
+  }
 });
