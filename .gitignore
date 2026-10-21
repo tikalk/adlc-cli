@@ -25,3 +25,7 @@ skills-lock.json
 
 # graphify knowledge graph (generated)
 graphify-out/
+
+# Provider transport runtime artifacts (handles, run state)
+.adlc/workspaces/
+.adlc/workflows/runs/

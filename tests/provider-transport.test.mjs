@@ -392,3 +392,66 @@ test("iter-3: workspace name is sanitized before use as a handle filename", asyn
     .catch(() => false);
   assert.equal(escaped, false, "handle file must not escape the workspaces dir");
 });
+
+test("iter-3: local workspace setup expands ${VAR} like the provider path", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-localvars-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    ["schema_version: 1", "name: ${WS_NAME}", "workspace:", "  dirs: []", ""].join("\n")
+  );
+  const { cmdWorkspaceSetup } = await import("../src/commands/workspace.mjs");
+  const cwd = process.cwd();
+  process.chdir(tmp);
+  const prev = process.env.WS_NAME;
+  process.env.WS_NAME = "local-ws";
+  const lines = [];
+  const origLog = console.log;
+  console.log = (...args) => lines.push(args.join(" "));
+  let code;
+  try {
+    code = await cmdWorkspaceSetup(["workspace.yml"], { agents: ["opencode"], dryRun: true });
+  } finally {
+    console.log = origLog;
+    process.chdir(cwd);
+    if (prev === undefined) delete process.env.WS_NAME;
+    else process.env.WS_NAME = prev;
+  }
+  assert.equal(code, 0, `workspace setup must succeed: ${lines.join(" | ")}`);
+  assert.ok(
+    lines.some((l) => l.includes("local-ws")),
+    `the expanded name must be reported, got ${JSON.stringify(lines)}`
+  );
+  assert.ok(
+    !lines.some((l) => l.includes("${WS_NAME}")),
+    `the raw placeholder must not survive expansion: ${JSON.stringify(lines)}`
+  );
+});
+
+test("iter-3: local workspace setup fails fast on a missing ${VAR}", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-localvars2-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    ["schema_version: 1", "name: ${WS_NAME_MISSING}", "workspace:", "  dirs: []", ""].join("\n")
+  );
+  const { cmdWorkspaceSetup } = await import("../src/commands/workspace.mjs");
+  const cwd = process.cwd();
+  process.chdir(tmp);
+  const errs = [];
+  const origErr = console.error;
+  console.error = (...args) => errs.push(args.join(" "));
+  let code;
+  try {
+    code = await cmdWorkspaceSetup(["workspace.yml"], { agents: ["opencode"], dryRun: true });
+  } finally {
+    console.error = origErr;
+    process.chdir(cwd);
+  }
+  assert.equal(code, 1, "a missing variable must fail the setup");
+  assert.match(errs.join(" "), /WS_NAME_MISSING/, "the error must name the missing variable");
+});

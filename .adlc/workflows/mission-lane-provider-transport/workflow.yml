@@ -1,0 +1,30 @@
+workflow:
+  id: mission-lane-provider-transport
+  name: mission-lane-provider-transport
+  version: "1.0.0"
+description: Validation mission for the ADR-007 remote lane — workspace setup is done by adlc-cli, not by a skill-side script.
+steps:
+  - id: provision
+    type: shell
+    run: |
+      export WORKSPACE_NAME=adlc-cli-mission-lane
+      export BRANCH=main
+      cli="${ADLC_CLI_BIN:-adlc-cli}"
+      $cli workspace setup --provider coder
+  - id: verify-handle
+    type: shell
+    run: |
+      handle=.adlc/workspaces/adlc-cli-mission-lane.json
+      test -f "$handle" || { echo "missing handle $handle"; exit 1; }
+      echo "handle ok: $handle"
+  - id: verify-no-script
+    type: shell
+    run: |
+      test ! -e skills/factory/factory-mission/scripts/bash/remote-coder-env-sync.sh \
+        || { echo "env-sync script still present — the lane must not need it"; exit 1; }
+      echo "no env-sync script needed"
+  - id: handoff
+    type: shell
+    run: |
+      echo "attach instructions: coder ssh adlc-cli-mission-lane"
+      echo "then: opencode --prompt \"\$(cat .adlc/workflows/runs/<run_id>/brief.md)\""

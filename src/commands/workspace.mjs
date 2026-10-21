@@ -112,6 +112,17 @@ export async function cmdWorkspaceSetup(args, flags) {
     return 1;
   }
 
+  // 3.5 Expand ${VAR} — same contract as the provider path: fail fast on a
+  // missing variable (naming it) so a repo-owned workspace file can carry
+  // per-run values (e.g. name: ${WORKSPACE_NAME}, branch: ${BRANCH}).
+  try {
+    const { expandWorkspaceVars, loadSecretsEnv } = await import("../providers/transport.mjs");
+    wsfile = expandWorkspaceVars(wsfile, { ...process.env, ...loadSecretsEnv(projectRoot) });
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
+
   // 4. Resolve agent: -a flag > workspace agent: > init-options.json
   const agent = (flags.agents && flags.agents[0]) || wsfile.agent || readAgent();
   if (!agent) {

@@ -1,0 +1,14 @@
+schema_version: 1
+name: ${WORKSPACE_NAME}
+agent: opencode
+workspace:
+  git:
+    - repo: git@github.com:tikalk/adlc-cli.git
+      path: adlc-cli
+      branch: ${BRANCH}
+  dirs:
+    - .adlc/workflows/runs
+skills:
+  sources:
+    - tikalk/adlc-team-skills
+goal: Verify the remote workspace is ready: the repo is cloned at the pinned branch, the adlc-team-skills are installed for opencode, and `adlc-cli --help` plus `opencode --version` both resolve. Report the toolchain versions.
