@@ -20,8 +20,11 @@ steps:
   - id: verify-no-script
     type: shell
     run: |
-      test ! -e skills/factory/factory-mission/scripts/bash/remote-coder-env-sync.sh \
-        || { echo "env-sync script still present — the lane must not need it"; exit 1; }
+      for p in \
+        .agents/skills/factory-mission/scripts/bash/remote-coder-env-sync.sh \
+        skills/factory/factory-mission/scripts/bash/remote-coder-env-sync.sh; do
+        test ! -e "$p" || { echo "env-sync script still present at $p — the lane must not need it"; exit 1; }
+      done
       echo "no env-sync script needed"
   - id: handoff
     type: shell
