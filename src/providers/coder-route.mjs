@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { parseYaml } from "../utils/yaml.mjs";
 import {
   validateWorkspaceConfig,
+  expandWorkspaceText,
   expandWorkspaceVars,
   expansionEnv,
   collectReferencedVars,
@@ -16,21 +17,25 @@ import {
   remoteInputs,
 } from "./transport.mjs";
 import { createCoderProvider } from "./coder.mjs";
+import { createCoderSshTransport } from "./coder-ssh.mjs";
 
 const WORKSPACE_FILE = ".adlc/workspace.yml";
 const LIVE_MSG = "not implemented: live coder transport";
 
+// Transport selection.
+//
+// The DEFAULT is the real SSH transport: a command that asks for a remote
+// workspace must never silently get a mock (a mock "succeeds" without a
+// remote existing — the worst possible failure for a pilot). The mock is
+// opt-in for offline contract tests: ADLC_CODER_MOCK=1, or an injected
+// transport (globalThis.__ADLC_CODER_TRANSPORT__).
 export function resolveCoderTransport() {
   const injected = globalThis.__ADLC_CODER_TRANSPORT__;
   if (injected) return { transport: injected, live: false };
-  if (
-    process.env.ADLC_CODER_LIVE === "1" ||
-    process.env.ADLC_CODER_SSH_HOST ||
-    process.env.CODER_SSH_HOST
-  ) {
-    return { transport: null, live: true };
+  if (process.env.ADLC_CODER_MOCK === "1") {
+    return { transport: createMockTransport(), live: false };
   }
-  return { transport: createMockTransport(), live: false };
+  return { transport: createCoderSshTransport(), live: true };
 }
 
 function createMockTransport() {
@@ -255,7 +260,6 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     console.error(`Error: ${err.message}`);
     return 1;
   }
-  if (liveRequired(argv)) return failLive("workspace setup");
   const projectRoot = process.cwd();
   const explicit = (args ?? []).find((a) => !a.startsWith("-"));
   const envFile = (process.env.ADLC_WORKSPACE_FILE || "").trim();
@@ -277,10 +281,21 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     return 1;
   }
   if (content === null) return 1;
+  // Expand the TEXT first: a remote host receives the file, not a parsed
+  // object, so the substitution has to happen while the text is intact.
+  let expandedText;
+  try {
+    expandedText = expandWorkspaceText(content, expansionEnv(projectRoot));
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
   let wsfile;
   try {
-    if (/^[ ]*\t/m.test(content)) throw new Error("tab indentation is not valid YAML (use spaces)");
-    wsfile = parseYaml(content);
+    if (/^[ ]*\t/m.test(expandedText)) {
+      throw new Error("tab indentation is not valid YAML (use spaces)");
+    }
+    wsfile = parseYaml(expandedText);
     validateWorkspaceConfig(wsfile);
   } catch (err) {
     console.error(`Error: invalid workspace file: ${err.message}`);
@@ -290,16 +305,10 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     console.error(`Error: workspace file missing schema_version (${source})`);
     return 1;
   }
-  let expanded;
-  try {
-    expanded = expandWorkspaceVars(wsfile, expansionEnv(projectRoot));
-  } catch (err) {
-    console.error(`Error: ${err.message}`);
-    return 1;
-  }
+  const expanded = wsfile;
   const referenced = collectReferencedVars(wsfile);
-  const { transport, live } = resolveCoderTransport();
-  if (live || !transport) return failLive("workspace setup");
+  const { transport } = resolveCoderTransport();
+  if (!transport) return failLive("workspace setup");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   const requestedRaw = tryExplicitWorkspaceName(argv ?? []);
   const requested = typeof requestedRaw === "string" ? requestedRaw : null;
@@ -333,6 +342,7 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   const payload = JSON.stringify({
     op: "workspace.setup",
     config: expanded,
+    configYaml: expandedText,
     vars,
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
@@ -355,7 +365,6 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     console.error(`Error: ${err.message}`);
     return 1;
   }
-  if (liveRequired(argv ?? runArgs ?? [])) return failLive("agent run");
   // The provider/workspace flags are not part of the task: strip them before
   // the task is read, or the provider name is mistaken for the task.
   const cleanArgs = stripProviderArgs(runArgs ?? []);
@@ -387,8 +396,8 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     console.error("Error: task is required (provider path: coder agent)");
     return 1;
   }
-  const { transport, live } = resolveCoderTransport();
-  if (live || !transport) return failLive("agent run");
+  const { transport } = resolveCoderTransport();
+  if (!transport) return failLive("agent run");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   const target = await resolveTargetWorkspace(provider, argv ?? [], "agent run");
   if (!target.ok) {
@@ -406,6 +415,7 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
   const payload = JSON.stringify({
     op: "agent.run",
     args,
+    task: prompt,
     vars: rawAgentVars,
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
@@ -431,7 +441,6 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     console.error(`Error: ${err.message}`);
     return 1;
   }
-  if (liveRequired(rawArgv)) return failLive("workflow run");
   // The source is the first real positional — an --input/--provider value is
   // never the source.
   const source = firstPositional(args ?? [], rawArgv ?? []);
@@ -459,8 +468,8 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     const eq = pair.indexOf("=");
     inputs[pair.slice(0, eq)] = pair.slice(eq + 1);
   }
-  const { transport, live } = resolveCoderTransport();
-  if (live || !transport) return failLive("workflow run");
+  const { transport } = resolveCoderTransport();
+  if (!transport) return failLive("workflow run");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   const target = await resolveTargetWorkspace(provider, rawArgv ?? [], "workflow run");
   if (!target.ok) {

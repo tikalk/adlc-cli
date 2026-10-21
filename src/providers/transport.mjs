@@ -52,6 +52,20 @@ export function validateWorkspaceConfig(config) {
   return config;
 }
 
+// Expand ${VAR} in the RAW workspace file text. Used when the file must be
+// materialized on a remote host: the remote receives text, not a parsed
+// object, so the substitution happens here — with the same fail-fast rules
+// and the same "a secret-sourced var keeps its placeholder" rule.
+export function expandWorkspaceText(text, env = {}) {
+  return String(text ?? "").replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => {
+    const v = env[name] ?? process.env[name];
+    if (v === undefined || v === "") {
+      throw new Error(`Missing required workspace variable: ${name}`);
+    }
+    return v;
+  });
+}
+
 export function expandWorkspaceVars(value, env = {}) {
   if (typeof value === "string") {
     return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => {

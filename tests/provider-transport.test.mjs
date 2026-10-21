@@ -5,6 +5,10 @@ import { promisify } from "node:util";
 import { validateWorkspaceConfig, expandWorkspaceVars, normalizeEvent, checkHopDepth, MAX_HOPS } from "../src/providers/transport.mjs";
 import { createCoderProvider } from "../src/providers/coder.mjs";
 
+// The provider transport defaults to the REAL SSH transport; the contract
+// tests run against the mock, explicitly.
+process.env.ADLC_CODER_MOCK = "1";
+
 const exec = promisify(execFile);
 const runCli = (args) =>
   exec(process.execPath, ["bin/adlc-cli.mjs", ...args]).catch((e) => e);
