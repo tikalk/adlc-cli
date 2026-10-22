@@ -1016,7 +1016,9 @@ test("iter-6: the repo's own workspace file is satisfiable by the documented lan
   }
 });
 
-test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () => {
+const isWindows = process.platform === "win32";
+const stdinTest = isWindows ? test.skip : test;
+stdinTest("iter-7: the stdin task REPLACES the '-' in the outbound args", async () => {
   // The remote agent must receive the task text, not the "-" marker.
   const { spawnSync } = await import("node:child_process");
   const { writeFileSync, mkdirSync, rmSync } = await import("node:fs");
