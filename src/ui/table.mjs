@@ -87,7 +87,11 @@ export function table({
         cols
           .map((col, index) => {
             const cell = row?.[index];
-            const text = cell === undefined || cell === null ? "" : String(cell);
+            // asText, not String: the grid branch is what keyValue() renders,
+            // and keyValue carries untrusted values (a workspace file's name,
+            // a state file's current step). String(cell) would let a raw ESC
+            // byte reach the terminal.
+            const text = cell === undefined || cell === null ? "" : asText(cell);
             if (col.justify === "right") return padStart(text, widths[index]);
             return padEnd(text, widths[index]);
           })
@@ -112,10 +116,11 @@ export function table({
   for (const row of kept) {
     out.push(
       `│${cols
-        .map((_, index) => {
+        .map((col, index) => {
           const cell = row?.[index];
           const text = cell === undefined || cell === null ? "" : asText(cell);
-          return ` ${padEnd(text, widths[index])} `;
+          const padded = col.justify === "right" ? padStart(text, widths[index]) : padEnd(text, widths[index]);
+          return ` ${padded} `;
         })
         .join("│")}│`,
     );

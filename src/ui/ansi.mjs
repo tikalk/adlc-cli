@@ -71,7 +71,9 @@ function detectColorSupport() {
     return !(value === "0" || value === "false" || value === "no");
   }
   if (process.env.TERM === "dumb") return false;
-  return Boolean(process.stdout && process.stdout.isTTY);
+  // Either stream may be a terminal: a human may be watching stderr while
+  // stdout is piped, or the reverse.
+  return Boolean((process.stdout && process.stdout.isTTY) || (process.stderr && process.stderr.isTTY));
 }
 
 /**

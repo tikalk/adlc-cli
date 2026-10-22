@@ -11,7 +11,7 @@
 // and print `[String (SafeString): '…']` instead of the text. `out()`/`err()`
 // interpolate, which yields the raw string.
 
-import { style, asText } from "./ansi.mjs";
+import { style, asText, stripAnsi } from "./ansi.mjs";
 import { sym, ACCENT } from "./theme.mjs";
 
 /** Write a line to stdout. */
@@ -19,9 +19,16 @@ export function out(text = "") {
   process.stdout.write(`${text}\n`);
 }
 
-/** Write a line to stderr. */
+/**
+ * Write a line to stderr.
+ *
+ * Escape sequences are stripped when stderr is not a terminal: a redirected
+ * stderr log or a CI error capture must not carry ANSI bytes.
+ */
 export function err(text = "") {
-  process.stderr.write(`${text}\n`);
+  const value = String(text ?? "");
+  const needsStrip = !process.stderr || !process.stderr.isTTY;
+  process.stderr.write(`${needsStrip ? stripAnsi(value) : value}\n`);
 }
 
 /** Write raw text to stdout with no trailing newline. */
@@ -81,4 +88,19 @@ export function detail(text) {
  */
 export function item(text, { glyph = sym.bullet, color = "gray" } = {}) {
   out(`  ${style(glyph, color)} ${asText(text)}`);
+}
+
+/**
+ * A step-list section header: `▸ <text>`.
+ *
+ * Streaming flows (skills add, workspace setup) use these instead of panels:
+ * a box would be torn apart by the interleaved output of the child
+ * processes they spawn. The items are printed one at a time as they happen,
+ * so the section header is the only shared part (ADR-444 rule 4).
+ *
+ * @param {string} text
+ */
+export function section(text) {
+  out("");
+  out(`${style("▸", ACCENT)} ${style(text, "bold")}`);
 }

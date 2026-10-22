@@ -40,8 +40,9 @@ export {
   note,
   detail,
   item,
+  section,
 } from "./console.mjs";
 
-export { panel, stepList } from "./panel.mjs";
+export { panel } from "./panel.mjs";
 export { table, keyValue } from "./table.mjs";
 export { createStepTracker } from "./tree.mjs";

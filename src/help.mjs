@@ -110,6 +110,19 @@ export function printCliHelp() {
   );
 
   out(
+    section("Color Control", [
+      ...pairs([
+        ["--color", "Force ANSI color on, even when piped"],
+        ["--no-color", "Force ANSI color off"],
+        ["NO_COLOR=1", "Disable color (any value; no-color.org)"],
+        ["FORCE_COLOR=1", "Force color on (overrides TTY detection)"],
+        ["--format json", "Always disables color — the JSONL stream is a machine contract"],
+      ]),
+      tint("Color follows TTY detection by default: on in a terminal, off when piped.", "gray"),
+    ]),
+  );
+
+  out(
     section("Examples", [
       ...pairs([
         ["adlc-cli skills add tikalk/adlc-team-skills -a opencode", ""],

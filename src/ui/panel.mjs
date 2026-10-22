@@ -88,25 +88,3 @@ export function panel({
   );
   return new SafeString(out.join("\n"));
 }
-
-/**
- * Render an indented step list — used where a child process writes straight
- * to the terminal, so a box would be torn apart by interleaved output.
- *
- *   ▸ opencode (opencode)
- *     → npx skills add tikalk/adlc-team-skills -a opencode
- *     ✓ Found 12 skill(s) in .agents/skills
- *
- * @param {string} headingText
- * @param {Array<{text: string, color?: string, glyph?: string}>} items
- * @returns {string}
- */
-export function stepList(headingText, items = []) {
-  const lines = [];
-  if (headingText) lines.push(`${style("▸", ACCENT)} ${style(headingText, "bold")}`);
-  for (const item of items) {
-    const glyph = item.glyph ? `${style(item.glyph, item.color ?? "gray")} ` : "";
-    lines.push(`  ${glyph}${asText(item.text)}`);
-  }
-  return lines.join("\n");
-}

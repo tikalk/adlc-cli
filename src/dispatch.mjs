@@ -18,7 +18,7 @@ import {
   printWorkflowHelp,
   printHelp,
 } from "./help.mjs";
-import { setColorMode, err, style } from "./ui/index.mjs";
+import { setColorMode, out, err, style } from "./ui/index.mjs";
 
 // Single source of truth: package.json (drifts when hard-coded — v2.1.0
 // shipped printing "2.0.0"). dispatch.mjs lives in src/, so ../package.json
@@ -197,7 +197,7 @@ function runNewTree({ command, args, flags }, argv) {
       }
     }
     case "version":
-      console.log(`adlc-cli ${VERSION}`);
+      out(`adlc-cli ${VERSION}`);
       return 0;
     case "help":
       printCliHelp();

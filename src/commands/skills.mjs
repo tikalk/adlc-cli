@@ -24,6 +24,7 @@ import {
   out,
   error,
   item,
+  section,
   panel,
   table,
   keyValue,
@@ -36,10 +37,10 @@ import {
 
 // A step-list header for one agent. A panel is deliberately not used here:
 // `npx` writes straight to the terminal, so a box would be torn apart by the
-// interleaved child output.
+// interleaved child output. The items are printed one at a time as they
+// happen, so the header is the only part a shared primitive can own.
 function agentHeader(agent, agentKey) {
-  out("");
-  out(`${style("▸", ACCENT)} ${style(`${agent.name} (${agentKey})`, "bold")}`);
+  section(`${agent.name} (${agentKey})`);
 }
 
 // `flags.agents` is always an array — an empty array is truthy, so the old

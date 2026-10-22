@@ -17,7 +17,7 @@ import {
   uncommittedRecords,
   validateGateContext,
 } from "../gate-context.mjs";
-import { out, panel, style, tint, sanitize, sanitizeLines, sym, ACCENT } from "../../ui/index.mjs";
+import { out, panel, style, tint, combine, sanitize, sanitizeLines, sym, ACCENT } from "../../ui/index.mjs";
 
 export class GateStep extends StepBase {
   static typeKey = "gate";
@@ -281,7 +281,10 @@ export class GateStep extends StepBase {
   static async prompt(message, options) {
     const lines = sanitizeLines(message);
     lines.push("");
-    options.forEach((opt, i) => lines.push(`${style(`[${i + 1}]`, ACCENT)} ${sanitize(opt)}`));
+    // combine(), not a template literal: a template literal would drop the
+    // SafeString tag, and panel()'s asText() would then strip the ESC byte
+    // and leave a literal "[36m" visible in the prompt.
+    options.forEach((opt, i) => lines.push(combine(style(`[${i + 1}]`, ACCENT), " ", sanitize(opt))));
     out("");
     out(panel({ title: "Gate", lines }));
 

@@ -291,15 +291,15 @@ async function cmdWorkflowPark(rest, rawArgv) {
   const runId = firstPositional(rest, rawArgv);
   const handleFile = extractFlagValue(rawArgv, "handle-file");
   if (!runId || !handleFile) {
-    console.error("Usage: adlc-cli workflow park <run_id> --handle-file <path> [--remote <name>]");
+    err("Usage: adlc-cli workflow park <run_id> --handle-file <path> [--remote <name>]");
     return 1;
   }
   try {
     const ref = parkRun(process.cwd(), runId, { handleFile, remote: extractFlagValue(rawArgv, "remote") ?? "origin" });
-    console.log(`parked ${runId} → ${ref}`);
+    out(`parked ${runId} → ${ref}`);
     return 0;
   } catch (exc) {
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 }
@@ -308,7 +308,7 @@ async function cmdWorkflowPark(rest, rawArgv) {
 async function cmdWorkflowRestore(rest, rawArgv) {
   const runId = firstPositional(rest, rawArgv);
   if (!runId) {
-    console.error("Usage: adlc-cli workflow restore <run_id> [--remote <name>] [--issue-ref <ref>]");
+    err("Usage: adlc-cli workflow restore <run_id> [--remote <name>] [--issue-ref <ref>]");
     return 1;
   }
   try {
@@ -316,10 +316,10 @@ async function cmdWorkflowRestore(rest, rawArgv) {
       remote: extractFlagValue(rawArgv, "remote") ?? "origin",
       issueRef: extractFlagValue(rawArgv, "issue-ref"),
     });
-    console.log(`restored ${runId} → ${dir}`);
+    out(`restored ${runId} → ${dir}`);
     return 0;
   } catch (exc) {
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 }
@@ -585,27 +585,24 @@ async function cmdWorkflowState(rest, rawArgv) {
       }
       case "help":
       default:
-        out(
-          panel({
-            title: "Usage",
-            lines: [
-              tint("adlc-cli workflow state <command>", "bold"),
-              "",
-              ...[
-                ["start   --workflow <id|path> [--run-id <id>] [--input k=v]", "Create a run (lease acquired)"],
-                ["advance <run_id> --step <id> --status completed|failed", "Record a step result"],
-                ["  [--output-file <path> | --output-json <json>] [--error <msg>]", ""],
-                ["pause   <run_id> --step <id>", "Park at a gate/checkpoint (lease released)"],
-                ["fail    <run_id> --error <msg>", "Terminal failure (lease released)"],
-                ["show    <run_id>", "Read-only state access"],
-              ].map(([label, description]) =>
-                description
-                  ? combine(tint(label, ACCENT), "  ", tint(description, "gray"))
-                  : tint(label, "gray"),
-              ),
-            ],
-          }),
-        );
+        // Plain text, deliberately: the `workflow state` family is the
+        // LLM-executor's machine API (ADR-395) and its stdout is parsed, not
+        // read. ADR-444 rule 2 keeps this family unstyled — the help
+        // included, so an agent that runs `state help` gets clean text.
+        out("");
+        out("Usage: adlc-cli workflow state <command>");
+        out("");
+        out("Commands:");
+        for (const [label, description] of [
+          ["start   --workflow <id|path> [--run-id <id>] [--input k=v]", "Create a run (lease acquired)"],
+          ["advance <run_id> --step <id> --status completed|failed", "Record a step result"],
+          ["  [--output-file <path> | --output-json <json>] [--error <msg>]", ""],
+          ["pause   <run_id> --step <id>", "Park at a gate/checkpoint (lease released)"],
+          ["fail    <run_id> --error <msg>", "Terminal failure (lease released)"],
+          ["show    <run_id>", "Read-only state access"],
+        ]) {
+          out(description ? `${label}  ${description}` : label);
+        }
         return sub === "help" ? 0 : 1;
     }
   } catch (exc) {

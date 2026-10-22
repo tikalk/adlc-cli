@@ -16,6 +16,7 @@ import {
   warn,
   success,
   item,
+  section,
   panel,
   keyValue,
   style,
@@ -26,10 +27,11 @@ import {
 
 // A section header for the workspace setup flow. A panel is not used here:
 // git and the agent CLI write straight to the terminal, so a box would be
-// torn apart by interleaved child output.
+// torn apart by interleaved child output. The items are printed one at a
+// time as they happen, so the header is the only part a shared primitive
+// can own.
 function sectionHeader(text) {
-  out("");
-  out(`${style("▸", ACCENT)} ${style(text, "bold")}`);
+  section(text);
 }
 
 const WORKSPACE_FILE = ".adlc/workspace.yml";

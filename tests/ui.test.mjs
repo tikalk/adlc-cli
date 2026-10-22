@@ -13,6 +13,8 @@ import {
   colorEnabled,
   style,
   tint,
+  combine,
+  SafeString,
   stripAnsi,
   visibleWidth,
   sanitize,
@@ -22,6 +24,7 @@ import {
   wrapStyled,
   terminalWidth,
 } from "../src/ui/ansi.mjs";
+import { err } from "../src/ui/console.mjs";
 import { panel } from "../src/ui/panel.mjs";
 import { table, keyValue } from "../src/ui/table.mjs";
 import { createStepTracker } from "../src/ui/tree.mjs";
@@ -335,4 +338,92 @@ test("terminalWidth falls back to COLUMNS then 100", () => {
   process.stdout.columns = previousColumns;
   if (previous === undefined) delete process.env.COLUMNS;
   else process.env.COLUMNS = previous;
+});
+
+// ── regressions from the factory-review findings ───────────────────────
+
+test("the grid table branch sanitizes cells (ANSI injection via keyValue)", () => {
+  setColorMode("always");
+  const hostile = "\x1b[31mRED\x1b[0m";
+  const rendered = keyValue([["Workspace:", hostile]]);
+  // The hostile ESC byte must not survive: keyValue() renders the grid
+  // branch, and untrusted values (a workspace file's name, a state file's
+  // current step) reach it.
+  assert.ok(!rendered.includes("\x1b[31m"), "hostile escape sequence reached the output");
+  // The key's own styling is legitimate and must survive.
+  assert.ok(rendered.includes("\x1b[36mWorkspace:"), "the key keeps its own styling");
+});
+
+test("the bordered table branch sanitizes cells too", () => {
+  setColorMode("always");
+  const rendered = table({ columns: ["Key"], rows: [["\x1b[31mRED\x1b[0m"]] });
+  assert.ok(!rendered.includes("\x1b[31m"), "hostile escape sequence reached the output");
+});
+
+test("a styled fragment passed to panel() keeps its styling", () => {
+  setColorMode("always");
+  // A template literal drops the SafeString tag; panel() then sanitizes the
+  // result and the visible text becomes a literal "[36m[1][0m".
+  const rendered = panel({
+    title: "Gate",
+    lines: [combine(style("[1]", "cyan"), " ", "approve")],
+  });
+  assert.ok(!/(^|[^\x1b])\[36m/.test(rendered), "a bare SGR sequence leaked as visible text");
+  assert.ok(rendered.includes("\x1b[36m[1]"), "the styled fragment kept its styling");
+});
+
+test("a styled fragment concatenated in a template literal loses its tag", () => {
+  setColorMode("always");
+  // Documents the failure mode the gate prompt had: template-literal
+  // concatenation drops the SafeString tag.
+  const tagged = combine(style("[1]", "cyan"), " ", "approve");
+  const untagged = `${style("[1]", "cyan")} approve`;
+  assert.ok(tagged instanceof SafeString);
+  assert.ok(!(untagged instanceof SafeString));
+  // Tag loss is observable: the styled text becomes visible garbage.
+  assert.ok(
+    /(^|[^\x1b])\[36m/.test(panel({ lines: [untagged] })),
+    "tag loss produces visible garbage — this is the bug the gate prompt had",
+  );
+});
+
+test("the state family help is unstyled", async () => {
+  const r = await run(["workflow", "state", "help"]);
+  const stdout = String(r.stdout ?? "");
+  assert.ok(stdout.includes("adlc-cli workflow state <command>"), stdout.slice(0, 200));
+  assert.ok(!stdout.includes("\x1b"), "the state family's help must carry no escape bytes");
+});
+
+test("stderr carries no escape bytes when it is not a terminal", () => {
+  // A redirected stderr log must not receive ANSI. Exercised through err().
+  setColorMode("always");
+  const captured = [];
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk) => {
+    captured.push(String(chunk));
+    return true;
+  };
+  try {
+    // err() strips when stderr is not a TTY; under `node --test` it is not.
+    err(`${style("Error:", "red")} boom`);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  const written = captured.join("");
+  if (!process.stderr.isTTY) {
+    assert.ok(!written.includes("\x1b"), "stderr log must not carry escape bytes");
+  }
+});
+
+test("justify: right is honoured in the bordered branch", () => {
+  setColorMode("never");
+  const rendered = table({
+    columns: [{ header: "N", justify: "right" }],
+    rows: [["7"], ["100"]],
+  });
+  const rows = rendered.split("\n").filter((l) => l.startsWith("│"));
+  assert.ok(rows.length === 2, rendered);
+  // The right edge of the cell content must line up.
+  const rightEdges = rows.map((r) => r.replace(/\s+$/, "").length);
+  assert.equal(rightEdges[0], rightEdges[1], `right-aligned cells must align: ${rendered}`);
 });

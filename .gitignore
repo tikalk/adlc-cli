@@ -25,3 +25,6 @@ skills-lock.json
 
 # graphify knowledge graph (generated)
 graphify-out/
+
+# Local agent worktrees (machine-local by definition)
+.adlc/worktrees/
