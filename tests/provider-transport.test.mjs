@@ -1021,6 +1021,7 @@ test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () =>
   const { spawnSync } = await import("node:child_process");
   const { writeFileSync, mkdirSync, rmSync } = await import("node:fs");
   const { default: path } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
   const repoRoot = process.cwd();
   const tmp = path.join(repoRoot, ".tmp", `adlc-stdin-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmp, { recursive: true });
@@ -1041,18 +1042,22 @@ test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () =>
       "",
     ].join("\n")
   );
+  const testFile = fileURLToPath(import.meta.url);
+  const routePath = path.resolve(path.dirname(testFile), "../src/providers/coder-route.mjs");
   const cli = path.join(tmp, "cli.mjs");
   writeFileSync(
     cli,
     [
       `import(${JSON.stringify(transport)});`,
-      `const { cmdCoderAgentRun } = await import("../../src/providers/coder-route.mjs");`,
+      `const { pathToFileURL } = await import("node:url");`,
+      `const routeUrl = pathToFileURL(process.argv[2]).href;`,
+      `const { cmdCoderAgentRun } = await import(routeUrl);`,
       "const code = await cmdCoderAgentRun(['--provider','coder','--workspace','stdin-ws','-'], ['agent','run','--provider','coder','--workspace','stdin-ws','-']);",
       "process.exit(code);",
       "",
     ].join("\n")
   );
-  const r = spawnSync(process.execPath, [cli], {
+  const r = spawnSync(process.execPath, [cli, routePath], {
     input: "TASK-FROM-STDIN-12345 do it",
     encoding: "utf-8",
     cwd: tmp,
