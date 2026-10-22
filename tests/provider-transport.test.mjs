@@ -1050,7 +1050,7 @@ test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () =>
     [
       `import(${JSON.stringify(transport)});`,
       `const { pathToFileURL } = await import("node:url");`,
-      `const routeUrl = pathToFileURL(process.argv[2]).href;`,
+      `const routeUrl = pathToFileURL(process.argv[2]);`,
       `const { cmdCoderAgentRun } = await import(routeUrl);`,
       "const code = await cmdCoderAgentRun(['--provider','coder','--workspace','stdin-ws','-'], ['agent','run','--provider','coder','--workspace','stdin-ws','-']);",
       "process.exit(code);",
