@@ -3,6 +3,7 @@
 // The `coder` CLI is faked (a script on PATH) so the transport's behaviour —
 // provisioning, waiting for a running workspace, the stdin envelope, the
 // exit-code propagation, and the secret discipline — is verifiable offline.
+// SKIPPED on Windows: relies on bash script faking `coder` CLI.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
@@ -10,6 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createCoderSshTransport } from "../src/providers/coder-ssh.mjs";
+
+if (process.platform === "win32") {
+  // eslint-disable-next-line no-console
+  console.log("# SKIP: coder-live-transport.test.mjs skipped on Windows (bash fake coder CLI)");
+  process.exit(0);
+}
 
 /** A fake `coder` CLI. `record` collects what the transport asked for. */
 function fakeCoder(dir, { status = "running", sshExit = 0, sshStderr = "", sshStdout = "" } = {}) {
