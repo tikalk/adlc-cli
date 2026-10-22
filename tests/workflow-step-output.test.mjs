@@ -170,10 +170,10 @@ test("O3: a stale output file is removed before the step runs", { skip: !POSIX }
   assert.equal(out.mr_url, undefined);
 });
 
-test("O4: the factory workflow's intent gates link the intent step's mr_url", () => {
+test("O4: the factory workflow publishes after each intent step and its gates link the publish step's mr_url", () => {
   const yaml = getBuiltinWorkflow("factory").yaml;
-  assert.match(yaml, /- id: gate-product[\s\S]*?link: "\{\{ steps\.intent-product\.output\.mr_url \}\}"[\s\S]*?- id: intent-architecture/);
-  assert.match(yaml, /- id: gate-architecture[\s\S]*?link: "\{\{ steps\.intent-architecture\.output\.mr_url \}\}"[\s\S]*?- id: execute/);
+  assert.match(yaml, /- id: intent-product[\s\S]*?- id: publish-product\n\s+type: shell[\s\S]*?- id: gate-product[\s\S]*?link: "\{\{ steps\.publish-product\.output\.mr_url \}\}"/);
+  assert.match(yaml, /- id: intent-architecture[\s\S]*?- id: publish-architecture\n\s+type: shell[\s\S]*?- id: gate-architecture[\s\S]*?link: "\{\{ steps\.publish-architecture\.output\.mr_url \}\}"/);
 });
 
 test("O4: a context gate surfaces the intent step's mr_url as mr_link", { skip: !POSIX }, async () => {
@@ -266,4 +266,108 @@ test("O5: the factory workflow still runs without an issue (no ADLC_ISSUE_REF)",
     const seen = JSON.parse(readFileSync(dump, "utf-8"));
     assert.equal("ADLC_ISSUE_REF" in seen, false);
   });
+});
+
+
+// ── shell steps get the run context (ADR-444 §5) ────────────────────────────
+
+const DUMP_ENV_JS = `const fs=require('fs');fs.writeFileSync(process.env.FAKE_DUMP,JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([k])=>k.startsWith('ADLC_')))));if(process.env.FAKE_OUTPUT!==undefined&&process.env.ADLC_STEP_OUTPUT){fs.mkdirSync(require('path').dirname(process.env.ADLC_STEP_OUTPUT),{recursive:true});fs.writeFileSync(process.env.ADLC_STEP_OUTPUT,process.env.FAKE_OUTPUT)}`;
+
+async function runShell({ output, pre } = {}) {
+  const dir = project();
+  const dump = join(tempDir("dump-"), "env.json");
+  const script = join(tempDir("shell-js-"), "dump.js");
+  writeFileSync(script, DUMP_ENV_JS);
+  if (pre) pre(dir);
+  const env = { FAKE_DUMP: dump };
+  if (output !== undefined) env.FAKE_OUTPUT = output;
+  return withEnv(env, async () => {
+    if (output === undefined) delete process.env.FAKE_OUTPUT;
+    const steps = `  - id: publish
+    type: shell
+    run: node ${JSON.stringify(script)}
+`;
+    const engine = new WorkflowEngine(dir);
+    const state = await engine.execute(engine.loadWorkflow(workflow(steps)), { issue_ref: "g/p#26" }, "r26", STEP_REGISTRY);
+    return { dir, state, seen: JSON.parse(readFileSync(dump, "utf-8")), out: state.stepResults.publish?.output ?? {} };
+  });
+}
+
+test("O6: shell steps see ADLC_RUN_ID, ADLC_STEP_ID, ADLC_STEP_OUTPUT, ADLC_ISSUE_REF", { skip: !POSIX }, async () => {
+  const { dir, seen } = await runShell({});
+  assert.equal(seen.ADLC_RUN_ID, "r26");
+  assert.equal(seen.ADLC_STEP_ID, "publish");
+  assert.equal(seen.ADLC_STEP_OUTPUT, join(dir, ".adlc", "workflows", "runs", "r26", "steps", "publish.output.json"));
+  assert.equal(seen.ADLC_ISSUE_REF, "g/p#26");
+});
+
+test("O6: a shell step's valid output object is merged; reserved keys are not", { skip: !POSIX }, async () => {
+  const { out } = await runShell({ output: JSON.stringify({ mr_url: "https://gl.test/g/p/-/merge_requests/9" }) });
+  assert.equal(out.mr_url, "https://gl.test/g/p/-/merge_requests/9");
+  assert.equal(out.exit_code, 0);
+  const bad = await runShell({ output: JSON.stringify({ exit_code: "9", mr_url: "x" }) });
+  assert.equal(bad.out.exit_code, 0);
+  assert.equal(bad.out.mr_url, undefined);
+});
+
+test("O6: a stale shell step output file is removed before the step runs", { skip: !POSIX }, async () => {
+  const { out } = await runShell({
+    pre: (dir) => {
+      const p = join(dir, ".adlc", "workflows", "runs", "r26", "steps", "publish.output.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ mr_url: "stale" }));
+    },
+  });
+  assert.equal(out.mr_url, undefined);
+});
+
+// ── the factory workflow publishes itself (ADR-431-amendment §3a) ───────────
+
+async function runFactory({ helper } = {}) {
+  const bin = installFakeAgent();
+  const dir = project();
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dir });
+  mkdirSync(join(dir, ".adlc"), { recursive: true });
+  writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
+  if (helper !== undefined) {
+    const h = join(dir, ".agents", "skills", "factory-mission", "scripts", "bash", "open-mr.sh");
+    mkdirSync(dirname(h), { recursive: true });
+    writeFileSync(h, helper);
+  }
+  const wf = join(tempDir("factory-wf-"), "workflow.yml");
+  writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
+  return withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_EXIT: "0" }, async () => {
+    delete process.env.FAKE_OUTPUT;
+    delete process.env.FAKE_DUMP;
+    const engine = new WorkflowEngine(dir);
+    const events = [];
+    engine.onEvent = (e) => events.push(e);
+    const state = await engine.execute(engine.loadWorkflow(wf), { issue_ref: "g/p#12", verdict: "" }, "r12", STEP_REGISTRY);
+    return { state, paused: events.find((e) => e.type === "gate_paused") };
+  });
+}
+
+test("O7: the factory workflow links the MR even when the orchestrator never calls open-mr", { skip: !POSIX }, async () => {
+  // The fake agent writes no step output; only the engine's publish step runs open-mr.
+  const helper = `#!/usr/bin/env bash
+[ -n "$ADLC_RUN_ID" ] && [ "$ADLC_STEP_ID" = publish-product ] || exit 9
+printf '{"mr_url":"https://gl.test/g/p/-/merge_requests/45"}' > "$ADLC_STEP_OUTPUT"
+echo https://gl.test/g/p/-/merge_requests/45
+`;
+  const { state, paused } = await runFactory({ helper });
+  assert.equal(state.status, RunStatus.PAUSED);
+  assert.equal(state.stepResults["publish-product"].output.mr_url, "https://gl.test/g/p/-/merge_requests/45");
+  assert.equal(paused.mr_link, "https://gl.test/g/p/-/merge_requests/45");
+});
+
+test("O7: without the open-mr helper the publish step is skipped and the gate has no link", { skip: !POSIX }, async () => {
+  const { state, paused } = await runFactory({});
+  assert.equal(state.status, RunStatus.PAUSED);
+  assert.equal(state.stepResults["publish-product"].status, "completed");
+  assert.ok(!paused.mr_link);
+});
+
+test("O7: a refusing open-mr fails the run (fail-closed)", { skip: !POSIX }, async () => {
+  const { state } = await runFactory({ helper: "#!/usr/bin/env bash\necho 'open-mr: tracker token lacks the api scope' >&2\nexit 2\n" });
+  assert.equal(state.status, RunStatus.FAILED);
 });

@@ -31,27 +31,43 @@ steps:
   - id: intent-product
     type: command
     command: factory-product
+  - id: publish-product
+    type: shell
+    # The engine pushes the run branch and opens/reuses the draft MR itself
+    # (ADR-431-amendment §3a), so the gate link never depends on the agent.
+    # open-mr is idempotent and opens nothing for an empty run; without the
+    # helper (factory-mission skill not installed) the step is skipped.
+    run: |-
+      node -e "const f='.agents/skills/factory-mission/scripts/bash/open-mr.sh';if(!require('fs').existsSync(f)){console.error('publish: open-mr helper not installed, no MR');process.exit(0)}const r=require('child_process').spawnSync('bash',[f],{stdio:'inherit'});if(r.error){console.error('publish: '+r.error.message+', no MR');process.exit(0)}process.exit(r.status===null?1:r.status)"
   - id: gate-product
     type: gate
     message: "Approve PDRs before architecture?"
     context:
       records: [".adlc/drafts/pdr/*.md"]
       since: last_approved
-      # The intent step's draft MR (ADR-444 step output, ADR-431-amendment).
-      link: "{{ steps.intent-product.output.mr_url }}"
+      # The draft MR the publish step opened (ADR-444 §5, ADR-431-amendment §3a).
+      link: "{{ steps.publish-product.output.mr_url }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
   - id: intent-architecture
     type: command
     command: factory-architect
+  - id: publish-architecture
+    type: shell
+    # The engine pushes the run branch and opens/reuses the draft MR itself
+    # (ADR-431-amendment §3a), so the gate link never depends on the agent.
+    # open-mr is idempotent and opens nothing for an empty run; without the
+    # helper (factory-mission skill not installed) the step is skipped.
+    run: |-
+      node -e "const f='.agents/skills/factory-mission/scripts/bash/open-mr.sh';if(!require('fs').existsSync(f)){console.error('publish: open-mr helper not installed, no MR');process.exit(0)}const r=require('child_process').spawnSync('bash',[f],{stdio:'inherit'});if(r.error){console.error('publish: '+r.error.message+', no MR');process.exit(0)}process.exit(r.status===null?1:r.status)"
   - id: gate-architecture
     type: gate
     message: "Approve ADRs before execution?"
     context:
       records: [".adlc/drafts/adr/*.md"]
       since: last_approved
-      link: "{{ steps.intent-architecture.output.mr_url }}"
+      link: "{{ steps.publish-architecture.output.mr_url }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict

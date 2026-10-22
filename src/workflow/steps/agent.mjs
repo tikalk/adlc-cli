@@ -9,8 +9,8 @@ import { evaluateExpression } from "../expressions.mjs";
 import { runTask } from "../../run.mjs";
 import { getRunProfile } from "../../registry.mjs";
 import { readAgent } from "../../utils/init-options.mjs";
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const rid = (config) => `'${config.id ?? "?"}'`;
 
@@ -50,9 +50,7 @@ async function runAgentStep({ agentKey, model, prompt, context, config, timeoutS
   // structured result. A file from an earlier attempt is removed first so a
   // retried step can never surface a stale value.
   const runEnv = runContextEnv(context, config);
-  if (runEnv.ADLC_STEP_OUTPUT) {
-    try { rmSync(runEnv.ADLC_STEP_OUTPUT, { force: true }); } catch {}
-  }
+  prepareStepOutput(runEnv.ADLC_STEP_OUTPUT);
 
   // runTask streams lines; collect them as the step's stdout.
   let stdout = "";
@@ -131,7 +129,15 @@ const MAX_OUTPUT_FILE = 64 * 1024;
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
-function runContextEnv(context, config) {
+// Remove a file left by an earlier attempt (a retry must never surface a stale
+// value) and create its directory, so a step can write it with a plain redirect.
+export function prepareStepOutput(path) {
+  if (!path) return;
+  try { rmSync(path, { force: true }); } catch {}
+  try { mkdirSync(dirname(path), { recursive: true }); } catch {}
+}
+
+export function runContextEnv(context, config) {
   const env = {};
   const runId = typeof context.runId === "string" ? context.runId : null;
   const stepId = typeof config.id === "string" ? config.id : null;
@@ -149,7 +155,7 @@ function runContextEnv(context, config) {
 // The step's structured result: a flat object of short strings, merged only
 // when every entry is valid — otherwise nothing (and a log line). The values
 // are untrusted; renderers sanitise them (links: safeMrLink).
-function readStepOutput(path, stepRef) {
+export function readStepOutput(path, stepRef) {
   if (!path || !existsSync(path)) return {};
   const reject = (why) => {
     console.error(`[workflow] step ${stepRef}: step output ignored (${why})`);
