@@ -6,6 +6,7 @@
 import { createInterface } from "node:readline";
 import { spawnCompat, isWindows } from "./utils/spawn.mjs";
 import { getRunProfile } from "./registry.mjs";
+import { err, tint } from "./ui/index.mjs";
 
 export function buildRunCommand(agentKey, prompt, opts = {}) {
   const profile = getRunProfile(agentKey);
@@ -71,7 +72,7 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
       rl.on("line", (line) => {
         lineQueue = lineQueue
           .then(() => onLine(line))
-          .catch((err) => console.error("[run] line error:", err));
+          .catch((cause) => err(`${tint("[run]", "gray")} ${tint("line error:", "red")} ${cause}`));
       });
     }
 
@@ -82,7 +83,7 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
     child.on("error", (err) => {
       if (resolved) return;
       resolved = true;
-      console.error(`[run] spawn error: ${err.message}`);
+      err(`${tint("[run]", "gray")} ${tint("spawn error:", "red")} ${err.message}`);
       resolve({ code: 1, signal: null });
     });
 

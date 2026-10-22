@@ -7,18 +7,19 @@ import { readInitOptions, writeInitOptions, readAgent, readTeamAiDirectives } fr
 import { findInstalledSkills } from "../source.mjs";
 import { getAgent } from "../registry.mjs";
 import { cmdAdd, cmdUpdate } from "./skills.mjs";
+import { error, failure, note } from "../ui/index.mjs";
 
 // ── setup ──────────────────────────────────────────────────────────────
 export async function cmdTeamSetup(args, flags) {
   const source = args[0];
   if (!source) {
-    console.error("Error: source is required");
+    error("source is required");
     return 1;
   }
 
   const agentKey = flags.agents[0] || readAgent();
   if (!agentKey) {
-    console.error("Error: Agent required (-a <agent> or set in init-options.json)");
+    error("Agent required (-a <agent> or set in init-options.json)");
     return 1;
   }
 
@@ -34,7 +35,7 @@ export async function cmdTeamSetup(args, flags) {
         if (skills.length === 0) {
           const code = await cmdAdd([source], { agents: [agentKey], yes: flags.yes });
           if (code !== 0) {
-            console.error("✗ Skills installation failed — aborting team setup");
+            failure("Skills installation failed — aborting team setup");
             return code || 1;
           }
         }
@@ -52,7 +53,7 @@ export async function cmdTeamSetup(args, flags) {
   // form) keep the headless behavior.
   const interactiveEligible = !flags.format && process.stdin.isTTY && process.stdout.isTTY;
   if (interactiveEligible) {
-    console.log("Opening an interactive session for /team-setup — answer the mode question there.");
+    note("Opening an interactive session for /team-setup — answer the mode question there.");
     const code = await runAgentInteractive(agentKey, prompt, { cwd: flags.cwd ?? process.cwd() });
     if (code !== null) return code;
     // profile has no interactive form → fall through to headless
@@ -71,19 +72,19 @@ export async function cmdTeamUpdate(args, flags) {
   const teamDir = opts.team_ai_directives;
   const source = opts.skills_source;
   if (!teamDir || !source) {
-    console.error("Error: team-ai-directives not configured. Run 'adlc-cli team setup' first.");
+    error("team-ai-directives not configured. Run 'adlc-cli team setup' first.");
     return 1;
   }
 
   const pullResult = spawnSync("git", ["-C", teamDir, "pull"], { stdio: "inherit" });
   if (pullResult.status !== 0) {
-    console.error(`✗ git pull failed for ${teamDir}`);
+    failure(`git pull failed for ${teamDir}`);
     return pullResult.status || 1;
   }
 
   const updateCode = await cmdUpdate([], { ...flags, pull: true });
   if (updateCode !== 0) {
-    console.error("✗ Skills update failed — aborting team update");
+    failure("Skills update failed — aborting team update");
     return updateCode || 1;
   }
 
@@ -108,7 +109,7 @@ export async function cmdTeamRepair(args, flags) {
     }
 
     if (!scriptPath) {
-      console.error("Error: setup-team.sh not found. Run 'adlc-cli team setup' first.");
+      error("setup-team.sh not found. Run 'adlc-cli team setup' first.");
       return 1;
     }
 
@@ -119,7 +120,7 @@ export async function cmdTeamRepair(args, flags) {
 
   const agentKey = flags.agents[0] || readAgent();
   if (!agentKey) {
-    console.error("Error: Agent required (-a <agent> or set in init-options.json)");
+    error("Agent required (-a <agent> or set in init-options.json)");
     return 1;
   }
 

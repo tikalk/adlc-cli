@@ -17,6 +17,7 @@ import {
   uncommittedRecords,
   validateGateContext,
 } from "../gate-context.mjs";
+import { out, panel, style, tint, sanitize, sanitizeLines, sym, ACCENT } from "../../ui/index.mjs";
 
 export class GateStep extends StepBase {
   static typeKey = "gate";
@@ -278,13 +279,11 @@ export class GateStep extends StepBase {
   }
 
   static async prompt(message, options) {
-    console.log("\n  ┌─ Gate ─────────────────────────────────────");
-    for (const line of message.split("\n")) {
-      console.log(line ? `  │ ${line}` : "  │");
-    }
-    console.log("  │");
-    options.forEach((opt, i) => console.log(`  │  [${i + 1}] ${opt}`));
-    console.log("  └────────────────────────────────────────────");
+    const lines = sanitizeLines(message);
+    lines.push("");
+    options.forEach((opt, i) => lines.push(`${style(`[${i + 1}]`, ACCENT)} ${sanitize(opt)}`));
+    out("");
+    out(panel({ title: "Gate", lines }));
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const askOnce = () =>
@@ -296,7 +295,9 @@ export class GateStep extends StepBase {
             resolveP(v);
           }
         };
-        rl.question(`  Choose [1-${options.length}]: `, (answer) => done({ interrupted: false, answer }));
+        rl.question(`  ${style("Choose", ACCENT)} ${tint(`[1-${options.length}]`, "gray")}: `, (answer) =>
+          done({ interrupted: false, answer }),
+        );
         // Ctrl-C / EOF during the question: default to the last option
         // (usually reject), mirroring upstream's EOFError/KeyboardInterrupt.
         rl.on("close", () => done({ interrupted: true }));
@@ -306,7 +307,7 @@ export class GateStep extends StepBase {
       while (true) {
         const { interrupted, answer } = await askOnce();
         if (interrupted) {
-          console.log();
+          out("");
           return options[options.length - 1];
         }
         const raw = answer.trim();
@@ -317,7 +318,7 @@ export class GateStep extends StepBase {
         if (options.some((o) => o.toLowerCase() === lower)) {
           return options.find((o) => o.toLowerCase() === lower);
         }
-        console.log(`  Invalid choice. Enter 1-${options.length} or an option name.`);
+        out(`  ${style(sym.failure, "red")} ${tint(`Invalid choice. Enter 1-${options.length} or an option name.`, "gray")}`);
       }
     } finally {
       rl.close();
