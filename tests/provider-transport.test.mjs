@@ -1020,8 +1020,10 @@ test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () =>
   // The remote agent must receive the task text, not the "-" marker.
   const { spawnSync } = await import("node:child_process");
   const { writeFileSync, mkdirSync, rmSync } = await import("node:fs");
+  const { pathToFileURL } = await import("node:url");
   const { default: os } = await import("node:os");
   const { default: path } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
   const tmp = await import("node:fs/promises").then((m) =>
     m.mkdtemp(path.join(os.tmpdir(), "adlc-stdin-"))
   );
@@ -1042,7 +1044,9 @@ test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () =>
       "",
     ].join("\n")
   );
-  const routeUrl = new URL("../src/providers/coder-route.mjs", import.meta.url).href;
+  const testFile = fileURLToPath(import.meta.url);
+  const routePath = path.resolve(path.dirname(testFile), "../src/providers/coder-route.mjs");
+  const routeUrl = pathToFileURL(routePath).href;
   const cli = path.join(tmp, "cli.mjs");
   writeFileSync(
     cli,
