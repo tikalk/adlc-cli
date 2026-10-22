@@ -149,21 +149,20 @@ export function createCoderSshTransport({
     let { written, result } = await attempt();
     const code = result ? result.code : written.code;
     const stderr = result ? result.stderr : written.stderr;
-    // The workspace may have been deleted out of band while the handle
-    // survived (the pilot hit exactly this: a stale handle + a deleted
-    // workspace = "Resource not found"). Re-create it once and retry.
+    // The workspace is gone (deleted out of band, or torn down deliberately
+    // by the developer). It is NOT silently re-created: a resurrected
+    // workspace would undo the teardown the developer just asked for. The
+    // handle is stale and the operator decides what happens next.
     if (code !== 0 && /not found|no longer exists|resource not found/i.test(stderr)) {
-      console.error(`[provider] workspace '${name}' is gone — re-creating it and retrying once`);
-      try {
-        await this.provision(name);
-      } catch (err) {
-        return {
-          stdout: result ? result.stdout : written.stdout,
-          stderr: `${stderr}\n(re-creating the workspace failed: ${err.message})`,
-          exitCode: code,
-        };
-      }
-      ({ written, result } = await attempt());
+      return {
+        stdout: result ? result.stdout : written.stdout,
+        stderr:
+          `${stderr}\n` +
+          `the workspace '${name}' no longer exists — its handle ` +
+          `(.adlc/workspaces/${name}.json) is stale. It was NOT re-created: ` +
+          `delete the handle to provision a fresh workspace, or re-provision it deliberately.`,
+        exitCode: code,
+      };
     }
     const finalResult = result ?? written;
     return {
@@ -221,7 +220,7 @@ exit "$_rc"
     # env the transport used: persist the referenced vars 0600 for the session
     # to source. Values stay in the workspace's env — never in a command line.
     mkdir -p "$HOME/.adlc"
-    jq -r '(.vars // {}) | to_entries[] | "export \(.key)=\(.value | @sh)"' \
+    jq -r '(.vars // {}) | to_entries[] | "export \\(.key)=\\(.value | @sh)"' \
       "$_d/payload.json" > "$HOME/.adlc/secrets.env"
     chmod 600 "$HOME/.adlc/secrets.env"
     adlc-cli workspace setup "$_d/workspace.yml"
