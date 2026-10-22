@@ -1042,22 +1042,23 @@ test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () =>
       "",
     ].join("\n")
   );
-  const routeUrl = await import.meta.resolve("../src/providers/coder-route.mjs");
+  const routeUrl = new URL("../src/providers/coder-route.mjs", import.meta.url).href;
   const cli = path.join(tmp, "cli.mjs");
   writeFileSync(
     cli,
     [
       `import(${JSON.stringify(transport)});`,
-      `const { cmdCoderAgentRun } = await import(${JSON.stringify(routeUrl)});`,
+      `const routeUrl = process.argv[2];`,
+      `const { cmdCoderAgentRun } = await import(routeUrl);`,
       "const code = await cmdCoderAgentRun(['--provider','coder','--workspace','stdin-ws','-'], ['agent','run','--provider','coder','--workspace','stdin-ws','-']);",
       "process.exit(code);",
       "",
     ].join("\n")
   );
-  const r = spawnSync(process.execPath, [cli], {
+  const r = spawnSync(process.execPath, [cli, routeUrl], {
     input: "TASK-FROM-STDIN-12345 do it",
     encoding: "utf-8",
-    cwd: tmp,
+    cwd: process.cwd(),
   });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const payload = JSON.parse((await import("node:fs")).readFileSync(payloadFile, "utf-8"));
