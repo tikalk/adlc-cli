@@ -18,6 +18,15 @@ inputs:
   mr_url:
     type: string
     default: ""
+  # Set by the dispatching runtime. issue_ref becomes the agent steps'
+  # ADLC_ISSUE_REF (ADR-444) and is checked on restore; undeclared inputs are
+  # dropped, so both must be declared here.
+  issue_ref:
+    type: string
+    default: ""
+  dispatch:
+    type: string
+    default: ""
 steps:
   - id: intent-product
     type: command

@@ -223,3 +223,47 @@ test("O3: a step id that is not path-safe gets no output file (nothing deleted o
   assert.equal("ADLC_STEP_OUTPUT" in seen, false);
   assert.equal(readFileSync(victim, "utf-8"), "keep me");
 });
+
+test("O5: the factory workflow declares issue_ref and dispatch, so its intent step sees ADLC_ISSUE_REF", { skip: !POSIX }, async () => {
+  // The runtime passes these as --input; undeclared inputs are dropped, which
+  // left ADLC_ISSUE_REF unset in real factory runs (run branch keyed on the run
+  // id, no issue on the MR, no issue_ref check on restore).
+  const bin = installFakeAgent();
+  const dir = project();
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dir });
+  // The built-in workflow names no integration; the project's agent supplies it.
+  mkdirSync(join(dir, ".adlc"), { recursive: true });
+  writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
+  const dump = join(tempDir("dump-"), "env.json");
+  const wf = join(tempDir("factory-wf-"), "workflow.yml");
+  writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
+  await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_DUMP: dump, FAKE_EXIT: "0" }, async () => {
+    delete process.env.FAKE_OUTPUT;
+    const engine = new WorkflowEngine(dir);
+    const state = await engine.execute(engine.loadWorkflow(wf), { issue_ref: "g/p#12", dispatch: "supervised", verdict: "" }, "r12", STEP_REGISTRY);
+    assert.equal(state.inputs.issue_ref, "g/p#12");
+    assert.equal(state.inputs.dispatch, "supervised");
+    const seen = JSON.parse(readFileSync(dump, "utf-8"));
+    assert.equal(seen.ADLC_ISSUE_REF, "g/p#12");
+    assert.equal(seen.ADLC_STEP_ID, "intent-product");
+  });
+});
+
+test("O5: the factory workflow still runs without an issue (no ADLC_ISSUE_REF)", { skip: !POSIX }, async () => {
+  const bin = installFakeAgent();
+  const dir = project();
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dir });
+  // The built-in workflow names no integration; the project's agent supplies it.
+  mkdirSync(join(dir, ".adlc"), { recursive: true });
+  writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
+  const dump = join(tempDir("dump-"), "env.json");
+  const wf = join(tempDir("factory-wf-"), "workflow.yml");
+  writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
+  await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_DUMP: dump, FAKE_EXIT: "0" }, async () => {
+    delete process.env.FAKE_OUTPUT;
+    const engine = new WorkflowEngine(dir);
+    await engine.execute(engine.loadWorkflow(wf), { verdict: "" }, "r13", STEP_REGISTRY);
+    const seen = JSON.parse(readFileSync(dump, "utf-8"));
+    assert.equal("ADLC_ISSUE_REF" in seen, false);
+  });
+});
