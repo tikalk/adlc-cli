@@ -35,10 +35,11 @@ import {
   table,
   keyValue,
   createStepTracker,
+  combine,
   style,
   tint,
-  combine,
-  sym,  statusStyle,
+  sym,
+  statusStyle,
   ACCENT,
 } from "../ui/index.mjs";
 
@@ -66,7 +67,7 @@ export async function cmdWorkflow(args, flags, rawArgv) {
       printWorkflowHelp();
       return 0;
     default:
-      err(`${style("Unknown", "red")} ${style(`workflow command: "${sub}"`, "gray")}`);
+      err(combine(style("Unknown", "red"), ' ', style(`workflow command: "${sub}"`, "gray")));
       printWorkflowHelp();
       return 1;
   }
@@ -117,7 +118,7 @@ function installInterruptHandler(engine) {
   const onInt = () => {
     engine.interrupted = true;
     err("");
-    err(`${tint("[workflow]", "gray")} ${tint("interrupt received — pausing after current step…", "yellow")}`);
+    err(combine(tint("[workflow]", "gray"), ' ', tint("interrupt received — pausing after current step…", "yellow")));
   };
   process.once("SIGINT", onInt);
   process.once("SIGTERM", onInt);
@@ -150,7 +151,7 @@ function makeEngine(projectRoot, rawArgv) {
     engine.onStepStart = (stepId, label) => {
       tracker.add(stepId, stepId);
       tracker.start(stepId, label);
-      out(`  ${style(sym.step, ACCENT)} ${tint(stepId, "bold")} ${tint(`(${label})`, "gray")}`);
+      out(combine('  ', style(sym.step, ACCENT), ' ', tint(stepId, "bold"), ' ', tint(`(${label})`, "gray")));
     };
     engine.onStepComplete = (stepId, label, status, stepError) => {
       if (status === StepStatus.COMPLETED) tracker.complete(stepId, label);
@@ -203,9 +204,9 @@ async function cmdWorkflowRun(rest, rawArgv) {
     validationErrors.push(...headlessGateErrors(definition));
   }
   if (validationErrors.length > 0) {
-    err(`${style("Error:", "red")} workflow validation failed:`);
+    err(combine(style("Error:", "red"), ' workflow validation failed:'));
     for (const message of validationErrors) {
-      err(`  ${style(sym.failure, "red")} ${tint(message, "gray")}`);
+      err(combine('  ', style(sym.failure, "red"), ' ', tint(message, "gray")));
     }
     return 1;
   }
@@ -262,7 +263,7 @@ async function cmdWorkflowResume(rest, rawArgv) {
   const removeHandlers = installInterruptHandler(engine);
   try {
     const state = await engine.resume(runId, inputs, STEP_REGISTRY);
-    if (engine.onEvent === null) printRunSummary(state);
+    if (engine.onEvent === null) printRunSummary(state, engine.stepTracker);
     if (state.status === RunStatus.PAUSED) {
       out("");
       note(`Still paused. Resume with: adlc-cli workflow resume ${state.runId} --input <verdict>=<choice>`);
@@ -478,12 +479,12 @@ async function cmdWorkflowValidate(rest, rawArgv) {
   if (errors.length === 0) {
     out("");
     success(`${definition.id} (${definition.name} v${definition.version}) — valid`);
-    out(`  ${tint(`${definition.steps.length} step(s), ${Object.keys(definition.inputs).length} input(s)`, "gray")}`);
+    out(combine('  ', tint(`${definition.steps.length} step(s), ${Object.keys(definition.inputs).length} input(s)`, "gray")));
     return 0;
   }
-  err(`${style("Error:", "red")} validation failed for ${source}:`);
+  err(combine(style("Error:", "red"), ' validation failed for ', source, ':'));
   for (const message of errors) {
-    err(`  ${style(sym.failure, "red")} ${tint(message, "gray")}`);
+    err(combine('  ', style(sym.failure, "red"), ' ', tint(message, "gray")));
   }
   return 1;
 }
@@ -593,15 +594,17 @@ async function cmdWorkflowState(rest, rawArgv) {
         out("Usage: adlc-cli workflow state <command>");
         out("");
         out("Commands:");
-        for (const [label, description] of [
+        const rows = [
           ["start   --workflow <id|path> [--run-id <id>] [--input k=v]", "Create a run (lease acquired)"],
           ["advance <run_id> --step <id> --status completed|failed", "Record a step result"],
           ["  [--output-file <path> | --output-json <json>] [--error <msg>]", ""],
           ["pause   <run_id> --step <id>", "Park at a gate/checkpoint (lease released)"],
           ["fail    <run_id> --error <msg>", "Terminal failure (lease released)"],
           ["show    <run_id>", "Read-only state access"],
-        ]) {
-          out(description ? `${label}  ${description}` : label);
+        ];
+        const labelWidth = rows.reduce((max, [label]) => Math.max(max, label.length), 0);
+        for (const [label, description] of rows) {
+          out(description ? `${label.padEnd(labelWidth)}  ${description}` : label);
         }
         return sub === "help" ? 0 : 1;
     }

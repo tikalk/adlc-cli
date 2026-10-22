@@ -65,10 +65,6 @@ export function createStepTracker(title = "") {
     },
     /** The tracked steps, in insertion order. */
     steps,
-    /** Render a single step as a tree row (without the guide). */
-    line(step) {
-      return styleStep(step);
-    },
     /** Render the whole tree, including the title. */
     render() {
       const lines = [];

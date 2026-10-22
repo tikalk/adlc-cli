@@ -48,8 +48,7 @@ function pairs(rows, labelColor = ACCENT) {
 
 export function printCliHelp() {
   out("");
-  out(
-    `${style("adlc-cli", ACCENT, "bold")} ${tint("— dual-mode CLI for coding agents: skill management + agent execution", "gray")}`,
+  out(combine(style("adlc-cli", ACCENT, "bold"), ' ', tint("— dual-mode CLI for coding agents: skill management + agent execution", "gray")),
   );
   out("");
 
@@ -303,8 +302,7 @@ export function printWorkspaceHelp() {
 
 export function printHelp() {
   out("");
-  out(
-    `${style("adlc-skills-cli", ACCENT, "bold")} ${tint("(legacy alias for adlc-cli)", "gray")}`,
+  out(combine(style("adlc-skills-cli", ACCENT, "bold"), ' ', tint("(legacy alias for adlc-cli)", "gray")),
   );
   out("");
   out(

@@ -11,24 +11,32 @@
 // and print `[String (SafeString): '…']` instead of the text. `out()`/`err()`
 // interpolate, which yields the raw string.
 
-import { style, asText, stripAnsi } from "./ansi.mjs";
+import { style, styleErr, asText, stripAnsi, colorEnabled, combine } from "./ansi.mjs";
 import { sym, ACCENT } from "./theme.mjs";
 
-/** Write a line to stdout. */
+/**
+ * Write a line to stdout.
+ *
+ * The writer is the last hop to the terminal, so it sanitizes: a plain
+ * string is stripped of control characters, while a `SafeString` (what
+ * `style()` / `tint()` / `combine()` return) is passed through untouched —
+ * that is how intentional styling is distinguished from untrusted text.
+ */
 export function out(text = "") {
-  process.stdout.write(`${text}\n`);
+  process.stdout.write(`${asText(text)}\n`);
 }
 
 /**
  * Write a line to stderr.
  *
  * Escape sequences are stripped when stderr is not a terminal: a redirected
- * stderr log or a CI error capture must not carry ANSI bytes.
+ * stderr log or a CI error capture must not carry ANSI bytes. An explicit
+ * `--color` / `FORCE_COLOR` still applies — that is the operator asking for
+ * it on purpose.
  */
 export function err(text = "") {
-  const value = String(text ?? "");
-  const needsStrip = !process.stderr || !process.stderr.isTTY;
-  process.stderr.write(`${needsStrip ? stripAnsi(value) : value}\n`);
+  const value = asText(text);
+  process.stderr.write(`${colorEnabled("stderr") ? value : stripAnsi(value)}\n`);
 }
 
 /** Write raw text to stdout with no trailing newline. */
@@ -48,37 +56,36 @@ export function heading(text) {
 
 /** A step marker: `▶ doing the thing`. */
 export function step(text) {
-  out(`${style(sym.step, ACCENT)} ${asText(text)}`);
+  out(combine(style(sym.step, ACCENT), ' ', asText(text)));
 }
 
 /** A success line: `✓ done`. */
 export function success(text) {
-  out(`${style(sym.success, "green")} ${asText(text)}`);
+  out(combine(style(sym.success, "green"), ' ', asText(text)));
 }
 
 /** A failure line on stderr: `✗ failed`. */
 export function failure(text) {
-  err(`${style(sym.failure, "red")} ${asText(text)}`);
+  err(combine(style(sym.failure, "red"), ' ', asText(text)));
 }
 
 /** A warning line on stderr. */
 export function warn(text) {
-  err(`${style(sym.warn, "yellow")} ${asText(text)}`);
+  err(combine(style(sym.warn, "yellow"), ' ', asText(text)));
 }
 
 /** An error line on stderr, labeled the way specify labels them. */
 export function error(text) {
-  err(`${style("Error:", "red")} ${asText(text)}`);
+  err(combine(styleErr("Error:", "red"), ' ', asText(text)));
 }
 
 /** A dim informational line on stdout. */
 export function note(text) {
   out(style(text, "gray"));
 }
-
 /** A secondary line on stdout, indented under the current step. */
 export function detail(text) {
-  out(`  ${style(text, "gray")}`);
+  out(combine('  ', style(text, "gray")));
 }
 
 /**
@@ -87,7 +94,7 @@ export function detail(text) {
  * @param {{glyph?: string, color?: string}} [options]
  */
 export function item(text, { glyph = sym.bullet, color = "gray" } = {}) {
-  out(`  ${style(glyph, color)} ${asText(text)}`);
+  out(combine('  ', style(glyph, color), ' ', asText(text)));
 }
 
 /**
@@ -102,5 +109,5 @@ export function item(text, { glyph = sym.bullet, color = "gray" } = {}) {
  */
 export function section(text) {
   out("");
-  out(`${style("▸", ACCENT)} ${style(text, "bold")}`);
+  out(combine(style("▸", ACCENT), ' ', style(text, "bold")));
 }

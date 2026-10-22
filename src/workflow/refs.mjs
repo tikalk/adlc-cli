@@ -53,8 +53,8 @@ export function pushRunRef(projectRoot, runId, runDir) {
     const update = git(["update-ref", ref, commit.stdout.trim()]);
     if (update.status !== 0) throw new Error(`git update-ref failed: ${update.stderr}`);
     return true;
-  } catch (err) {
-    err(`[workflow] git-refs push skipped: ${err.message}`);
+  } catch (cause) {
+    err(`[workflow] git-refs push skipped: ${cause.message}`);
     return false;
   }
 }

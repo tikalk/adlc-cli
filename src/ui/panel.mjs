@@ -63,9 +63,11 @@ export function panel({
     titleVisible = visibleWidth(titleLabel);
   }
 
+  // The border must match the widest body row. Clamping to `inner` would
+  // leave an over-wide row sticking out past the right border — so the wrap
+  // is what guarantees the width, not the clamp.
   let contentWidth = minWidth;
   for (const line of flat) contentWidth = Math.max(contentWidth, visibleWidth(line));
-  contentWidth = Math.min(contentWidth, inner);
   if (titleText) contentWidth = Math.max(contentWidth, titleVisible + 1);
 
   const renderedTitle = titleText

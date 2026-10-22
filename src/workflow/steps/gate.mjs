@@ -321,7 +321,7 @@ export class GateStep extends StepBase {
         if (options.some((o) => o.toLowerCase() === lower)) {
           return options.find((o) => o.toLowerCase() === lower);
         }
-        out(`  ${style(sym.failure, "red")} ${tint(`Invalid choice. Enter 1-${options.length} or an option name.`, "gray")}`);
+        out(combine('  ', style(sym.failure, "red"), ' ', tint(`Invalid choice. Enter 1-${options.length} or an option name.`, "gray")));
       }
     } finally {
       rl.close();

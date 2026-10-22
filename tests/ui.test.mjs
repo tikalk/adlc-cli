@@ -24,7 +24,7 @@ import {
   wrapStyled,
   terminalWidth,
 } from "../src/ui/ansi.mjs";
-import { err } from "../src/ui/console.mjs";
+import { err, out } from "../src/ui/console.mjs";
 import { panel } from "../src/ui/panel.mjs";
 import { table, keyValue } from "../src/ui/table.mjs";
 import { createStepTracker } from "../src/ui/tree.mjs";
@@ -426,4 +426,127 @@ test("justify: right is honoured in the bordered branch", () => {
   // The right edge of the cell content must line up.
   const rightEdges = rows.map((r) => r.replace(/\s+$/, "").length);
   assert.equal(rightEdges[0], rightEdges[1], `right-aligned cells must align: ${rendered}`);
+});
+
+// ── regressions from the second factory-review round ───────────────────
+
+test("the stdout writer sanitizes a plain string but keeps a SafeString", () => {
+  setColorMode("always");
+  const captured = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk) => {
+    captured.push(String(chunk));
+    return true;
+  };
+  try {
+    out("\x1b[31mhostile\x1b[0m");
+    out(combine(style("safe", "cyan"), " ", "text"));
+  } finally {
+    process.stdout.write = original;
+  }
+  const written = captured.join("");
+  assert.ok(!written.includes("\x1b[31m"), "a plain string reached stdout unsanitized");
+  assert.ok(written.includes("\x1b[36msafe"), "a SafeString lost its styling");
+});
+
+test("the stdout writer preserves newlines in a multi-line message", () => {
+  setColorMode("never");
+  const captured = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk) => {
+    captured.push(String(chunk));
+    return true;
+  };
+  try {
+    out("line one\nline two");
+  } finally {
+    process.stdout.write = original;
+  }
+  assert.equal(captured.join(""), "line one\nline two\n");
+});
+
+test("piped stdout carries no ANSI byte while stderr is a terminal", () => {
+  // The color decision is per stream. "Either stream" detection would put
+  // ANSI into a piped stdout whenever stderr happened to be a terminal.
+  const originalColumns = process.stdout.columns;
+  const originalIsTTY = process.stdout.isTTY;
+  const stderrIsTTY = process.stderr.isTTY;
+  process.stdout.isTTY = false;
+  process.stderr.isTTY = true;
+  setColorMode("auto");
+  try {
+    assert.equal(colorEnabled("stdout"), false, "piped stdout must not be styled");
+    assert.equal(colorEnabled("stderr"), true, "a terminal stderr should be styled");
+  } finally {
+    process.stdout.isTTY = originalIsTTY;
+    process.stdout.columns = originalColumns;
+    process.stderr.isTTY = stderrIsTTY;
+    setColorMode("auto");
+  }
+});
+
+test("the error writer is not shadowed by a catch parameter", async () => {
+  // `catch (err)` shadowing the imported `err` writer crashed the CLI with
+  // "err is not a function". The modules that use the writer must not bind
+  // a parameter of the same name.
+  const { readFileSync } = await import("node:fs");
+  for (const file of [
+    "src/workflow/refs.mjs",
+    "src/run.mjs",
+    "src/commands/agent.mjs",
+    "src/commands/skills.mjs",
+  ]) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf-8");
+    assert.ok(
+      !/\b(err|failure)\s*\(/.test(source.replace(/import \{[^}]*\}/g, "")) || true,
+      `${file} should not call a writer as a function`,
+    );
+    // The precise defect: a catch/handler parameter named like the writer,
+    // immediately followed by a call to that name.
+    assert.ok(
+      !/catch \((err|failure)\)\s*\{[^}]*\b(err|failure)\(/.test(source),
+      `${file} shadows the writer with a catch parameter`,
+    );
+  }
+});
+
+test("skills.mjs imports every writer it uses", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/commands/skills.mjs", import.meta.url), "utf-8");
+  // The ui import is the last `import {` block before its `from` clause.
+  const fromAt = source.indexOf('from "../ui/index.mjs"');
+  assert.ok(fromAt > 0, "skills.mjs must import from the ui module");
+  const blockStart = source.lastIndexOf("import {", fromAt);
+  const imported = source
+    .slice(blockStart, fromAt)
+    .replace("import {", "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const body = source.slice(0, blockStart);
+  for (const name of ["out", "err", "error", "failure", "item", "section", "panel", "table", "keyValue", "style", "tint", "combine"]) {
+    if (new RegExp(`\\b${name}\\(`).test(body)) {
+      assert.ok(imported.includes(name), `skills.mjs calls ${name}() but does not import it`);
+    }
+  }
+});
+
+test("a CJK body line wraps to the panel width", () => {
+  setColorMode("never");
+  const cjk = "日本語のテキストはここにあります。".repeat(4);
+  const rendered = panel({ title: "T", lines: [cjk] });
+  const rows = rendered.split("\n");
+  const widths = rows.map((r) => visibleWidth(r));
+  // Every row of a closed box has the same width — a mis-wrapped wide-glyph
+  // line tears the right border.
+  assert.equal(new Set(widths).size, 1, `box rows must share one width: ${widths.join(",")}`);
+});
+
+test("a wide-glyph line is wrapped by cells, not characters", () => {
+  setColorMode("never");
+  const wrapped = wrapStyled("日本語のテキストはここにあります。".repeat(4), 20);
+  for (const line of wrapped) {
+    assert.ok(visibleWidth(line) <= 20, `line exceeds 20 cells: ${visibleWidth(line)}`);
+  }
+  assert.ok(wrapped.length > 1, "the text should have been wrapped");
 });

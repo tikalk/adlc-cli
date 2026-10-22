@@ -28,7 +28,7 @@ import { ACCENT } from "./theme.mjs";
  * Render a table.
  *
  * @param {object} options
- * @param {Array<string|{header: string, style?: string, optional?: boolean}>} options.columns
+ * @param {Array<string|{header: string, style?: string, optional?: boolean, justify?: "left"|"right"}>} options.columns
  * @param {Array<Array<string>>} [options.rows]
  * @param {string} [options.title]   Rendered above the table, accent + bold.
  * @param {"heavy"|"grid"} [options.box]
@@ -48,7 +48,12 @@ export function table({
     let width = visibleWidth(col.header ?? "");
     for (const row of rows) {
       const cell = row?.[index];
-      if (cell !== undefined && cell !== null) width = Math.max(width, visibleWidth(cell));
+      if (cell !== undefined && cell !== null) {
+        // Measure what will actually be printed: a cell carrying an escape
+        // sequence is sanitized on the way out, so its printed width is
+        // shorter than its raw width.
+        width = Math.max(width, visibleWidth(asText(cell)));
+      }
     }
     return width;
   });

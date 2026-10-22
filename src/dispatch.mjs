@@ -18,7 +18,7 @@ import {
   printWorkflowHelp,
   printHelp,
 } from "./help.mjs";
-import { setColorMode, out, err, style } from "./ui/index.mjs";
+import { setColorMode, out, err, style, combine } from "./ui/index.mjs";
 
 // Single source of truth: package.json (drifts when hard-coded — v2.1.0
 // shipped printing "2.0.0"). dispatch.mjs lives in src/, so ../package.json
@@ -71,7 +71,7 @@ function runLegacyTree({ command, args, flags }) {
       printHelp();
       return 0;
     default:
-      err(`${style("Unknown", "red")} ${style(`command: "${command}"`, "gray")}`);
+      err(combine(style("Unknown", "red"), ' ', style(`command: "${command}"`, "gray")));
       printHelp();
       return 1;
   }
@@ -95,7 +95,7 @@ function runNewTree({ command, args, flags }, argv) {
           printSkillsHelp();
           return 0;
         default:
-          err(`${style("Unknown", "red")} ${style(`skills command: "${sub}"`, "gray")}`);
+          err(combine(style("Unknown", "red"), ' ', style(`skills command: "${sub}"`, "gray")));
           printSkillsHelp();
           return 1;
       }
@@ -114,7 +114,7 @@ function runNewTree({ command, args, flags }, argv) {
           printTeamHelp();
           return 0;
         default:
-          err(`${style("Unknown", "red")} ${style(`team command: "${sub}"`, "gray")}`);
+          err(combine(style("Unknown", "red"), ' ', style(`team command: "${sub}"`, "gray")));
           printTeamHelp();
           return 1;
       }
@@ -129,7 +129,7 @@ function runNewTree({ command, args, flags }, argv) {
           printFactoryHelp();
           return 0;
         default:
-          err(`${style("Unknown", "red")} ${style(`factory command: "${sub}"`, "gray")}`);
+          err(combine(style("Unknown", "red"), ' ', style(`factory command: "${sub}"`, "gray")));
           printFactoryHelp();
           return 1;
       }
@@ -146,7 +146,7 @@ function runNewTree({ command, args, flags }, argv) {
           printAgentHelp();
           return 0;
         default:
-          err(`${style("Unknown", "red")} ${style(`agent command: "${sub}"`, "gray")}`);
+          err(combine(style("Unknown", "red"), ' ', style(`agent command: "${sub}"`, "gray")));
           printAgentHelp();
           return 1;
       }
@@ -168,7 +168,7 @@ function runNewTree({ command, args, flags }, argv) {
           printWorkspaceHelp();
           return 0;
         default:
-          err(`${style("Unknown", "red")} ${style(`workspace command: "${sub}"`, "gray")}`);
+          err(combine(style("Unknown", "red"), ' ', style(`workspace command: "${sub}"`, "gray")));
           printWorkspaceHelp();
           return 1;
       }
@@ -191,7 +191,7 @@ function runNewTree({ command, args, flags }, argv) {
           printWorkflowHelp();
           return 0;
         default:
-          err(`${style("Unknown", "red")} ${style(`workflow command: "${sub}"`, "gray")}`);
+          err(combine(style("Unknown", "red"), ' ', style(`workflow command: "${sub}"`, "gray")));
           printWorkflowHelp();
           return 1;
       }
@@ -203,7 +203,7 @@ function runNewTree({ command, args, flags }, argv) {
       printCliHelp();
       return 0;
     default:
-      err(`${style("Unknown", "red")} ${style(`command: "${command}"`, "gray")}`);
+      err(combine(style("Unknown", "red"), ' ', style(`command: "${command}"`, "gray")));
       printCliHelp();
       return 1;
   }

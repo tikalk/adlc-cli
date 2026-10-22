@@ -23,6 +23,7 @@ import { describeSpawnError } from "../utils/spawn.mjs";
 import {
   out,
   error,
+  failure,
   item,
   section,
   panel,
@@ -284,7 +285,7 @@ export async function cmdUpdate(args, flags) {
       }
       npxArgs.push("-y");
       out("");
-      out(`${style("▸", ACCENT)} ${style(`Pulling latest skills for ${agentKey}`, "bold")}`);
+      out(combine(style("▸", ACCENT), ' ', style(`Pulling latest skills for ${agentKey}`, "bold")));
       item(`npx ${npxArgs.join(" ")}`, { glyph: sym.arrow, color: "gray" });
       const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
       if (result.status !== 0) {
@@ -341,7 +342,7 @@ export async function cmdUpdate(args, flags) {
     }
 
     out("");
-    out(`${style("▸", ACCENT)} ${style(`${agent.name} (${agentKey})`, "bold")}`);
+    out(combine(style("▸", ACCENT), ' ', style(`${agent.name} (${agentKey})`, "bold")));
     item(`${updated} updated, ${skipped} user-modified (skipped)`, {
       glyph: sym.success,
       color: "green",
@@ -383,7 +384,7 @@ export async function cmdRemove(args, flags) {
 
     if (removed > 0) {
       out("");
-      out(`${style("▸", ACCENT)} ${style(`${agent.name} (${agentKey})`, "bold")}`);
+      out(combine(style("▸", ACCENT), ' ', style(`${agent.name} (${agentKey})`, "bold")));
       item(`removed ${removed} command file(s)`, { glyph: sym.success, color: "green" });
     }
 

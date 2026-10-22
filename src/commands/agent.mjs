@@ -7,7 +7,7 @@ import { normalizeLine } from "../run-events.mjs";
 import { renderTextEvent, handleInlineHitl } from "../render.mjs";
 import { appendFileSync } from "node:fs";
 import { spawnCompat } from "../utils/spawn.mjs";
-import { out, err, error, table, tint, ACCENT } from "../ui/index.mjs";
+import { out, err, error, table, tint, combine, ACCENT } from "../ui/index.mjs";
 
 // ── run ────────────────────────────────────────────────────────────────
 export async function cmdAgentRun(runArgs) {
@@ -70,7 +70,7 @@ export async function cmdAgentRun(runArgs) {
 
   if (timeout) {
     timeoutHandle = setTimeout(() => {
-      err(`${tint("[run]", "gray")} ${tint(`timeout: killing agent after ${timeout}s`, "yellow")}`);
+      err(combine(tint("[run]", "gray"), ' ', tint(`timeout: killing agent after ${timeout}s`, "yellow")));
       kill("SIGTERM");
     }, timeout * 1000);
   }
@@ -107,8 +107,8 @@ export async function runAgentInteractive(agentKey, prompt, { cwd } = {}) {
       env,
       stdio: "inherit",
     });
-    child.on("error", (err) => {
-      err(`${tint("[interactive]", "gray")} ${tint("spawn error:", "red")} ${err.message}`);
+    child.on("error", (cause) => {
+      err(combine(tint("[interactive]", "gray"), ' ', tint("spawn error:", "red"), ' ', cause.message));
       resolvePromise(1);
     });
     child.on("exit", (code, signal) => {

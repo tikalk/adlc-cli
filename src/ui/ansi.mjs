@@ -38,6 +38,10 @@ const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
 // \x0a-\x1f, so a hostile string cannot smuggle an ANSI sequence through.
 const CONTROL_CHARS = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/g;
 
+// The same set, but newlines and carriage returns survive so a multi-line
+// diagnostic keeps its shape.
+const CONTROL_CHARS_NO_NEWLINE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+
 // East Asian Wide / Fullwidth ranges — these occupy two terminal cells.
 const WIDE_CHARS =
   /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/;
@@ -56,14 +60,23 @@ export function setColorMode(mode) {
   }
 }
 
-/** Whether ANSI styling is currently emitted. */
-export function colorEnabled() {
+/**
+ * Whether ANSI styling is currently emitted.
+ *
+ * The decision is **per stream**: stdout and stderr are separate consumers,
+ * and each may be a terminal while the other is a pipe. A piped stdout must
+ * carry no ANSI byte, and a redirected stderr log must carry no ANSI byte —
+ * but neither rule licenses putting color on the other stream.
+ *
+ * @param {"stdout"|"stderr"} [stream]
+ */
+export function colorEnabled(stream = "stdout") {
   if (colorOverride === "always") return true;
   if (colorOverride === "never") return false;
-  return detectColorSupport();
+  return detectColorSupport(stream);
 }
 
-function detectColorSupport() {
+function detectColorSupport(stream) {
   // https://no-color.org — presence alone disables, regardless of value.
   if (process.env.NO_COLOR !== undefined) return false;
   if (process.env.FORCE_COLOR !== undefined) {
@@ -71,9 +84,8 @@ function detectColorSupport() {
     return !(value === "0" || value === "false" || value === "no");
   }
   if (process.env.TERM === "dumb") return false;
-  // Either stream may be a terminal: a human may be watching stderr while
-  // stdout is piped, or the reverse.
-  return Boolean((process.stdout && process.stdout.isTTY) || (process.stderr && process.stderr.isTTY));
+  const target = stream === "stderr" ? process.stderr : process.stdout;
+  return Boolean(target && target.isTTY);
 }
 
 /**
@@ -91,8 +103,21 @@ export class SafeString extends String {}
  * @param {...string} names style names from the SGR table
  */
 export function style(text, ...names) {
+  return applyStyle(text, names, "stdout");
+}
+
+/**
+ * Style text for the **stderr** stream. The stderr writers use this so a
+ * terminal stderr stays colored even when stdout is piped, and a redirected
+ * stderr log stays clean.
+ */
+export function styleErr(text, ...names) {
+  return applyStyle(text, names, "stderr");
+}
+
+function applyStyle(text, names, stream) {
   const value = asText(text);
-  if (!colorEnabled()) return new SafeString(value);
+  if (!colorEnabled(stream)) return new SafeString(value);
   const codes = [];
   for (const name of names) {
     const code = SGR[name];
@@ -114,7 +139,7 @@ export function style(text, ...names) {
  */
 export function asText(value) {
   if (value instanceof SafeString) return String(value);
-  return sanitize(value);
+  return sanitizeMultiline(value);
 }
 
 /**
@@ -130,6 +155,14 @@ export function combine(...parts) {
 /** Remove ANSI escape sequences from a string. */
 export function stripAnsi(text) {
   return String(text ?? "").replace(ANSI_PATTERN, "");
+}
+
+/**
+ * The width of a single character in terminal cells.
+ * Wide (CJK / fullwidth) characters occupy two cells.
+ */
+export function cellWidth(ch) {
+  return WIDE_CHARS.test(ch) ? 2 : 1;
 }
 
 /**
@@ -153,9 +186,21 @@ export function visibleWidth(text) {
  * Strip control characters so untrusted content (repo URLs, step labels,
  * agent output) cannot inject ANSI sequences or rewrite the terminal.
  * Mirrors the regex already used by the workflow gate.
+ *
+ * Newlines and carriage returns are stripped too: this is the single-line
+ * form. Use {@link sanitizeMultiline} for text that legitimately has lines
+ * (a multi-line diagnostic, a stack trace).
  */
 export function sanitize(text) {
   return String(text ?? "").replace(CONTROL_CHARS, "");
+}
+
+/**
+ * Strip control characters but keep newlines and carriage returns, so a
+ * multi-line diagnostic keeps its shape. Tab is preserved as well.
+ */
+export function sanitizeMultiline(text) {
+  return String(text ?? "").replace(CONTROL_CHARS_NO_NEWLINE, "");
 }
 
 /**
@@ -165,7 +210,7 @@ export function sanitize(text) {
  * @param {...string} names style names from the SGR table
  */
 export function tint(text, ...names) {
-  return style(sanitize(text), ...names);
+  return style(sanitizeMultiline(text), ...names);
 }
 /**
  * Sanitize a multi-line string into individual safe lines.
@@ -296,8 +341,9 @@ function wrapStyledLine(source, width) {
       continue;
     }
     if (ch === " ") breakAt = line.length;
+    const w = cellWidth(ch);
     line += ch;
-    lineWidth += 1;
+    lineWidth += w;
     i += 1;
 
     if (lineWidth > width) {
@@ -307,8 +353,11 @@ function wrapStyledLine(source, width) {
         head = line.slice(0, breakAt);
         tail = line.slice(breakAt + 1);
       } else {
-        head = line.slice(0, line.length - 1);
-        tail = line.slice(line.length - 1);
+        // No breakable space: hard-break before the character that overflowed.
+        // A wide character is two cells, so it may need the previous one too.
+        const cut = w === 2 ? line.length - 3 : line.length - 1;
+        head = line.slice(0, Math.max(0, cut));
+        tail = line.slice(Math.max(0, cut));
       }
       lines.push(close(head));
       line = (active ? `\x1b[${active}m` : "") + tail;
