@@ -51,7 +51,46 @@ function runLegacyTree({ command, args, flags }) {
   }
 }
 
-function runNewTree({ command, args, flags }, argv) {
+async function runNewTree({ command, args, flags }, argv) {
+  // `--provider` on the workspace/agent/workflow commands selects the remote
+  // transport. An unknown value must be refused — silently running locally
+  // would hand the operator a local run they asked for remotely.
+  const providerCommands = ["workspace", "agent", "run", "workflow"];
+  if (flags?.provider && flags.provider !== "coder" && providerCommands.includes(command)) {
+    console.error(`Error: unknown --provider "${flags.provider}" (known: coder) for '${command}'.`);
+    return 1;
+  }
+  if (flags?.provider === "coder") {
+    const { cmdCoderWorkspaceSetup, cmdCoderAgentRun, cmdCoderWorkflowRun } = await import("./providers/coder-route.mjs");
+    let routed = false;
+    if (command === "workspace" && (args[0] ?? "status") === "setup") {
+      routed = true;
+      return cmdCoderWorkspaceSetup(args.slice(1), flags, argv);
+    }
+    if (command === "agent" && (args[0] ?? "help") === "run") {
+      routed = true;
+      const rest = argv.slice(argv.indexOf("run") + 1);
+      return cmdCoderAgentRun(rest, argv);
+    }
+    if (command === "run") {
+      routed = true;
+      return cmdCoderAgentRun(argv.slice(1), argv);
+    }
+    if (command === "workflow" && (args[0] ?? "help") === "run") {
+      routed = true;
+      const workflowArgv = argv.slice(argv.indexOf("workflow") + 1);
+      return cmdCoderWorkflowRun(args.slice(1), flags, workflowArgv);
+    }
+    if (!routed) {
+      // `--provider coder` on a command with no provider route would silently
+      // run locally — the operator asked for a remote workspace.
+      console.error(
+        `Error: --provider coder is not supported for '${command}` +
+        `${args[0] ? ` ${args[0]}` : ""}' (provider routes: workspace setup, agent run, run, workflow run).`
+      );
+      return 1;
+    }
+  }
   switch (command) {
     case "skills": {
       const sub = args[0] ?? "status";
@@ -215,6 +254,18 @@ function parseArgs(argv) {
       flags.skipSkills = true;
     } else if (arg === "--provider") {
       flags.provider = rest[++i];
+    } else if (arg.startsWith("--provider=")) {
+      flags.provider = arg.slice("--provider=".length);
+    } else if (arg === "--workspace" || arg === "-w") {
+      flags.workspace = rest[++i];
+    } else if (arg.startsWith("--workspace=")) {
+      flags.workspace = arg.slice("--workspace=".length);
+    } else if (arg === "--input" || arg === "-i") {
+      flags.inputs = flags.inputs ?? [];
+      flags.inputs.push(rest[++i]);
+    } else if (arg.startsWith("--input=")) {
+      flags.inputs = flags.inputs ?? [];
+      flags.inputs.push(arg.slice("--input=".length));
     } else if (arg === "--update-confidence") {
       flags.updateConfidence = true;
     } else if (arg === "--build-to-delete") {

@@ -103,12 +103,35 @@ export async function cmdWorkspaceSetup(args, flags) {
       throw new Error("tab indentation is not valid YAML (use spaces)");
     }
     wsfile = parseYaml(content);
+    // Workspace files are location-free: a `provider:` key is REJECTED, never
+    // ignored — the same contract the provider path enforces.
+    const { validateWorkspaceConfig } = await import("../providers/transport.mjs");
+    validateWorkspaceConfig(wsfile);
   } catch (err) {
     console.error(`Error: invalid workspace file: ${err.message}`);
     return 1;
   }
   if (!wsfile || typeof wsfile !== "object" || !wsfile.schema_version) {
     console.error(`Error: workspace file missing schema_version (${source})`);
+    return 1;
+  }
+
+  // 3.5 Expand ${VAR} — same contract as the provider path: fail fast on a
+  // missing variable (naming it) so a repo-owned workspace file can carry
+  // per-run values (e.g. name: ${WORKSPACE_NAME}, branch: ${BRANCH}).
+  // Secret-sourced values (secrets.env / docker secrets) are kept as
+  // placeholders here: the plan is printed to stdout, so a secret must never
+  // be inlined into it. The placeholder is resolved only where the value is
+  // actually used (the git argv), never in what is printed.
+  let secretValues = {};
+  try {
+    const { expandWorkspaceVars, loadSecretsEnv } = await import("../providers/transport.mjs");
+    secretValues = loadSecretsEnv(projectRoot);
+    const expandEnv = { ...process.env };
+    for (const key of Object.keys(secretValues)) expandEnv[key] = `\${${key}}`;
+    wsfile = expandWorkspaceVars(wsfile, expandEnv);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
     return 1;
   }
 
@@ -153,8 +176,17 @@ export async function cmdWorkspaceSetup(args, flags) {
         console.log(`│  = ${mod.path} (exists, skipping clone)`);
         continue;
       }
-      if (!isSafeGitRemote(mod.repo)) {
-        console.error(`│  ✗ git entry has an unsafe repo URL (ext:: helpers, leading -, whitespace, or shell metachars rejected): ${mod.repo}`);
+      // Secret-sourced values are kept as ${VAR} placeholders in the plan;
+      // git needs the real value in its argv, so resolve it here — and never
+      // print it (the plan is scrubbed).
+      const { scrubSecretValues } = await import("../providers/transport.mjs");
+      const resolveSecrets = (value) =>
+        String(value).replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, key) =>
+          secretValues[key] !== undefined ? secretValues[key] : match
+        );
+      const repo = resolveSecrets(mod.repo);
+      if (!isSafeGitRemote(repo)) {
+        console.error(`│  ✗ git entry has an unsafe repo URL (ext:: helpers, leading -, whitespace, or shell metachars rejected): ${scrubSecretValues(mod.repo, secretValues)}`);
         console.log(`└─ failed`);
         return 1;
       }
@@ -171,9 +203,19 @@ export async function cmdWorkspaceSetup(args, flags) {
         }
       }
       changed = true;
-      const gitArgs = ["clone", mod.repo, mod.path];
-      if (mod.branch) gitArgs.push("--branch", mod.branch);
-      console.log(`│  $ git ${gitArgs.join(" ")}`);
+      const gitArgs = ["clone", repo, mod.path];
+      if (mod.branch) gitArgs.push("--branch", resolveSecrets(mod.branch));
+      // The printed plan must never carry a secret — not even a 2-character
+      // one (the value-based scrub only masks needles of 3+ characters).
+      const maskCredentials = (url) => {
+        const carriesSecret = Object.values(secretValues).some(
+          (v) => typeof v === "string" && v !== "" && url.includes(v)
+        );
+        if (!carriesSecret) return url;
+        return url.replace(/([a-z+]+:\/\/)[^/@\s]+@/, `$1[REDACTED]@`);
+      };
+      const printable = maskCredentials(scrubSecretValues(gitArgs.join(" "), secretValues));
+      console.log(`│  $ git ${printable}`);
       if (!dryRun) {
         const result = spawnSync("git", gitArgs, { stdio: "inherit", cwd: projectRoot });
         if (result.status !== 0) {
@@ -182,7 +224,7 @@ export async function cmdWorkspaceSetup(args, flags) {
           return result.status || 1;
         }
         if (mod.ref) {
-          const co = spawnSync("git", ["-C", mod.path, "checkout", mod.ref], {
+          const co = spawnSync("git", ["-C", mod.path, "checkout", resolveSecrets(mod.ref)], {
             stdio: "inherit",
             cwd: projectRoot,
           });
