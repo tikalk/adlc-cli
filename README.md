@@ -154,6 +154,41 @@ step and its nested body on resume. Keep gates at the top level, or bind a
 | `version` | Print installed version |
 | `help` | Show full help |
 
+## Terminal output
+
+Human-facing output uses a shared UI layer (`src/ui/`) with the same visual
+language as the `specify` CLI: a cyan accent, bordered panels, aligned tables
+and a step tree for workflow runs. The package stays **dependency-free** — the
+layer is hand-rolled, so `npx adlc-cli` installs instantly and the npm
+provenance surface is unchanged.
+
+```
+▸ OpenCode (opencode)
+  → npx --yes skills@latest add tikalk/adlc-team-skills -a opencode
+  ✓ Found 12 skill(s) in .agents/skills
+  ✓ Generated 12 command file(s) in .opencode/command
+```
+
+### Color control
+
+| Mechanism | Effect |
+|-----------|--------|
+| TTY detection | Color is on automatically in a terminal, off when piped |
+| `NO_COLOR=1` | Disables color (any value; [no-color.org](https://no-color.org)) |
+| `FORCE_COLOR=1` | Forces color on, even when piped |
+| `--color` | Forces color on for this invocation |
+| `--no-color` | Disables color for this invocation |
+| `--format json` | **Always** disables color — the JSONL stream is a machine contract (ADR-406) |
+
+The `workflow state` helper family is also always unstyled: it is the
+LLM-executor's machine API (ADR-395).
+
+### Untrusted output is sanitized
+
+Repo URLs, step labels, agent names and file contents are stripped of control
+characters before they are printed, so a hostile value cannot inject ANSI
+sequences or rewrite the terminal.
+
 ## `.adlc/init-options.json`
 
 Written by `team setup` (and by the `/team-setup` skill), read by the `team`

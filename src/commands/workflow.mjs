@@ -23,6 +23,25 @@ import {
 import { parkRun, restoreRun } from "../workflow/refs.mjs";
 import { printWorkflowHelp } from "../help.mjs";
 import { classifyWorkflowStatus } from "../exit-codes.mjs";
+import { StepStatus } from "../workflow/base.mjs";
+import {
+  out,
+  err,
+  error,
+  success,
+  failure,
+  note,
+  panel,
+  table,
+  keyValue,
+  createStepTracker,
+  combine,
+  style,
+  tint,
+  sym,
+  statusStyle,
+  ACCENT,
+} from "../ui/index.mjs";
 
 const RUNS_DIR = ".adlc/workflows/runs";
 
@@ -48,7 +67,7 @@ export async function cmdWorkflow(args, flags, rawArgv) {
       printWorkflowHelp();
       return 0;
     default:
-      console.error(`Unknown workflow command: "${sub}"`);
+      err(combine(style("Unknown", "red"), ' ', style(`workflow command: "${sub}"`, "gray")));
       printWorkflowHelp();
       return 1;
   }
@@ -98,7 +117,8 @@ function hasFlag(rawArgv, name) {
 function installInterruptHandler(engine) {
   const onInt = () => {
     engine.interrupted = true;
-    console.error("\n[workflow] interrupt received — pausing after current step…");
+    err("");
+    err(combine(tint("[workflow]", "gray"), ' ', tint("interrupt received — pausing after current step…", "yellow")));
   };
   process.once("SIGINT", onInt);
   process.once("SIGTERM", onInt);
@@ -121,21 +141,41 @@ function eventEmitterFor(rawArgv) {
 function makeEngine(projectRoot, rawArgv) {
   const engine = new WorkflowEngine(projectRoot);
   const emitter = eventEmitterFor(rawArgv);
+  // The tracker backs the final step tree; in --format json mode nothing is
+  // printed here — the JSONL stream is the only output (ADR-406).
+  const tracker = createStepTracker("");
+  engine.stepTracker = tracker;
   if (emitter !== null) {
     engine.onEvent = emitter;
   } else {
     engine.onStepStart = (stepId, label) => {
-      console.log(`  ▶ ${stepId} (${label})`);
+      tracker.add(stepId, stepId);
+      tracker.start(stepId, label);
+      out(combine('  ', style(sym.step, ACCENT), ' ', tint(stepId, "bold"), ' ', tint(`(${label})`, "gray")));
+    };
+    engine.onStepComplete = (stepId, label, status, stepError) => {
+      if (status === StepStatus.COMPLETED) tracker.complete(stepId, label);
+      else if (status === StepStatus.FAILED) tracker.error(stepId, stepError ?? "");
+      else if (status === StepStatus.SKIPPED) tracker.skip(stepId, label);
+      else if (status === StepStatus.PAUSED) tracker.start(stepId, label);
+      else tracker.start(stepId, label);
     };
   }
   return engine;
 }
 
-function printRunSummary(state) {
-  console.log(`\nRun ID: ${state.runId}`);
-  console.log(`Status: ${state.status}`);
-  if (state.currentStepId) console.log(`Current: ${state.currentStepId}`);
-  if (state.error) console.log(`Error:  ${state.error}`);
+function printRunSummary(state, tracker = null) {
+  const rows = [["Status:", state.status]];
+  if (state.currentStepId) rows.push(["Current:", state.currentStepId]);
+  if (state.error) rows.push(["Error:", state.error]);
+
+  out("");
+  out(panel({ title: `Run ${state.runId}`, lines: [keyValue(rows)] }));
+
+  if (tracker && tracker.steps.length > 0) {
+    out("");
+    out(tracker.render());
+  }
 }
 
 // ── run ──────────────────────────────────────────────────────────────────
@@ -143,8 +183,8 @@ function printRunSummary(state) {
 async function cmdWorkflowRun(rest, rawArgv) {
   const source = rest.find((a) => !a.startsWith("-"));
   if (!source) {
-    console.error("Error: workflow source required (file path, installed ID, or built-in like 'factory')");
-    console.error("Usage: adlc-cli workflow run <source> --input key=value [--format json]");
+    error("workflow source required (file path, installed ID, or built-in like 'factory')");
+    err(tint("Usage: adlc-cli workflow run <source> --input key=value [--format json]", "gray"));
     return 1;
   }
 
@@ -155,7 +195,7 @@ async function cmdWorkflowRun(rest, rawArgv) {
   try {
     definition = engine.loadWorkflow(source);
   } catch (exc) {
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 
@@ -164,8 +204,10 @@ async function cmdWorkflowRun(rest, rawArgv) {
     validationErrors.push(...headlessGateErrors(definition));
   }
   if (validationErrors.length > 0) {
-    console.error("Workflow validation failed:");
-    for (const err of validationErrors) console.error(`  ✗ ${err}`);
+    err(combine(style("Error:", "red"), ' workflow validation failed:'));
+    for (const message of validationErrors) {
+      err(combine('  ', style(sym.failure, "red"), ' ', tint(message, "gray")));
+    }
     return 1;
   }
 
@@ -173,27 +215,24 @@ async function cmdWorkflowRun(rest, rawArgv) {
   try {
     inputs = parseInputs(rawArgv, "run");
   } catch (exc) {
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 
   const removeHandlers = installInterruptHandler(engine);
   try {
     const state = await engine.execute(definition, inputs, null, STEP_REGISTRY);
-    if (engine.onEvent === null) printRunSummary(state);
+    if (engine.onEvent === null) printRunSummary(state, engine.stepTracker);
     if (state.status === RunStatus.PAUSED) {
-      console.log(`\nPaused at gate. Resume with: adlc-cli workflow resume ${state.runId} --input <verdict>=<choice>`);
+      out("");
+      note(`Paused at gate. Resume with: adlc-cli workflow resume ${state.runId} --input <verdict>=<choice>`);
     }
     // Lane contract: PAUSED exits 3 so the Argo expression
     // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
     // excludes it from retries.
     return classifyWorkflowStatus(state.status).exitCode;
   } catch (exc) {
-    if (exc instanceof LeaseHeldError) {
-      console.error(`Error: ${exc.message}`);
-      return 1;
-    }
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   } finally {
     removeHandlers();
@@ -205,8 +244,8 @@ async function cmdWorkflowRun(rest, rawArgv) {
 async function cmdWorkflowResume(rest, rawArgv) {
   const runId = rest.find((a) => !a.startsWith("-"));
   if (!runId) {
-    console.error("Error: run ID required");
-    console.error("Usage: adlc-cli workflow resume <run_id> --input key=value [--format json]");
+    error("run ID required");
+    err(tint("Usage: adlc-cli workflow resume <run_id> --input key=value [--format json]", "gray"));
     return 1;
   }
 
@@ -217,16 +256,17 @@ async function cmdWorkflowResume(rest, rawArgv) {
   try {
     inputs = parseInputs(rawArgv, "resume");
   } catch (exc) {
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 
   const removeHandlers = installInterruptHandler(engine);
   try {
     const state = await engine.resume(runId, inputs, STEP_REGISTRY);
-    if (engine.onEvent === null) printRunSummary(state);
+    if (engine.onEvent === null) printRunSummary(state, engine.stepTracker);
     if (state.status === RunStatus.PAUSED) {
-      console.log(`\nStill paused. Resume with: adlc-cli workflow resume ${state.runId} --input <verdict>=<choice>`);
+      out("");
+      note(`Still paused. Resume with: adlc-cli workflow resume ${state.runId} --input <verdict>=<choice>`);
     }
     // Lane contract: PAUSED exits 3 so the Argo expression
     // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
@@ -234,10 +274,10 @@ async function cmdWorkflowResume(rest, rawArgv) {
     return classifyWorkflowStatus(state.status).exitCode;
   } catch (exc) {
     if (exc instanceof LeaseHeldError) {
-      console.error(`Error: ${exc.message}`);
+      error(exc.message);
       return 1;
     }
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   } finally {
     removeHandlers();
@@ -252,15 +292,15 @@ async function cmdWorkflowPark(rest, rawArgv) {
   const runId = firstPositional(rest, rawArgv);
   const handleFile = extractFlagValue(rawArgv, "handle-file");
   if (!runId || !handleFile) {
-    console.error("Usage: adlc-cli workflow park <run_id> --handle-file <path> [--remote <name>]");
+    err("Usage: adlc-cli workflow park <run_id> --handle-file <path> [--remote <name>]");
     return 1;
   }
   try {
     const ref = parkRun(process.cwd(), runId, { handleFile, remote: extractFlagValue(rawArgv, "remote") ?? "origin" });
-    console.log(`parked ${runId} → ${ref}`);
+    out(`parked ${runId} → ${ref}`);
     return 0;
   } catch (exc) {
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 }
@@ -269,7 +309,7 @@ async function cmdWorkflowPark(rest, rawArgv) {
 async function cmdWorkflowRestore(rest, rawArgv) {
   const runId = firstPositional(rest, rawArgv);
   if (!runId) {
-    console.error("Usage: adlc-cli workflow restore <run_id> [--remote <name>] [--issue-ref <ref>]");
+    err("Usage: adlc-cli workflow restore <run_id> [--remote <name>] [--issue-ref <ref>]");
     return 1;
   }
   try {
@@ -277,10 +317,10 @@ async function cmdWorkflowRestore(rest, rawArgv) {
       remote: extractFlagValue(rawArgv, "remote") ?? "origin",
       issueRef: extractFlagValue(rawArgv, "issue-ref"),
     });
-    console.log(`restored ${runId} → ${dir}`);
+    out(`restored ${runId} → ${dir}`);
     return 0;
   } catch (exc) {
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 }
@@ -341,45 +381,66 @@ async function cmdWorkflowStatus(rest) {
     try {
       state = loadStateRaw(runId, projectRoot);
     } catch (exc) {
-      console.error(`Error: ${exc.message}`);
+      error(exc.message);
       return 1;
     }
-    console.log(`Run ID: ${state.run_id}`);
-    console.log(`Status: ${state.status}`);
-    if (state.current_step_id) console.log(`Current: ${state.current_step_id}`);
+    const rows = [["Status:", state.status]];
+    if (state.current_step_id) rows.push(["Current:", state.current_step_id]);
+
+    out("");
+    out(panel({ title: `Run ${state.run_id}`, lines: [keyValue(rows)] }));
+
     const stepResults = state.step_results ?? {};
     const ids = Object.keys(stepResults);
     if (ids.length > 0) {
-      console.log(`\nSteps (${ids.length}):`);
+      const tracker = createStepTracker(`Steps (${ids.length})`);
       for (const id of ids) {
-        console.log(`  ${statusIcon(stepResults[id].status)} ${id} — ${stepResults[id].status}`);
+        tracker.add(id, id);
+        const status = stepResults[id].status;
+        if (status === StepStatus.COMPLETED) tracker.complete(id);
+        else if (status === StepStatus.FAILED) tracker.error(id, stepResults[id].error ?? "");
+        else if (status === StepStatus.SKIPPED) tracker.skip(id);
+        else if (status === StepStatus.RUNNING) tracker.start(id);
+        else tracker.add(id, id);
       }
+      out("");
+      out(tracker.render());
     }
     return 0;
   }
 
   const runs = engine.listRuns();
   if (runs.length === 0) {
-    console.log(`No workflow runs found (${join(projectRoot, RUNS_DIR)})`);
+    out("");
+    note(`No workflow runs found (${join(projectRoot, RUNS_DIR)})`);
     return 0;
   }
-  console.log(`Workflow runs (${runs.length}):`);
-  for (const run of runs) {
-    const current = run.current_step_id ? ` · ${run.current_step_id}` : "";
-    console.log(`  ${statusIcon(run.status)} ${run.run_id} — ${run.status}${current} (${run.updated_at ?? ""})`);
-  }
+  out("");
+  out(
+    table({
+      title: `Workflow runs (${runs.length})`,
+      columns: [
+        { header: "Run ID", style: ACCENT },
+        { header: "Status" },
+        { header: "Current", optional: true },
+        { header: "Updated", optional: true },
+      ],
+      rows: runs.map((run) => [
+        run.run_id,
+        statusCell(run.status),
+        run.current_step_id ?? "",
+        run.updated_at ?? "",
+      ]),
+    }),
+  );
+  out("");
   return 0;
 }
 
-function statusIcon(status) {
-  switch (status) {
-    case RunStatus.COMPLETED: return "✓";
-    case RunStatus.PAUSED: return "⏸";
-    case RunStatus.FAILED: return "✗";
-    case RunStatus.ABORTED: return "⛔";
-    case RunStatus.RUNNING: return "▶";
-    default: return "○";
-  }
+// A status rendered as a colored glyph plus the raw status name.
+function statusCell(status) {
+  const { glyph, color } = statusStyle(status);
+  return combine(style(glyph, color ?? "gray"), " ", status);
 }
 
 function loadStateRaw(runId, projectRoot) {
@@ -395,8 +456,8 @@ function loadStateRaw(runId, projectRoot) {
 async function cmdWorkflowValidate(rest, rawArgv) {
   const source = rest.find((a) => !a.startsWith("-"));
   if (!source) {
-    console.error("Error: source required");
-    console.error("Usage: adlc-cli workflow validate <workflow.yml|id> [--headless]");
+    error("source required");
+    err(tint("Usage: adlc-cli workflow validate <workflow.yml|id> [--headless]", "gray"));
     return 1;
   }
 
@@ -406,7 +467,7 @@ async function cmdWorkflowValidate(rest, rawArgv) {
   try {
     definition = engine.loadWorkflow(source);
   } catch (exc) {
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 
@@ -416,12 +477,15 @@ async function cmdWorkflowValidate(rest, rawArgv) {
     errors.push(...headlessGateErrors(definition));
   }
   if (errors.length === 0) {
-    console.log(`✓ ${definition.id} (${definition.name} v${definition.version}) — valid`);
-    console.log(`  ${definition.steps.length} step(s), ${Object.keys(definition.inputs).length} input(s)`);
+    out("");
+    success(`${definition.id} (${definition.name} v${definition.version}) — valid`);
+    out(combine('  ', tint(`${definition.steps.length} step(s), ${Object.keys(definition.inputs).length} input(s)`, "gray")));
     return 0;
   }
-  console.error(`Validation failed for ${source}:`);
-  for (const err of errors) console.error(`  ✗ ${err}`);
+  err(combine(style("Error:", "red"), ' validation failed for ', source, ':'));
+  for (const message of errors) {
+    err(combine('  ', style(sym.failure, "red"), ' ', tint(message, "gray")));
+  }
   return 1;
 }
 
@@ -436,14 +500,14 @@ async function cmdWorkflowState(rest, rawArgv) {
       case "start": {
         const workflowSource = extractFlagValue(rawArgv, "workflow");
         if (!workflowSource) {
-          console.error("Error: --workflow <id|path> required");
-          console.error("Usage: adlc-cli workflow state start --workflow <source> [--run-id <id>] [--input k=v]");
+          error("--workflow <id|path> required");
+          err(tint("Usage: adlc-cli workflow state start --workflow <source> [--run-id <id>] [--input k=v]", "gray"));
           return 1;
         }
         const runId = extractFlagValue(rawArgv, "run-id");
         const inputs = parseInputs(rawArgv, "start");
         const state = await stateStart({ projectRoot, workflowSource, runId, inputs });
-        console.log(state.runId);
+        process.stdout.write(`${state.runId}\n`);
         return 0;
       }
       case "advance": {
@@ -451,12 +515,12 @@ async function cmdWorkflowState(rest, rawArgv) {
         const stepId = extractFlagValue(rawArgv, "step");
         const status = extractFlagValue(rawArgv, "status") ?? "completed";
         if (!runId || !stepId) {
-          console.error("Error: run id and --step <id> required");
-          console.error("Usage: adlc-cli workflow state advance <run_id> --step <id> --status completed|failed [--output-file <path>] [--error <msg>]");
+          error("run id and --step <id> required");
+          err(tint("Usage: adlc-cli workflow state advance <run_id> --step <id> --status completed|failed [--output-file <path>] [--error <msg>]", "gray"));
           return 1;
         }
         if (!["completed", "failed"].includes(status)) {
-          console.error(`Error: --status must be completed|failed, got '${status}'`);
+          error(`--status must be completed|failed, got '${status}'`);
           return 1;
         }
         let output = null;
@@ -469,41 +533,44 @@ async function cmdWorkflowState(rest, rawArgv) {
         }
         const error = extractFlagValue(rawArgv, "error");
         const state = await stateAdvance({ projectRoot, runId, stepId, status, output, error });
-        console.log(`${state.status}${state.currentStepId ? ` · next: ${state.currentStepId}` : ""}`);
+        process.stdout.write(
+          `${state.status}${state.currentStepId ? ` · next: ${state.currentStepId}` : ""}\n`,
+        );
         return 0;
       }
       case "pause": {
         const runId = rest[1];
         const stepId = extractFlagValue(rawArgv, "step");
         if (!runId || !stepId) {
-          console.error("Error: run id and --step <id> required");
-          console.error("Usage: adlc-cli workflow state pause <run_id> --step <id>");
+          error("run id and --step <id> required");
+          err(tint("Usage: adlc-cli workflow state pause <run_id> --step <id>", "gray"));
           return 1;
         }
         const state = await statePause({ projectRoot, runId, stepId });
-        console.log(`paused at ${state.currentStepId}`);
+        process.stdout.write(`paused at ${state.currentStepId}\n`);
         return 0;
       }
       case "fail": {
         const runId = rest[1];
         if (!runId) {
-          console.error("Error: run id required");
-          console.error("Usage: adlc-cli workflow state fail <run_id> --error <msg>");
+          error("run ID required");
+          err(tint("Usage: adlc-cli workflow state fail <run_id> --error <msg>", "gray"));
           return 1;
         }
         const state = await stateFail({ projectRoot, runId, error: extractFlagValue(rawArgv, "error") });
-        console.log(`failed: ${state.error}`);
+        process.stdout.write(`failed: ${state.error}\n`);
         return 0;
       }
       case "show": {
         const runId = rest[1];
         if (!runId) {
-          console.error("Error: run id required");
-          console.error("Usage: adlc-cli workflow state show <run_id>");
+          error("run ID required");
+          err(tint("Usage: adlc-cli workflow state show <run_id>", "gray"));
           return 1;
         }
         const state = stateShow({ projectRoot, runId });
-        console.log(JSON.stringify({
+        process.stdout.write(
+          JSON.stringify({
           run_id: state.runId,
           workflow_id: state.workflowId,
           status: state.status,
@@ -513,28 +580,40 @@ async function cmdWorkflowState(rest, rawArgv) {
             Object.entries(state.stepResults).map(([k, v]) => [k, { status: v.status, error: v.error ?? null }]),
           ),
           error: state.error,
-        }, null, 2));
+          }, null, 2) + "\n",
+        );
         return 0;
       }
       case "help":
       default:
-        console.log(`Usage: adlc-cli workflow state <command>
-
-Commands:
-  start   --workflow <id|path> [--run-id <id>] [--input k=v]   Create a run (lease acquired)
-  advance <run_id> --step <id> --status completed|failed
-          [--output-file <path> | --output-json <json>] [--error <msg>]   Record a step result
-  pause   <run_id> --step <id>                                 Park at a gate/checkpoint (lease released)
-  fail    <run_id> --error <msg>                               Terminal failure (lease released)
-  show    <run_id>                                             Read-only state access`);
+        // Plain text, deliberately: the `workflow state` family is the
+        // LLM-executor's machine API (ADR-395) and its stdout is parsed, not
+        // read. ADR-444 rule 2 keeps this family unstyled — the help
+        // included, so an agent that runs `state help` gets clean text.
+        out("");
+        out("Usage: adlc-cli workflow state <command>");
+        out("");
+        out("Commands:");
+        const rows = [
+          ["start   --workflow <id|path> [--run-id <id>] [--input k=v]", "Create a run (lease acquired)"],
+          ["advance <run_id> --step <id> --status completed|failed", "Record a step result"],
+          ["  [--output-file <path> | --output-json <json>] [--error <msg>]", ""],
+          ["pause   <run_id> --step <id>", "Park at a gate/checkpoint (lease released)"],
+          ["fail    <run_id> --error <msg>", "Terminal failure (lease released)"],
+          ["show    <run_id>", "Read-only state access"],
+        ];
+        const labelWidth = rows.reduce((max, [label]) => Math.max(max, label.length), 0);
+        for (const [label, description] of rows) {
+          out(description ? `${label.padEnd(labelWidth)}  ${description}` : label);
+        }
         return sub === "help" ? 0 : 1;
     }
   } catch (exc) {
     if (exc instanceof LeaseHeldError) {
-      console.error(`Error: ${exc.message}`);
+      error(exc.message);
       return 1;
     }
-    console.error(`Error: ${exc.message}`);
+    error(exc.message);
     return 1;
   }
 }

@@ -431,7 +431,7 @@ workspace:
   try {
     const r = await run(["workspace", "setup", "--dry-run", "-a", "flag-agent"], dir);
     assert.equal(r.code ?? 0, 0, combined(r));
-    assert.match(r.stdout, /Agent: flag-agent/);
+    assert.match(r.stdout, /Agent:\s+flag-agent/);
     assert.doesNotMatch(r.stdout, /file-agent/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

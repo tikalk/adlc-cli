@@ -9,6 +9,30 @@ import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { join, resolve, relative, isAbsolute, sep } from "node:path";
 import { parseYaml } from "../utils/yaml.mjs";
 import { readAgent } from "../utils/init-options.mjs";
+import {
+  out,
+  error,
+  failure,
+  warn,
+  success,
+  item,
+  section,
+  panel,
+  keyValue,
+  style,
+  tint,
+  sym,
+  ACCENT,
+} from "../ui/index.mjs";
+
+// A section header for the workspace setup flow. A panel is not used here:
+// git and the agent CLI write straight to the terminal, so a box would be
+// torn apart by interleaved child output. The items are printed one at a
+// time as they happen, so the header is the only part a shared primitive
+// can own.
+function sectionHeader(text) {
+  section(text);
+}
 
 const WORKSPACE_FILE = ".adlc/workspace.yml";
 
@@ -84,8 +108,8 @@ export async function cmdWorkspaceSetup(args, flags) {
     (existsSync(join(projectRoot, WORKSPACE_FILE)) ? WORKSPACE_FILE : null);
 
   if (!source) {
-    console.error(
-      "Error: no workspace file found. Pass a path/URL, set ADLC_WORKSPACE_FILE, or create .adlc/workspace.yml",
+    error(
+      "no workspace file found. Pass a path/URL, set ADLC_WORKSPACE_FILE, or create .adlc/workspace.yml",
     );
     return 1;
   }
@@ -104,24 +128,34 @@ export async function cmdWorkspaceSetup(args, flags) {
     }
     wsfile = parseYaml(content);
   } catch (err) {
-    console.error(`Error: invalid workspace file: ${err.message}`);
+    error(`invalid workspace file: ${err.message}`);
     return 1;
   }
   if (!wsfile || typeof wsfile !== "object" || !wsfile.schema_version) {
-    console.error(`Error: workspace file missing schema_version (${source})`);
+    error(`workspace file missing schema_version (${source})`);
     return 1;
   }
 
   // 4. Resolve agent: -a flag > workspace agent: > init-options.json
   const agent = (flags.agents && flags.agents[0]) || wsfile.agent || readAgent();
   if (!agent) {
-    console.error("Error: agent required (-a <agent>, workspace agent:, or init-options.json)");
+    error("agent required (-a <agent>, workspace agent:, or init-options.json)");
     return 1;
   }
 
   const dryRun = flags.dryRun || false;
-  console.log(`Workspace: ${wsfile.name || source}`);
-  console.log(`Agent: ${agent}${dryRun ? "  [dry-run]" : ""}`);
+  out("");
+  out(
+    panel({
+      title: "Workspace",
+      lines: [
+        keyValue([
+          ["Workspace:", wsfile.name || source],
+          ["Agent:", agent + (dryRun ? "  [dry-run]" : "")],
+        ]),
+      ],
+    }),
+  );
 
   const { cmdAgentRun } = await import("./agent.mjs");
   const { cmdAdd } = await import("./skills.mjs");
@@ -136,49 +170,43 @@ export async function cmdWorkspaceSetup(args, flags) {
   // 5. workspace.git — deterministic clones (no LLM)
   const gitModules = wsfile.workspace && wsfile.workspace.git;
   if (Array.isArray(gitModules) && gitModules.length > 0) {
-    console.log(`\n┌─ workspace.git (${gitModules.length} repo(s))`);
+    sectionHeader(`workspace.git (${gitModules.length} repo(s))`);
     for (const mod of gitModules) {
       if (!mod || !mod.repo || !mod.path) {
-        console.error("│  ✗ git entry missing repo or path");
-        console.log(`└─ failed`);
+        failure("git entry missing repo or path");
         return 1;
       }
       if (typeof mod.path !== "string") {
-        console.error(`│  ✗ git entry path escapes the project root: ${mod.path}`);
-        console.log(`└─ failed`);
+        failure(`git entry path escapes the project root: ${mod.path}`);
         return 1;
       }
       const target = join(projectRoot, mod.path);
       if (existsSync(target)) {
-        console.log(`│  = ${mod.path} (exists, skipping clone)`);
+        item(`${mod.path} (exists, skipping clone)`, { glyph: sym.exists, color: "gray" });
         continue;
       }
       if (!isSafeGitRemote(mod.repo)) {
-        console.error(`│  ✗ git entry has an unsafe repo URL (ext:: helpers, leading -, whitespace, or shell metachars rejected): ${mod.repo}`);
-        console.log(`└─ failed`);
+        failure(`git entry has an unsafe repo URL (ext:: helpers, leading -, whitespace, or shell metachars rejected): ${mod.repo}`);
         return 1;
       }
       if (typeof mod.path !== "string" || !isPathWithinRoot(projectRoot, join(projectRoot, mod.path))) {
-        console.error(`│  ✗ git entry path escapes the project root: ${mod.path}`);
-        console.log(`└─ failed`);
+        failure(`git entry path escapes the project root: ${mod.path}`);
         return 1;
       }
       for (const ref of [mod.branch, mod.ref]) {
         if (ref !== undefined && ref !== null && !isSafeGitRef(String(ref))) {
-          console.error(`│  ✗ git entry has an unsafe branch/ref (must match [A-Za-z0-9._/-], no leading -, no ..): ${ref}`);
-          console.log(`└─ failed`);
+          failure(`git entry has an unsafe branch/ref (must match [A-Za-z0-9._/-], no leading -, no ..): ${ref}`);
           return 1;
         }
       }
       changed = true;
       const gitArgs = ["clone", mod.repo, mod.path];
       if (mod.branch) gitArgs.push("--branch", mod.branch);
-      console.log(`│  $ git ${gitArgs.join(" ")}`);
+      item(`$ git ${gitArgs.join(" ")}`, { glyph: sym.arrow, color: "gray" });
       if (!dryRun) {
         const result = spawnSync("git", gitArgs, { stdio: "inherit", cwd: projectRoot });
         if (result.status !== 0) {
-          console.error(`│  ✗ git clone failed for ${mod.path}`);
-          console.log(`└─ failed`);
+          failure(`git clone failed for ${mod.path}`);
           return result.status || 1;
         }
         if (mod.ref) {
@@ -187,86 +215,79 @@ export async function cmdWorkspaceSetup(args, flags) {
             cwd: projectRoot,
           });
           if (co.status !== 0) {
-            console.error(`│  ✗ git checkout ${mod.ref} failed for ${mod.path}`);
-            console.log(`└─ failed`);
+            failure(`git checkout ${mod.ref} failed for ${mod.path}`);
             return co.status || 1;
           }
         }
       }
     }
-    console.log(`└─ done`);
   }
 
   // 5.5 workspace.dirs — deterministic empty-dir scaffolding (greenfield)
   const ws = wsfile.workspace || {};
   const dirs = ws.dirs;
   if (Array.isArray(dirs) && dirs.length > 0) {
-    console.log(`\n┌─ workspace.dirs (${dirs.length})`);
+    sectionHeader(`workspace.dirs (${dirs.length})`);
     for (const dir of dirs) {
       if (typeof dir !== "string" || !dir || dir.includes("..")) {
-        console.error(`│  ✗ invalid workspace.dirs entry: ${JSON.stringify(dir)}`);
-        console.log(`└─ failed`);
+        failure(`invalid workspace.dirs entry: ${JSON.stringify(dir)}`);
         return 1;
       }
       const target = join(projectRoot, dir);
       if (existsSync(target)) {
-        console.log(`│  = ${dir} (exists, skipping)`);
+        item(`${dir} (exists, skipping)`, { glyph: sym.exists, color: "gray" });
         continue;
       }
       changed = true;
-      console.log(`│  mkdir -p ${dir}`);
+      item(`mkdir -p ${dir}`, { glyph: sym.arrow, color: "gray" });
       if (!dryRun) mkdirSync(target, { recursive: true });
     }
-    console.log(`└─ done`);
   }
 
   // 6. workspace.init / workspace.link — agent-led (workspace skill)
   if (ws.init) {
     const linkFlag = ws.link ? " --link" : "";
-    console.log(`\n┌─ workspace init${ws.link ? " + link" : ""} (agent-led)`);
+    sectionHeader(`workspace init${ws.link ? " + link" : ""} (agent-led)`);
     if (dryRun) {
-      console.log(`│  agent run -a ${agent} "Run /workspace --init${linkFlag}"`);
+      item(`agent run -a ${agent} "Run /workspace --init${linkFlag}"`, {
+        glyph: sym.arrow,
+        color: "gray",
+      });
     } else {
       const code = await cmdAgentRun(["-a", agent, `Run /workspace --init${linkFlag}`]);
       if (code !== 0) {
-        console.error("│  ✗ workspace init failed");
-        console.log(`└─ failed`);
+        failure("workspace init failed");
         return code || 1;
       }
     }
-    console.log(`└─ done`);
   }
 
   // 7. skills.sources — deterministic install (no LLM); -y: setup is non-interactive
   const sources = wsfile.skills && wsfile.skills.sources;
   if (Array.isArray(sources) && sources.length > 0) {
-    console.log(`\n┌─ skills.sources (${sources.length} source(s))`);
+    sectionHeader(`skills.sources (${sources.length} source(s))`);
     for (const src of sources) {
-      console.log(`│  skills add ${src}`);
+      item(`skills add ${src}`, { glyph: sym.arrow, color: "gray" });
       if (!dryRun) {
         const code = await cmdAdd([src], { agents: [agent], yes: true });
         if (code !== 0) {
-          console.error(`│  ✗ skills add failed for ${src}`);
-          console.log(`└─ failed`);
+          failure(`skills add failed for ${src}`);
           return code || 1;
         }
       }
     }
-    console.log(`└─ done`);
   }
 
   // 8. commands — sequential, stop on first failure
   const commands = wsfile.commands;
   if (Array.isArray(commands) && commands.length > 0) {
-    console.log(`\n┌─ commands (${commands.length})`);
+    sectionHeader(`commands (${commands.length})`);
     for (const command of commands) {
       const code = await runWorkspaceCommand(String(command), agent, cmdAgentRun, cmdAdd, cmdTeamSetup, dryRun);
       if (code !== 0) {
-        console.log(`└─ failed`);
         return code || 1;
       }
     }
-    console.log(`└─ done`);
   }
 
   // 9. goal — agent-led first-boot workspace finishing (AX binding model):
@@ -275,29 +296,27 @@ export async function cmdWorkspaceSetup(args, flags) {
   let goalRan = false;
   if (wsfile.goal) {
     if (!changed) {
-      console.log(`\n┌─ goal (first-boot only — nothing assembled this run, skipping)`);
-      console.log(`└─ done`);
+      sectionHeader("goal (first-boot only — nothing assembled this run, skipping)");
     } else {
-      console.log(`\n┌─ goal (agent-led, first boot)`);
+      sectionHeader("goal (agent-led, first boot)");
       if (dryRun) {
-        console.log(`│  agent run -a ${agent} "${wsfile.goal}"`);
+        item(`agent run -a ${agent} "${wsfile.goal}"`, { glyph: sym.arrow, color: "gray" });
         goalRan = true;
       } else {
         const code = await cmdAgentRun(["-a", agent, wsfile.goal]);
         if (code !== 0) {
-          console.error("│  ✗ goal execution failed");
-          console.log(`└─ failed`);
+          failure("goal execution failed");
           return code || 1;
         }
         goalRan = true;
       }
-      console.log(`└─ done`);
     }
   }
 
-  console.log(`\nWorkspace setup complete.`);
+  out("");
+  success("Workspace setup complete.");
   if (!goalRan) {
-    console.log(`Next: adlc-cli agent run "<your goal>" -a ${agent}`);
+    out(tint(`Next: adlc-cli agent run "<your goal>" -a ${agent}`, "gray"));
   }
   return 0;
 }
@@ -306,18 +325,18 @@ async function loadWorkspaceFile(source, projectRoot) {
   if (isHttpUrl(source)) {
     // Warn-and-continue on plaintext transport: the operator sees the
     // downgrade, but setup still proceeds (fail-open for local mirrors).
-    console.warn(`Warning: workspace file source uses plaintext http (prefer https): ${source}`);
+    warn(`workspace file source uses plaintext http (prefer https): ${source}`);
   }
   if (/^https?:\/\//.test(source)) {
     try {
       const res = await fetch(source);
       if (!res.ok) {
-        console.error(`Error: failed to fetch workspace file from ${source} (HTTP ${res.status})`);
+        error(`failed to fetch workspace file from ${source} (HTTP ${res.status})`);
         return null;
       }
       return await res.text();
     } catch (err) {
-      console.error(`Error: failed to fetch workspace file from ${source}: ${err.message}`);
+      error(`failed to fetch workspace file from ${source}: ${err.message}`);
       return null;
     }
   }
@@ -326,7 +345,7 @@ async function loadWorkspaceFile(source, projectRoot) {
   // Containment IS enforced for paths declared inside the file (git entry paths).
   const path = resolve(projectRoot, source);
   if (!existsSync(path)) {
-    console.error(`Error: workspace file not found at ${path}`);
+    error(`workspace file not found at ${path}`);
     return null;
   }
   return readFileSync(path, "utf-8");
@@ -338,33 +357,33 @@ async function runWorkspaceCommand(command, agent, cmdAgentRun, cmdAdd, cmdTeamS
   // agent run "<quoted prompt>" — prompts contain spaces/quotes
   let match = trimmed.match(/^agent run "([\s\S]*)"$/);
   if (match) {
-    console.log(`│  agent run "${match[1]}"`);
+    item(`agent run "${match[1]}"`, { glyph: sym.arrow, color: "gray" });
     if (dryRun) return 0;
     return await cmdAgentRun(["-a", agent, match[1]]);
   }
   // agent run <bare prompt>
   match = trimmed.match(/^agent run (.+)$/);
   if (match) {
-    console.log(`│  agent run ${match[1]}`);
+    item(`agent run ${match[1]}`, { glyph: sym.arrow, color: "gray" });
     if (dryRun) return 0;
     return await cmdAgentRun(["-a", agent, match[1]]);
   }
   // skills add <source>
   match = trimmed.match(/^skills add (\S+)$/);
   if (match) {
-    console.log(`│  skills add ${match[1]}`);
+    item(`skills add ${match[1]}`, { glyph: sym.arrow, color: "gray" });
     if (dryRun) return 0;
     return await cmdAdd([match[1]], { agents: [agent], yes: true });
   }
   // team setup <source>
   match = trimmed.match(/^team setup (\S+)$/);
   if (match) {
-    console.log(`│  team setup ${match[1]}`);
+    item(`team setup ${match[1]}`, { glyph: sym.arrow, color: "gray" });
     if (dryRun) return 0;
     return await cmdTeamSetup([match[1]], { agents: [agent], yes: true });
   }
 
-  console.error(`│  ✗ unknown command: "${trimmed}" (supported: skills add, team setup, agent run)`);
+  failure(`unknown command: "${trimmed}" (supported: skills add, team setup, agent run)`);
   return 1;
 }
 
@@ -372,7 +391,7 @@ async function runWorkspaceCommand(command, agent, cmdAgentRun, cmdAdd, cmdTeamS
 export async function cmdWorkspaceInit(args, flags) {
   const agent = (flags.agents && flags.agents[0]) || readAgent();
   if (!agent) {
-    console.error("Error: Agent required (-a <agent> or set in init-options.json)");
+    error("Agent required (-a <agent> or set in init-options.json)");
     return 1;
   }
 
@@ -381,7 +400,7 @@ export async function cmdWorkspaceInit(args, flags) {
   else if (flags.ignoreOnly) prompt += " --ignore-only";
 
   if (flags.dryRun) {
-    console.log(`agent run -a ${agent} "${prompt}"`);
+    out(tint(`agent run -a ${agent} "${prompt}"`, "cyan"));
     return 0;
   }
 
@@ -393,12 +412,12 @@ export async function cmdWorkspaceInit(args, flags) {
 export async function cmdWorkspaceStatus(args, flags) {
   const agent = (flags.agents && flags.agents[0]) || readAgent();
   if (!agent) {
-    console.error("Error: Agent required (-a <agent> or set in init-options.json)");
+    error("Agent required (-a <agent> or set in init-options.json)");
     return 1;
   }
 
   if (flags.dryRun) {
-    console.log(`agent run -a ${agent} "Run /workspace --status"`);
+    out(tint(`agent run -a ${agent} "Run /workspace --status"`, "cyan"));
     return 0;
   }
 

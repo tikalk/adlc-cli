@@ -3,6 +3,7 @@
 import { readAgent } from "../utils/init-options.mjs";
 import { findInstalledSkills } from "../source.mjs";
 import { getAgent } from "../registry.mjs";
+import { error } from "../ui/index.mjs";
 
 const PROVIDERS = ["github", "gitlab", "linear", "jira"];
 
@@ -10,13 +11,13 @@ const PROVIDERS = ["github", "gitlab", "linear", "jira"];
 export async function cmdFactorySetup(args, flags) {
   const provider = flags.provider;
   if (provider && !PROVIDERS.includes(provider)) {
-    console.error(`Error: --provider must be one of: ${PROVIDERS.join(", ")}`);
+    error(`--provider must be one of: ${PROVIDERS.join(", ")}`);
     return 1;
   }
 
   const agentKey = flags.agents[0] || readAgent();
   if (!agentKey) {
-    console.error("Error: Agent required (-a <agent> or set in init-options.json)");
+    error("Agent required (-a <agent> or set in init-options.json)");
     return 1;
   }
 
@@ -30,8 +31,8 @@ export async function cmdFactorySetup(args, flags) {
     if (skillsDir) {
       const skills = await findInstalledSkills(skillsDir, projectRoot);
       if (!skills.some((s) => s.name === "factory-setup")) {
-        console.error(
-          "Error: factory-setup skill not installed. Run 'adlc-cli skills add <source>' (or 'adlc-cli team setup <source>') first."
+        error(
+          "factory-setup skill not installed. Run 'adlc-cli skills add <source>' (or 'adlc-cli team setup <source>') first."
         );
         return 1;
       }

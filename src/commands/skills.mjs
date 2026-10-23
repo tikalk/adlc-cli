@@ -20,18 +20,51 @@ import {
 } from "../events.mjs";
 import { writeAgent, writeSkillsSource, readSkillsSource } from "../utils/init-options.mjs";
 import { describeSpawnError } from "../utils/spawn.mjs";
+import {
+  out,
+  error,
+  failure,
+  item,
+  section,
+  panel,
+  table,
+  keyValue,
+  style,
+  tint,
+  combine,
+  sym,
+  ACCENT,
+} from "../ui/index.mjs";
+
+// A step-list header for one agent. A panel is deliberately not used here:
+// `npx` writes straight to the terminal, so a box would be torn apart by the
+// interleaved child output. The items are printed one at a time as they
+// happen, so the header is the only part a shared primitive can own.
+function agentHeader(agent, agentKey) {
+  section(`${agent.name} (${agentKey})`);
+}
+
+// `flags.agents` is always an array — an empty array is truthy, so the old
+// `flags.agents || ALL_AGENTS` never fell back to "every agent" and the
+// no-flag path silently did nothing.
+const ALL_AGENTS = () => Object.keys(AGENTS).filter((key) => key !== "generic");
+
+function targetAgents(flags) {
+  if (flags.agents && flags.agents.length > 0) return flags.agents;
+  return ALL_AGENTS();
+}
 
 // ── add ────────────────────────────────────────────────────────────────
 export async function cmdAdd(args, flags) {
   const source = args[0];
   if (!source) {
-    console.error("Error: source is required (e.g., tikalk/adlc-team-skills)");
+    error("source is required (e.g., tikalk/adlc-team-skills)");
     return 1;
   }
 
   const agents = flags.agents || [];
   if (agents.length === 0) {
-    console.error("Error: at least one -a <agent> is required");
+    error("at least one -a <agent> is required");
     return 1;
   }
 
@@ -52,11 +85,11 @@ export async function cmdAdd(args, flags) {
   for (const agentKey of agents) {
     const agent = getAgent(agentKey);
     if (!agent) {
-      console.error(`Error: unknown agent "${agentKey}". Run 'adlc-cli agent list' to list supported agents.`);
+      error(`unknown agent "${agentKey}". Run 'adlc-cli agent list' to list supported agents.`);
       return 1;
     }
 
-    console.log(`\n┌─ ${agent.name} (${agentKey})`);
+    agentHeader(agent, agentKey);
 
     const npxAgent = resolveNpxAgent(agentKey);
     // Version-aware spec: skills@latest defeats the stale _npx cache install
@@ -74,43 +107,61 @@ export async function cmdAdd(args, flags) {
       } else {
         for (const name of selectedSkills) npxArgs.push("--skill", name);
         if (selectedSkills.length > 1) {
-          console.log(`│  --skill expanded via .skills-deps.json: ${selectedSkills.join(", ")}`);
+          item(
+            `--skill expanded via .skills-deps.json: ${selectedSkills.join(", ")}`,
+            { glyph: sym.info, color: "gray" },
+          );
         }
       }
     }
     if (flags.copy) npxArgs.push("--copy");
     if (npxYes) npxArgs.push("-y");
 
-    console.log(`│  Running: npx ${npxArgs.join(" ")}`);
+    item(combine("Running: ", tint(`npx ${npxArgs.join(" ")}`, "cyan")), {
+      glyph: sym.arrow,
+      color: "gray",
+    });
     const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
     if (result.status !== 0) {
-      if (result.error) console.error(`│  ✗ could not run npx: ${result.error.message}`);
-      console.error(`│  ✗ npx skills add failed for ${agentKey}`);
+      if (result.error) {
+        item(`could not run npx: ${result.error.message}`, { glyph: sym.failure, color: "red" });
+      }
+      item(`npx skills add failed for ${agentKey}`, { glyph: sym.failure, color: "red" });
       const spawnError = describeSpawnError(result);
-      if (spawnError) console.error(`│  spawn error: ${spawnError}`);
+      if (spawnError) item(`spawn error: ${spawnError}`, { glyph: sym.info, color: "gray" });
+      failure(`skills add failed for ${agentKey}`);
       return result.status || 1;
     }
 
     const skillsDir = isGlobal ? agent.global_skills_dir : agent.skills_dir;
     if (!skillsDir) {
-      console.log(`│  No skills directory for ${agentKey} — skipping command generation`);
+      item(`No skills directory for ${agentKey} — skipping command generation`, {
+        glyph: sym.info,
+        color: "yellow",
+      });
       continue;
     }
 
     // Windows PowerShell 5.1 misreads BOM-less non-ASCII .ps1 as ANSI — normalize now.
     const bomFixed = normalizePs1Scripts(resolve(projectRoot, expandTilde(skillsDir)));
     if (bomFixed > 0) {
-      console.log(`│  UTF-8 BOM added to ${bomFixed} .ps1 script(s) (Windows PowerShell 5.1 compat)`);
+      item(`UTF-8 BOM added to ${bomFixed} .ps1 script(s) (Windows PowerShell 5.1 compat)`, {
+        glyph: sym.info,
+        color: "gray",
+      });
     }
 
     const skills = await findInstalledSkills(skillsDir, projectRoot);
     const filtered = selectedSkills ? skills.filter((s) => selectedSkills.includes(s.name)) : skills;
 
-    console.log(`│  Found ${filtered.length} skill(s) in ${skillsDir}`);
+    item(`Found ${filtered.length} skill(s) in ${skillsDir}`, { glyph: sym.success, color: "green" });
 
     const commandsDir = agent.commands_dir;
     if (!commandsDir) {
-      console.log(`│  No commands directory for ${agentKey} — use --commands-dir`);
+      item(`No commands directory for ${agentKey} — use --commands-dir`, {
+        glyph: sym.info,
+        color: "yellow",
+      });
       continue;
     }
 
@@ -125,7 +176,10 @@ export async function cmdAdd(args, flags) {
       writeFileSync(filepath, content, "utf-8");
       generated++;
     }
-    console.log(`│  Generated ${generated} command file(s) in ${commandsDir}`);
+    item(`Generated ${generated} command file(s) in ${commandsDir}`, {
+      glyph: sym.success,
+      color: "green",
+    });
 
     const agentEventConfig = getEventAgentConfig(agentKey);
     if (agentEventConfig && !noEvents) {
@@ -147,27 +201,40 @@ export async function cmdAdd(args, flags) {
         const eventCount = Object.keys(resolvedEvents).length;
         if (eventCount > 0) {
           const dispatcherPath = installDispatcher(projectRoot);
-          console.log(`│  Installed dispatcher: ${dispatcherPath.replace(projectRoot + "/", "")}`);
+          item(`Installed dispatcher: ${dispatcherPath.replace(projectRoot + "/", "")}`, {
+            glyph: sym.success,
+            color: "green",
+          });
           const skillsDir2 = isGlobal ? agent.global_skills_dir : agent.skills_dir;
           const eventResult = installEvents(agentKey, projectRoot, resolvedEvents, skillsDir2);
           if (eventResult) {
             const tag = eventResult.merged ? " (merged)" : " (created)";
             const errTag = eventResult.error ? ` [${eventResult.error}]` : "";
-            console.log(`│  Event config: ${eventResult.path}${tag}${errTag}`);
-            console.log(`│  Events: ${eventCount} (${Object.keys(resolvedEvents).join(", ")})`);
+            item(`Event config: ${eventResult.path}${tag}${errTag}`, {
+              glyph: sym.success,
+              color: "green",
+            });
+            item(`Events: ${eventCount} (${Object.keys(resolvedEvents).join(", ")})`, {
+              glyph: sym.success,
+              color: "green",
+            });
           }
         } else {
-          console.log(`│  Events: none applicable for ${agentKey} in .events.json`);
+          item(`Events: none applicable for ${agentKey} in .events.json`, {
+            glyph: sym.info,
+            color: "yellow",
+          });
         }
       } else {
-        console.log(`│  Events: skipped (no .events.json found in source)`);
+        item(`Events: skipped (no .events.json found in source)`, {
+          glyph: sym.info,
+          color: "gray",
+        });
       }
     }
-
-    console.log(`└─ done`);
   }
 
-  console.log("");
+  out("");
   // Persist agent + source to init-options.json (merge, preserve existing)
   for (const agentKey of agents) {
     writeAgent(agentKey);
@@ -179,7 +246,7 @@ export async function cmdAdd(args, flags) {
 // ── upgrade ────────────────────────────────────────────────────────────
 export async function cmdUpdate(args, flags) {
   const projectRoot = process.cwd();
-  const agents = flags.agents || Object.keys(AGENTS).filter((k) => k !== "generic");
+  const agents = targetAgents(flags);
   const prefix = flags.prefix || null;
   const mode = flags.mode || null;
   const isGlobal = flags.global || false;
@@ -202,7 +269,7 @@ export async function cmdUpdate(args, flags) {
       pullSource = readSkillsSource();
     }
     if (!pullSource) {
-      console.error("│  ✗ --pull requires skills-lock.json with source info (run 'add' first)");
+      error("--pull requires skills-lock.json with source info (run 'add' first)");
       return 1;
     }
     // Resolve the selective-install closure once (shared across agents).
@@ -217,13 +284,18 @@ export async function cmdUpdate(args, flags) {
         for (const name of pullSelected) npxArgs.push("-s", name);
       }
       npxArgs.push("-y");
-      console.log(`Pulling latest skills from ${pullSource} for ${agentKey}...`);
+      out("");
+      out(combine(style("▸", ACCENT), ' ', style(`Pulling latest skills for ${agentKey}`, "bold")));
+      item(`npx ${npxArgs.join(" ")}`, { glyph: sym.arrow, color: "gray" });
       const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
       if (result.status !== 0) {
-        if (result.error) console.error(`│  ✗ could not run npx: ${result.error.message}`);
-        console.error(`│  ✗ npx skills add failed for ${agentKey}`);
+        if (result.error) {
+          item(`could not run npx: ${result.error.message}`, { glyph: sym.failure, color: "red" });
+        }
+        item(`npx skills add failed for ${agentKey}`, { glyph: sym.failure, color: "red" });
         const spawnError = describeSpawnError(result);
-        if (spawnError) console.error(`│  spawn error: ${spawnError}`);
+        if (spawnError) item(`spawn error: ${spawnError}`, { glyph: sym.info, color: "gray" });
+        failure(`skills pull failed for ${agentKey}`);
         return result.status || 1;
       }
     }
@@ -269,7 +341,12 @@ export async function cmdUpdate(args, flags) {
       }
     }
 
-    console.log(`${agent.name}: ${updated} updated, ${skipped} user-modified (skipped)`);
+    out("");
+    out(combine(style("▸", ACCENT), ' ', style(`${agent.name} (${agentKey})`, "bold")));
+    item(`${updated} updated, ${skipped} user-modified (skipped)`, {
+      glyph: sym.success,
+      color: "green",
+    });
 
     const agentEventConfig = getEventAgentConfig(agentKey);
     if (agentEventConfig) {
@@ -281,7 +358,7 @@ export async function cmdUpdate(args, flags) {
           installDispatcher(projectRoot);
           const skillsDir2 = isGlobal ? agent.global_skills_dir : agent.skills_dir;
           installEvents(agentKey, projectRoot, resolvedEvents, skillsDir2);
-          console.log(`${agent.name}: events re-generated (${eventCount})`);
+          item(`events re-generated (${eventCount})`, { glyph: sym.success, color: "green" });
         }
       }
     }
@@ -293,7 +370,7 @@ export async function cmdUpdate(args, flags) {
 // ── remove ─────────────────────────────────────────────────────────────
 export async function cmdRemove(args, flags) {
   const projectRoot = process.cwd();
-  const agents = flags.agents || Object.keys(AGENTS).filter((k) => k !== "generic");
+  const agents = targetAgents(flags);
 
   for (const agentKey of agents) {
     const agent = getAgent(agentKey);
@@ -306,7 +383,9 @@ export async function cmdRemove(args, flags) {
     const removed = removeGeneratedCommands(absCommandsDir);
 
     if (removed > 0) {
-      console.log(`${agent.name}: removed ${removed} command file(s)`);
+      out("");
+      out(combine(style("▸", ACCENT), ' ', style(`${agent.name} (${agentKey})`, "bold")));
+      item(`removed ${removed} command file(s)`, { glyph: sym.success, color: "green" });
     }
 
     if (getEventAgentConfig(agentKey)) {
@@ -315,11 +394,17 @@ export async function cmdRemove(args, flags) {
         if (eventResult.action === "deleted") {
           const path = join(projectRoot, eventResult.path);
           if (existsSync(path)) rmSync(path);
-          console.log(`${agent.name}: removed event config ${eventResult.path}`);
+          item(`removed event config ${eventResult.path}`, { glyph: sym.success, color: "green" });
         } else if (eventResult.action === "cleaned") {
-          console.log(`${agent.name}: cleaned event entries from ${eventResult.path}`);
+          item(`cleaned event entries from ${eventResult.path}`, {
+            glyph: sym.success,
+            color: "green",
+          });
         } else if (eventResult.action === "manual") {
-          console.log(`${agent.name}: event config merged into ${eventResult.path} — remove manually`);
+          item(`event config merged into ${eventResult.path} — remove manually`, {
+            glyph: sym.info,
+            color: "yellow",
+          });
         }
       }
     }
@@ -328,13 +413,14 @@ export async function cmdRemove(args, flags) {
   const dispatcherPath = join(projectRoot, ".agents", "dispatcher.mjs");
   if (existsSync(dispatcherPath)) {
     rmSync(dispatcherPath);
-    console.log("Removed dispatcher: .agents/dispatcher.mjs");
+    out("");
+    item(`Removed dispatcher: .agents/dispatcher.mjs`, { glyph: sym.success, color: "green" });
   }
 
   const eventsPath = join(projectRoot, ".events.json");
   if (existsSync(eventsPath)) {
     rmSync(eventsPath);
-    console.log("Removed .events.json");
+    item(`Removed .events.json`, { glyph: sym.success, color: "green" });
   }
 
   return 0;
@@ -343,16 +429,26 @@ export async function cmdRemove(args, flags) {
 // ── status ─────────────────────────────────────────────────────────────
 export async function cmdStatus(args, flags) {
   const projectRoot = process.cwd();
-  const agents = flags.agents || Object.keys(AGENTS).filter((k) => k !== "generic");
+  const agents = targetAgents(flags);
   const isGlobal = flags.global || false;
 
-  console.log(`Project: ${projectRoot}`);
-  console.log(`ADLC: ${detectAdlc(projectRoot) ? "detected" : "not detected"}`);
-
   const dispatcherInstalled = existsSync(join(projectRoot, ".agents", "dispatcher.mjs"));
-  console.log(`Dispatcher: ${dispatcherInstalled ? "installed" : "not installed"}`);
-  console.log("");
 
+  out("");
+  out(
+    panel({
+      title: "Project",
+      lines: [
+        keyValue([
+          ["Project:", projectRoot],
+          ["ADLC:", detectAdlc(projectRoot) ? "detected" : "not detected"],
+          ["Dispatcher:", dispatcherInstalled ? "installed" : "not installed"],
+        ]),
+      ],
+    }),
+  );
+
+  const rows = [];
   for (const agentKey of agents) {
     const agent = getAgent(agentKey);
     if (!agent) continue;
@@ -382,10 +478,30 @@ export async function cmdStatus(args, flags) {
       eventStatus = existsSync(configPath) ? "installed" : "eligible";
     }
 
-    console.log(
-      `${agent.name.padEnd(20)} skills:${String(skills.length).padStart(3)}  commands:${String(commandCount).padStart(3)} (${generatedCount} generated)  events:${eventStatus}`,
-    );
+    rows.push([
+      tint(agent.name, ACCENT),
+      String(skills.length),
+      String(commandCount),
+      `${generatedCount} generated`,
+      eventStatus,
+    ]);
   }
+
+  out("");
+  out(
+    table({
+      title: "Installed skills",
+      columns: [
+        { header: "Agent", style: ACCENT },
+        { header: "Skills", justify: "right" },
+        { header: "Commands", justify: "right" },
+        { header: "Generated", optional: true },
+        { header: "Events" },
+      ],
+      rows,
+    }),
+  );
+  out("");
 
   return 0;
 }
