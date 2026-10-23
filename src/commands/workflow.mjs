@@ -531,8 +531,12 @@ async function cmdWorkflowState(rest, rawArgv) {
           const outputJson = extractFlagValue(rawArgv, "output-json");
           if (outputJson) output = JSON.parse(outputJson);
         }
-        const error = extractFlagValue(rawArgv, "error");
-        const state = await stateAdvance({ projectRoot, runId, stepId, status, output, error });
+        // `errorFlag`, not `error`: a binding named `error` here is
+        // block-scoped to the whole `case "advance": { … }` block, so it
+        // would shadow the imported `error` writer used by the two
+        // validation branches above and put them in the temporal dead zone.
+        const errorFlag = extractFlagValue(rawArgv, "error");
+        const state = await stateAdvance({ projectRoot, runId, stepId, status, output, error: errorFlag });
         process.stdout.write(
           `${state.status}${state.currentStepId ? ` · next: ${state.currentStepId}` : ""}\n`,
         );

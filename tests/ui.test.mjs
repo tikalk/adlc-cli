@@ -510,6 +510,63 @@ test("the error writer is not shadowed by a catch parameter", async () => {
   }
 });
 
+test("`workflow state advance` with bad arguments prints the usage error, not a shadowing crash", async () => {
+  // `const error = extractFlagValue(rawArgv, "error")` in the advance case is
+  // block-scoped to the whole `case "advance": { … }` block, so the earlier
+  // `error(...)` writer calls hit the temporal dead zone. The operator gets
+  // "Cannot access 'error' before initialization" instead of the hint that
+  // would tell them what was wrong.
+  const r = await run(["workflow", "state", "advance", "bogus-run"]);
+  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  assert.ok(
+    output.includes("run id and --step <id> required"),
+    `expected the usage hint, got: ${output.trim()}`,
+  );
+  assert.ok(
+    !output.includes("before initialization"),
+    `the CLI must not leak a temporal-dead-zone crash: ${output.trim()}`,
+  );
+});
+
+test("`workflow state advance` rejects a bad --status with the usage error, not a shadowing crash", async () => {
+  const r = await run([
+    "workflow", "state", "advance", "bogus-run",
+    "--step", "s1", "--status", "sideways",
+  ]);
+  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  assert.ok(
+    output.includes("--status must be completed|failed"),
+    `expected the --status hint, got: ${output.trim()}`,
+  );
+  assert.ok(!output.includes("before initialization"), output.trim());
+});
+
+test("no command module declares a variable named after a writer it calls", async () => {
+  // The same class of defect one step wider than the catch-parameter scan:
+  // a `const`/`let`/`var` binding that reuses a writer's name inside a scope
+  // that also calls that writer.
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const dir = new URL("../src/commands/", import.meta.url);
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".mjs")) continue;
+    const file = join(dir.pathname, name);
+    const source = readFileSync(file, "utf-8");
+    const imported = (source.match(/import \{([\s\S]*?)\} from "\.\.\/ui\/index\.mjs"/)?.[1] ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const writer of imported) {
+      // A declaration of that name, anywhere in the file, is a latent shadow.
+      const declares = new RegExp(`\\b(?:const|let|var)\\s+${writer}\\b`).test(source);
+      if (!declares) continue;
+      assert.fail(
+        `src/commands/${name} declares a binding named "${writer}", which shadows the imported ui writer of the same name`,
+      );
+    }
+  }
+});
+
 test("skills.mjs imports every writer it uses", async () => {
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../src/commands/skills.mjs", import.meta.url), "utf-8");
