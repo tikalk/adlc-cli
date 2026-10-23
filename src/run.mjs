@@ -39,8 +39,10 @@ function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {
   return { cmd: profile.binary, args, env };
 }
 
-export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }) {
+export function runTask({ profile, prompt, model, requireApproval, cwd, onLine, env: extraEnv }) {
   const { cmd, args, env } = buildCommandFromProfile(profile, prompt, { model, requireApproval });
+  // Caller-supplied variables (e.g. the workflow run context, ADR-444).
+  if (extraEnv) Object.assign(env, extraEnv);
 
   const childCwd = cwd ?? process.cwd();
   // Sync PWD with the spawn cwd — agents that resolve their project directory
