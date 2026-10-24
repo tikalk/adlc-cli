@@ -546,12 +546,15 @@ test("no command module declares a variable named after a writer it calls", asyn
   // a `const`/`let`/`var` binding that reuses a writer's name inside a scope
   // that also calls that writer.
   const { readFileSync, readdirSync } = await import("node:fs");
-  const { join } = await import("node:path");
+  // URL objects, not pathname strings: `new URL(...).pathname` yields
+  // "/D:/a/..." on Windows, which `join` turns into "D:\D:\a\..." — the
+  // drive letter doubled and every read fails with ENOENT. Handing the URL
+  // to `fs` lets Node do the platform conversion (as the neighbouring tests
+  // already do).
   const dir = new URL("../src/commands/", import.meta.url);
   for (const name of readdirSync(dir)) {
     if (!name.endsWith(".mjs")) continue;
-    const file = join(dir.pathname, name);
-    const source = readFileSync(file, "utf-8");
+    const source = readFileSync(new URL(name, dir), "utf-8");
     const imported = (source.match(/import \{([\s\S]*?)\} from "\.\.\/ui\/index\.mjs"/)?.[1] ?? "")
       .split(",")
       .map((s) => s.trim())
