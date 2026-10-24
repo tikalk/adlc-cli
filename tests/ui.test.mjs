@@ -526,6 +526,15 @@ test("`workflow state advance` with bad arguments prints the usage error, not a 
     !output.includes("before initialization"),
     `the CLI must not leak a temporal-dead-zone crash: ${output.trim()}`,
   );
+  // A substring of stdout+stderr alone would also pass if the same hint were
+  // printed with exit 0 (a usage error that looks like success to the caller)
+  // or written to stdout (which is the machine-readable stream). Lock both.
+  assert.equal(r.code, 1, `a usage error must exit 1, got code ${r.code}`);
+  assert.equal(
+    String(r.stdout ?? "").trim(),
+    "",
+    `usage hints belong on stderr; stdout must stay empty for scripting, got: ${JSON.stringify(r.stdout)}`,
+  );
 });
 
 test("`workflow state advance` rejects a bad --status with the usage error, not a shadowing crash", async () => {
@@ -539,7 +548,33 @@ test("`workflow state advance` rejects a bad --status with the usage error, not 
     `expected the --status hint, got: ${output.trim()}`,
   );
   assert.ok(!output.includes("before initialization"), output.trim());
+  assert.equal(r.code, 1, `a usage error must exit 1, got code ${r.code}`);
+  assert.equal(
+    String(r.stdout ?? "").trim(),
+    "",
+    `usage hints belong on stderr, stdout must stay empty, got: ${JSON.stringify(r.stdout)}`,
+  );
 });
+
+// The names a command module imports from the ui layer, used by the shadow
+// scan below. Extracted so the capture itself can be tested: anchored at the
+// ui `from` clause and walking back to the nearest `import {` (the technique
+// the skills.mjs import test below already uses) — a lazy match from the
+// file's FIRST `import {` absorbs names imported from every module in
+// between, which are not writers (see the over-capture test).
+const uiWriters = (source) => {
+  const fromAt = source.indexOf('from "../ui/index.mjs"');
+  if (fromAt < 0) return [];
+  const blockStart = source.lastIndexOf("import {", fromAt);
+  if (blockStart < 0) return [];
+  return source
+    .slice(blockStart, fromAt)
+    .replace("import {", "")
+    .replace(/\}\s*$/, "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+};
 
 test("no command module declares a variable named after a writer it calls", async () => {
   // The same class of defect one step wider than the catch-parameter scan:
@@ -555,11 +590,7 @@ test("no command module declares a variable named after a writer it calls", asyn
   for (const name of readdirSync(dir)) {
     if (!name.endsWith(".mjs")) continue;
     const source = readFileSync(new URL(name, dir), "utf-8");
-    const imported = (source.match(/import \{([\s\S]*?)\} from "\.\.\/ui\/index\.mjs"/)?.[1] ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const writer of imported) {
+    for (const writer of uiWriters(source)) {
       // A declaration of that name, anywhere in the file, is a latent shadow.
       const declares = new RegExp(`\\b(?:const|let|var)\\s+${writer}\\b`).test(source);
       if (!declares) continue;
@@ -568,6 +599,62 @@ test("no command module declares a variable named after a writer it calls", asyn
       );
     }
   }
+});
+
+test("the shadow scan's import capture does not absorb names from other imports", async () => {
+  // The lazy `[\s\S]*?` capture starts at the file's first `import {` and
+  // runs to the ui import's closing brace, so in a multi-import module it
+  // returns every name imported from any module in between. Those are not
+  // ui writers: a future `const <name>` in such a module would false-positive
+  // on a name the file never imported from the ui layer, and the failure
+  // message would misname it "the imported ui writer".
+  const { readFileSync, readdirSync } = await import("node:fs");
+  // Deliberately a different algorithm from uiWriters: split into import
+  // statements first, then read the brace list only from the statement that
+  // actually resolves to the ui layer — so this does not just re-assert the
+  // helper against itself.
+  const uiImportNames = (src) => {
+    const stmt = src
+      .split(/(?=^import )/m)
+      .find((s) => s.startsWith("import") && s.includes('from "../ui/index.mjs"'));
+    if (!stmt) return [];
+    return (stmt.match(/\{([^}]*)\}/)?.[1] ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+  const dir = new URL("../src/commands/", import.meta.url);
+  let checked = 0;
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".mjs")) continue;
+    const source = readFileSync(new URL(name, dir), "utf-8");
+    if (!source.includes('from "../ui/index.mjs"')) continue;
+    const got = uiWriters(source);
+    const want = uiImportNames(source);
+    assert.deepEqual(
+      got,
+      want,
+      `src/commands/${name}: capture returned ${got.length} names (${got.join(", ")}) but the ui layer imports ${want.length} (${want.join(", ")})`,
+    );
+    checked += 1;
+  }
+  assert.ok(checked >= 4, `expected several ui-importing command modules, checked ${checked}`);
+});
+
+test("the advance usage hint advertises --output-json, as help.mjs and the state help listing do", async () => {
+  // The advance branch parses `--output-json` (its else-branch after
+  // `--output-file`), and both `help.mjs:411` and the `state help` listing's
+  // `advance` continuation row (`workflow.mjs:604`) render
+  // `[--output-file <path> | --output-json <json>]` — only the advance usage
+  // line omitted it, so an operator mistypes the flag from its own usage
+  // message. (The `fail` hint carries no output flags — `fail` takes none —
+  // so it is not a source of this bracket.)
+  const r = await run(["workflow", "state", "advance", "bogus-run"]);
+  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  assert.ok(
+    output.includes("[--output-file <path> | --output-json <json>]"),
+    `the advance usage hint must offer --output-json (help.mjs:411 and the state help listing at workflow.mjs:604 both do). got: ${output.trim()}`,
+  );
 });
 
 test("skills.mjs imports every writer it uses", async () => {

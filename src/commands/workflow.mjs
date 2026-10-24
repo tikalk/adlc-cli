@@ -516,7 +516,7 @@ async function cmdWorkflowState(rest, rawArgv) {
         const status = extractFlagValue(rawArgv, "status") ?? "completed";
         if (!runId || !stepId) {
           error("run id and --step <id> required");
-          err(tint("Usage: adlc-cli workflow state advance <run_id> --step <id> --status completed|failed [--output-file <path>] [--error <msg>]", "gray"));
+          err(tint("Usage: adlc-cli workflow state advance <run_id> --step <id> --status completed|failed [--output-file <path> | --output-json <json>] [--error <msg>]", "gray"));
           return 1;
         }
         if (!["completed", "failed"].includes(status)) {
