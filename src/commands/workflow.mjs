@@ -516,7 +516,7 @@ async function cmdWorkflowState(rest, rawArgv) {
         const status = extractFlagValue(rawArgv, "status") ?? "completed";
         if (!runId || !stepId) {
           error("run id and --step <id> required");
-          err(tint("Usage: adlc-cli workflow state advance <run_id> --step <id> --status completed|failed [--output-file <path>] [--error <msg>]", "gray"));
+          err(tint("Usage: adlc-cli workflow state advance <run_id> --step <id> --status completed|failed [--output-file <path> | --output-json <json>] [--error <msg>]", "gray"));
           return 1;
         }
         if (!["completed", "failed"].includes(status)) {
@@ -531,8 +531,12 @@ async function cmdWorkflowState(rest, rawArgv) {
           const outputJson = extractFlagValue(rawArgv, "output-json");
           if (outputJson) output = JSON.parse(outputJson);
         }
-        const error = extractFlagValue(rawArgv, "error");
-        const state = await stateAdvance({ projectRoot, runId, stepId, status, output, error });
+        // `errorFlag`, not `error`: a binding named `error` here is
+        // block-scoped to the whole `case "advance": { … }` block, so it
+        // would shadow the imported `error` writer used by the two
+        // validation branches above and put them in the temporal dead zone.
+        const errorFlag = extractFlagValue(rawArgv, "error");
+        const state = await stateAdvance({ projectRoot, runId, stepId, status, output, error: errorFlag });
         process.stdout.write(
           `${state.status}${state.currentStepId ? ` · next: ${state.currentStepId}` : ""}\n`,
         );
