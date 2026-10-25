@@ -173,7 +173,8 @@ export function redactSecrets(text, env = process.env) {
     // separator to the end of the line is masked, keeping only a known auth
     // scheme. Multi-parameter schemes (AWS SigV4, Digest) carry credentials
     // past the first word, and over-masking an error message costs nothing.
-    .replace(/\b(authorization|private-token|x-api-key)([ \t]*[:=][ \t]*)((?:bearer|basic|token|bot|digest|negotiate|apikey|key)[ \t]+)?[^\s][^\r\n]*/gi, "$1$2$3***");
+    // A value on the next line (YAML, folded header) is masked too.
+    .replace(/\b(authorization|private-token|x-api-key)([ \t]*[:=](?:[ \t]*\r?\n)?[ \t]*)((?:bearer|basic|token|bot|digest|negotiate|apikey|key)[ \t]+)?[^\s][^\r\n]*/gi, "$1$2$3***");
   for (const re of TOKEN_PATTERNS) out = out.replace(re, "***");
   for (const [name, value] of Object.entries(env)) {
     if (!value || value.length < 8 || !SECRET_ENV_NAME.test(name)) continue;

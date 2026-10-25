@@ -492,6 +492,9 @@ test("redactSecrets masks URL userinfo, token formats and secret env values", as
     "Authorization: ***",
   );
   assert.equal(redactSecrets('Authorization: Digest username="u", response="abc"', env), "Authorization: Digest ***");
+  // A value on the next line (YAML, folded header) is masked too.
+  assert.equal(redactSecrets("Authorization:\n  Bearer abc", env), "Authorization:\n  Bearer ***");
+  assert.equal(redactSecrets("private-token:\r\n  glpat-free-form-x", env), "private-token:\r\n  ***");
   // A scheme with no value masks the scheme word and leaves the next line alone.
   assert.equal(redactSecrets("Authorization: Bearer\nnext line", env), "Authorization: ***\nnext line");
   assert.equal(redactSecrets("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig", env), "jwt ***");
