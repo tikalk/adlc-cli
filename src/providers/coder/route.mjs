@@ -99,6 +99,23 @@ function firstPositional(tokens = [], rawArgv = []) {
   return null;
 }
 
+// The value of a --flag, in either `--flag value` or `--flag=value` form.
+// Missing, empty, or option-like values are absent — the same rule the local
+// workflow command applies, so the remote invocation behaves identically.
+function optionValue(rawArgv = [], name) {
+  const flag = `--${name}`;
+  const index = rawArgv.indexOf(flag);
+  if (index !== -1) {
+    const value = rawArgv[index + 1];
+    if (value === undefined || value.startsWith("-")) return null;
+    return value;
+  }
+  const inline = rawArgv.find((arg) => arg.startsWith(`${flag}=`));
+  if (inline === undefined) return null;
+  const value = inline.slice(flag.length + 1);
+  return value === "" ? null : value;
+}
+
 // The workspace name the user asked for explicitly (--workspace), or null.
 function explicitWorkspaceName(rawArgv = []) {
   for (let i = 0; i < rawArgv.length; i++) {
@@ -134,14 +151,6 @@ function implicitWorkspaceName(projectRoot) {
   } catch {
     return null;
   }
-}
-
-// The workspace a route targets: --workspace <name> when given, else the
-// workspace file's name, else "default". A named workspace reuses the
-// handle persisted by `workspace setup` (.adlc/workspaces/<name>.json)
-// instead of provisioning a second machine.
-function workspaceName(rawArgv = []) {
-  return explicitWorkspaceName(rawArgv) ?? "default";
 }
 
 // explicitWorkspaceName() throws on an unusable name — the callers report it
@@ -218,8 +227,8 @@ async function streamRemote(provider, handle, payload, secrets = {}) {
   const result = step.value ?? { exitCode: 0, stderr: "" };
   const exitCode = Number(result.exitCode ?? 0);
   const stderr = String(result.stderr ?? "");
+  if (stderr.trim() !== "") console.error(redactLogLine(stderr, secrets));
   if (exitCode !== 0) {
-    if (stderr.trim() !== "") console.error(redactLogLine(stderr, secrets));
     console.error(`Error: remote command failed (exit ${exitCode})`);
   }
   return { exitCode, stderr };
@@ -248,6 +257,15 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     hopGuard();
   } catch (err) {
     console.error(`Error: ${err.message}`);
+    return 1;
+  }
+  // A remote dry-run is NOT a local preview: implementing one would still have
+  // to provision (or reuse) a workspace and read its state. Refuse before any
+  // provider call instead of pretending the plan is authoritative.
+  if (flags?.dryRun) {
+    console.error(
+      "Error: --dry-run is not supported with --provider coder; refusing to provision a remote workspace. Run without --dry-run, or use the local workspace setup for a preview.",
+    );
     return 1;
   }
   const projectRoot = process.cwd();
@@ -330,8 +348,15 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     return 1;
   }
   const vars = referencedSecretsEnv(referenced, projectRoot);
+  // Forward the operator's agent selection to the remote local-setup command;
+  // otherwise a `-a` on the provider invocation would be silently dropped.
+  const remoteArgs = [];
+  if (Array.isArray(flags?.agents) && flags.agents[0]) {
+    remoteArgs.push("-a", flags.agents[0]);
+  }
   const payload = JSON.stringify({
     op: "workspace.setup",
+    args: remoteArgs,
     config: expanded,
     configYaml: expandedText,
     vars,
@@ -472,9 +497,17 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     console.error(`Error: coder provision failed: ${err.message}`);
     return 1;
   }
+  // Forward execution flags. --input stays in its dedicated channel so its
+  // values keep the base64-safe transport; --format/--headless are plain
+  // argv flags and must reach the remote workflow runner, not be dropped.
+  const remoteArgs = [];
+  const format = optionValue(rawArgv ?? [], "format");
+  if (format !== null) remoteArgs.push("--format", format);
+  if ((rawArgv ?? []).includes("--headless")) remoteArgs.push("--headless");
   const rawWfVars = referencedSecretsEnv(collectReferencedVars(inputs));
   const payload = JSON.stringify({
     op: "workflow.run",
+    args: remoteArgs,
     source,
     inputs,
     vars: rawWfVars,

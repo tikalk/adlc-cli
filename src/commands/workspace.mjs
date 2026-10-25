@@ -149,10 +149,22 @@ export async function cmdWorkspaceSetup(args, flags) {
   // actually used (the git argv), never in what is printed.
   let secretValues = {};
   try {
-    const { expandWorkspaceVars, loadSecretsEnv } = await import("../providers/transport.mjs");
+    const {
+      expandWorkspaceVars,
+      expansionEnv,
+      loadSecretsEnv,
+    } = await import("../providers/transport.mjs");
+    // Secret-sourced and secret-SHAPED process-env values both stay as
+    // placeholders in the plan. Collect the latter too, or a credential such
+    // as GITLAB_TOKEN in the operator's environment would be inlined into the
+    // printed goal while only secrets.env was masked.
     secretValues = loadSecretsEnv(projectRoot);
-    const expandEnv = { ...process.env };
-    for (const key of Object.keys(secretValues)) expandEnv[key] = `\${${key}}`;
+    const expandEnv = expansionEnv(projectRoot);
+    for (const [key, value] of Object.entries(process.env)) {
+      if (expandEnv[key] === `\${${key}}` && secretValues[key] === undefined) {
+        secretValues[key] = value;
+      }
+    }
     wsfile = expandWorkspaceVars(wsfile, expandEnv);
   } catch (err) {
     error(err.message);

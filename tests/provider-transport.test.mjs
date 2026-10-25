@@ -1204,6 +1204,161 @@ test("iter-6: a flag value is never dispatched as the task", async () => {
   assert.equal(transport.calls.filter((c) => c.op === "exec").length, 0, "nothing may be dispatched");
 });
 
+test("iter-8: provider workspace setup refuses --dry-run before provisioning", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderWorkspaceSetup(
+      ["workspace.yml"],
+      { dryRun: true },
+      ["workspace", "setup", "--provider", "coder", "--dry-run"]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 1, "a remote dry-run must fail, not provision");
+  assert.equal(transport.calls.length, 0, "nothing may be provisioned or executed");
+  assert.match(cap.errs.join("\n"), /--dry-run is not supported with --provider coder/i);
+});
+
+test("iter-8: provider agent forwards flags and task in the payload argv", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  const runArgs = [
+    "--provider",
+    "coder",
+    "--workspace",
+    "flag-ws",
+    "-a",
+    "opencode",
+    "--model",
+    "deepseek-v4",
+    "--format",
+    "json",
+    "--require-approval",
+    "bash,edit",
+    "--cwd",
+    "/tmp/remote-work",
+    "--timeout",
+    "30",
+    "deploy the thing",
+  ];
+  let code;
+  try {
+    code = await cmdCoderAgentRun(runArgs, ["agent", "run", ...runArgs]);
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0);
+  const payload = JSON.parse(transport.calls.find((c) => c.op === "exec").input);
+  assert.deepEqual(payload.args, [
+    "-a",
+    "opencode",
+    "--model",
+    "deepseek-v4",
+    "--format",
+    "json",
+    "--require-approval",
+    "bash,edit",
+    "--cwd",
+    "/tmp/remote-work",
+    "--timeout",
+    "30",
+    "deploy the thing",
+  ]);
+});
+
+test("iter-8: provider workflow forwards --format and --headless", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderWorkflowRun(
+      ["factory"],
+      {},
+      ["--provider", "coder", "--workspace", "wf-ws", "--format", "json", "--headless", "factory"]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0);
+  const payload = JSON.parse(transport.calls.find((c) => c.op === "exec").input);
+  assert.deepEqual(payload.args, ["--format", "json", "--headless"]);
+});
+
+test("iter-8: non-empty remote stderr is printed even when the exit code is zero", async () => {
+  injectedTransport({ stderr: "remote warning: migration skipped\n", exitCode: 0 });
+  const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderAgentRun(
+      ["--provider", "coder", "--workspace", "warn-ws", "hello"],
+      ["agent", "run", "--provider", "coder", "--workspace", "warn-ws", "hello"]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0);
+  assert.match(cap.errs.join("\n"), /remote warning: migration skipped/);
+});
+
+test("iter-8: local workspace setup masks secret-shaped process env in the plan", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-procsecret-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    [
+      "schema_version: 1",
+      "name: local-token",
+      "workspace:",
+      "  git:",
+      "    - repo: https://x-access-token:${GITLAB_TOKEN}@github.com/org/repo.git",
+      "      path: repo",
+      'goal: "push the branch with ${GITLAB_TOKEN}"',
+      "",
+    ].join("\n")
+  );
+  const { cmdWorkspaceSetup } = await import("../src/commands/workspace.mjs");
+  const prevCwd = process.cwd();
+  const prevToken = process.env.GITLAB_TOKEN;
+  process.env.GITLAB_TOKEN = "glpat-local-secret-999";
+  const cap = captureRoute();
+  let code;
+  try {
+    process.chdir(tmp);
+    code = await cmdWorkspaceSetup(["workspace.yml"], { agents: ["opencode"], dryRun: true });
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    if (prevToken === undefined) delete process.env.GITLAB_TOKEN;
+    else process.env.GITLAB_TOKEN = prevToken;
+  }
+  const output = cap.logs.join("\n") + cap.errs.join("\n");
+  assert.equal(code, 0);
+  assert.ok(!output.includes("glpat-local-secret-999"), `the process-env secret leaked: ${output}`);
+  assert.match(output, /\$\{GITLAB_TOKEN\}/, "the placeholder must remain visible");
+  assert.match(output, /\[REDACTED\]/, "the git URL credential must be masked");
+});
+
+test("iter-8: workflow help documents the provider flags", async () => {
+  const r = await runCli(["workflow", "help"]);
+  const out = `${r.stdout}${r.stderr}`;
+  assert.equal(r.code ?? 0, 0, out);
+  assert.match(out, /--provider coder/);
+  assert.match(out, /--workspace/);
+});
+
 test("iter-6: --provider coder on a command with no provider route is refused", async () => {
   const r = await runCli(["agent", "list", "--provider", "coder"]);
   assert.equal(r.code, 1, "an unrouted provider command must not run locally");

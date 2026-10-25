@@ -60,9 +60,24 @@ export const help = {
       "Route through the coder provider transport (SSH). The workspace file stays location-free — a 'provider:' key inside it is rejected, never ignored.",
     ],
     ["--workspace <name>", "Target workspace (default: the workspace file's name)."],
+    [
+      "--dry-run",
+      "Local preview only. The remote provider path refuses it: a dry-run must not provision or execute remotely.",
+    ],
+  ],
+  workflow: [
+    [
+      "--provider coder",
+      "Run the workflow on the remote workspace via the provider transport (SSH). --input, --format, and --headless are forwarded; output is streamed and redacted.",
+    ],
+    [
+      "--workspace <name>",
+      "Target workspace (default: the workspace file's name). A missing handle is refused rather than provisioning a second machine.",
+    ],
   ],
   examples: [
     ["adlc-cli workspace setup --provider coder", "remote workspace setup"],
+    ["adlc-cli workflow run factory --provider coder", "remote workflow"],
   ],
 };
 

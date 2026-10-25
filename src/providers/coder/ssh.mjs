@@ -215,10 +215,14 @@ export function createCoderSshTransport({
 
   async function openRemote(name, payload) {
     const { envelopePath, envelope } = makeEnvelope(payload);
-    const written = await runCoder(["ssh", name, "--", "tee", envelopePath], {
-      input: envelope,
-      timeoutMs,
-    });
+    // The envelope carries the payload (including the referenced secret
+    // values), so it must never be created with the remote shell's default
+    // umask. coder ssh joins its argv into a remote command line, so keep this
+    // a single, path-only command: the path is an internally generated UUID.
+    const written = await runCoder(
+      ["ssh", name, "--", `umask 077; tee ${envelopePath}`],
+      { input: envelope, timeoutMs }
+    );
     if (written.code !== 0) {
       return { envelopePath, failure: await writeFailure(name, written, envelopePath) };
     }
@@ -322,6 +326,7 @@ export function createCoderSshTransport({
 function remoteRunner(envelopePath) {
   return `
 set -u
+umask 077
 _d=$(mktemp -d)
 _p=$(sed -n 1p "${envelopePath}")
 _s=$(sed -n 2p "${envelopePath}")
@@ -339,6 +344,7 @@ exit "$_rc"
 function remoteStep(op) {
   const prelude = `
 set -u
+umask 077
 _d="$1"
 _op=$(jq -r '.op // empty' "$_d/payload.json")
 _export_vars() { jq -r '(.vars // {}) | to_entries[] | "export \\(.key)=\\(.value | @sh)"' "$_d/payload.json" > "$_d/vars.sh"; . "$_d/vars.sh"; }
@@ -360,6 +366,18 @@ case "$_op" in
 esac
 exit "$_rc"
 `;
+  // Rebuild an argv array from the payload's JSON string array. Base64 keeps
+  // each argument opaque, so a value with spaces, leading dashes, or embedded
+  // newlines can never be re-split or synthesize another flag.
+  const decodedArgs = `
+    jq -r '(.args // [])[] | @base64' "$_d/payload.json" > "$_d/args.b64"
+    set --
+    while IFS= read -r _encoded; do
+      _arg=$(printf '%s' "$_encoded" | base64 -d; printf x)
+      _arg=\${_arg%x}
+      set -- "$@" "$_arg"
+    done < "$_d/args.b64"
+`;
   switch (op) {
     case "workspace.setup":
       return `${prelude}  workspace.setup)
@@ -369,30 +387,41 @@ exit "$_rc"
     # env the transport used: persist the referenced vars 0600 for the session
     # to source. Values stay in the workspace's env — never in a command line.
     mkdir -p "$HOME/.adlc"
+    # Make the destination private BEFORE writing secrets. umask covers a new
+    # file; chmod also covers a file left behind by an older version.
+    : > "$HOME/.adlc/secrets.env"
+    chmod 600 "$HOME/.adlc/secrets.env"
     jq -r '(.vars // {}) | to_entries[] | "export \\(.key)=\\(.value | @sh)"' \
       "$_d/payload.json" > "$HOME/.adlc/secrets.env"
     chmod 600 "$HOME/.adlc/secrets.env"
-    adlc-cli workspace setup "$_d/workspace.yml"
+${decodedArgs}
+    adlc-cli workspace setup "$_d/workspace.yml" "$@"
     _rc=$?
     ;;${tail}`;
     case "agent.run":
       return `${prelude}  agent.run)
     _export_vars
-    _task=$(jq -r '.task // empty' "$_d/payload.json")
-    adlc-cli agent run "$_task"
+${decodedArgs}
+    # payload.args carries the same argv the local route received (flags and
+    # task). Older payloads only have task; keep that form working.
+    if [ "$#" -gt 0 ]; then
+      adlc-cli agent run "$@"
+    else
+      _task=$(jq -r '.task // empty' "$_d/payload.json")
+      adlc-cli agent run "$_task"
+    fi
     _rc=$?
     ;;${tail}`;
     case "workflow.run":
       return `${prelude}  workflow.run)
     _export_vars
     _source=$(jq -r '.source // empty' "$_d/payload.json")
-    # Build an argv array without re-parsing values through the shell. One
-    # base64-encoded pair per line keeps spaces, leading dashes, and embedded
-    # newlines inside a single argument (a plain line-based split would let a
-    # newline synthesize another flag).
+${decodedArgs}
+    # Add inputs to the same argv array. One base64-encoded pair per line keeps
+    # spaces, leading dashes, and embedded newlines inside a single argument
+    # (a plain line-based split would let a newline synthesize another flag).
     jq -r '(.inputs // {}) | to_entries[] | "\\(.key)=\\(.value)" | @base64' \
       "$_d/payload.json" > "$_d/inputs.b64"
-    set --
     while IFS= read -r _encoded; do
       # base64 -d adds no newline of its own; the trailing sentinel keeps
       # command substitution from stripping a newline that is part of the value.

@@ -189,6 +189,7 @@ test("live transport: the step script is op-specific and travels in the envelope
     const calls = readFileSync(record.recordFile, "utf-8");
     assert.ok(!calls.includes("adlc-cli workspace setup"), "the step script must not be in argv");
     assert.match(calls, /tee \/tmp\/adlc-envelope-/);
+    assert.match(calls, /umask 077/, "the envelope must be created private");
     const chunks = readFileSync(record.stdinFile, "utf-8")
       .split("\n")
       .map((line) => line.trim())
@@ -247,6 +248,7 @@ test("live transport: the referenced vars are persisted for the developer's late
       });
     const step = chunks.join("\n");
     assert.match(step, /secrets\.env/, "the step must persist the vars for the session");
+    assert.match(step, /umask 077/, "the remote step must create files private by default");
     assert.match(step, /chmod 600/, "the persisted vars file must be 0600");
   });
 });
@@ -310,7 +312,7 @@ test("live transport: an early-exiting child reports its verdict instead of cras
 
 test("live transport: provider runStream yields the first line before the remote exits", async () => {
   await withFakeCoder(
-    { sshStdout: "first-line\n", sshStdout2: "second-line\n", sshDelayMs: "0.6" },
+    { sshStdout: "first-line\n", sshStdout2: "second-line\n", sshDelayMs: "1.5" },
     async () => {
       const provider = createCoderProvider({
         transport: createCoderSshTransport(),
@@ -326,7 +328,7 @@ test("live transport: provider runStream yields the first line before the remote
       assert.equal(first.done, false);
       assert.equal(first.value, "first-line");
       assert.ok(
-        firstMs < 500,
+        firstMs < 1000,
         `runStream buffered the first line for ${firstMs}ms instead of streaming it`
       );
       const second = await iter.next();
@@ -450,5 +452,76 @@ test("live transport: workflow --input keeps spaces, leading dashes, and newline
       0,
       "an input value must not be able to synthesize another flag"
     );
+  });
+});
+
+test("live transport: agent flags are forwarded to the remote argv", { skip: needsJq }, async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    const args = [
+      "-a",
+      "opencode",
+      "--model",
+      "deepseek-v4",
+      "--format",
+      "json",
+      "--require-approval",
+      "bash,edit",
+      "--cwd",
+      "/tmp/remote-work",
+      "--timeout",
+      "30",
+      "deploy the thing",
+    ];
+    const payload = {
+      op: "agent.run",
+      args,
+      task: "deploy the thing",
+      vars: {},
+      env: { ADLC_HOP_DEPTH: "1" },
+      hop: 1,
+    };
+    await transport.exec({ name: "demo" }, JSON.stringify(payload));
+    const decoded = decodeEnvelope(record.stdinFile);
+
+    const r = runGeneratedStep(decoded.step, decoded.payload);
+    assert.equal(r.status, 0, r.stderr);
+    const parsed = JSON.parse(r.stdout.trim());
+    assert.deepEqual(
+      parsed.args,
+      ["agent", "run", ...args],
+      `agent flags were dropped or re-split: ${r.stdout}`
+    );
+  });
+});
+
+test("live transport: workflow --format and --headless are forwarded", { skip: needsJq }, async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    const payload = {
+      op: "workflow.run",
+      args: ["--format", "json", "--headless"],
+      source: "factory",
+      inputs: { goal: "do the thing" },
+      vars: {},
+      env: { ADLC_HOP_DEPTH: "1" },
+      hop: 1,
+    };
+    await transport.exec({ name: "demo" }, JSON.stringify(payload));
+    const decoded = decodeEnvelope(record.stdinFile);
+
+    const r = runGeneratedStep(decoded.step, decoded.payload);
+    assert.equal(r.status, 0, r.stderr);
+    const parsed = JSON.parse(r.stdout.trim());
+    assert.deepEqual(parsed.args, [
+      "workflow",
+      "run",
+      "factory",
+      "--format",
+      "json",
+      "--headless",
+      "--input",
+      "goal=do the thing",
+    ]);
   });
 });

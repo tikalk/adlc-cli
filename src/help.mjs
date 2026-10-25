@@ -267,7 +267,7 @@ export function printWorkspaceHelp() {
     section("Setup Flags", [
       ...pairs([
         ["-a <agent>", "Agent key (default: workspace agent:, then init-options.json)"],
-        ["--dry-run", "Print planned actions without executing"],
+        ["--dry-run", "Print planned actions without executing (local path; the remote provider refuses it)"],
       ]),
     ]),
   );
@@ -430,6 +430,11 @@ export function printWorkflowHelp() {
   out(
     section("Step Types", [
       tint("command | prompt | shell | gate | if | switch | while | do-while | fan-out (max_concurrency) | fan-in | slot", "gray"),
+    ]),
+  );
+  out(
+    section("Provider Flags (remote transport)", [
+      ...pairs(providerHelp("workflow")),
     ]),
   );
   out(
