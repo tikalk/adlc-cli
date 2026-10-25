@@ -3,7 +3,7 @@ workflow:
   name: mission-lane-provider-transport
   version: "1.1.0"
 description: >-
-  Validation mission for the ADR-007 remote lane — workspace setup is done by
+  Validation mission for the ADR-443 remote lane — workspace setup is done by
   adlc-cli, not by a skill-side script. Scope: the transport CONTRACT
   (provision-or-reuse, name expansion, secret channel, loud failure) against a
   real Coder workspace by default. Set ADLC_CODER_MOCK=1 for the offline

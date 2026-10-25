@@ -962,6 +962,29 @@ test("iter-5: a transport that returns no result is a failure, not a success", a
   assert.notEqual(code, 0, "a transport without a result must not read as success");
 });
 
+test("iter-5: a null exit code is not a success", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-null-exit-"));
+  injectedTransport({ stdout: "looks fine\\n", stderr: "", exitCode: null });
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  const prevCwd = process.cwd();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderWorkflowRun(
+      ["factory"], {}, ["run", "--provider", "coder", "--workspace", "null-exit-ws", "factory"]
+    );
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.notEqual(code, 0, "a null exit code must not read as success");
+});
+
 test("iter-5: a whitespace hop depth fails closed", async () => {
   const m = await import("../src/providers/transport.mjs");
   const prev = process.env.ADLC_HOP_DEPTH;
@@ -1140,7 +1163,7 @@ test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () =>
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("iter-7: a short secret in a git URL is masked in the printed plan", async () => {
+test("iter-7: a short secret in a git URL is stripped from the printed plan", async () => {
   const { default: os } = await import("node:os");
   const { default: path } = await import("node:path");
   const { default: fs } = await import("node:fs/promises");
@@ -1171,8 +1194,9 @@ test("iter-7: a short secret in a git URL is masked in the printed plan", async 
   }
   assert.equal(code, 0);
   const out = cap.logs.join("\n");
-  assert.ok(!out.includes("x-access-token:xy@"), `a 2-char secret must be masked too: ${out}`);
-  assert.ok(out.includes("[REDACTED]"), `the credentials must be masked: ${out}`);
+  assert.ok(!out.includes("x-access-token:xy@"), `a 2-char secret must not reach argv: ${out}`);
+  assert.ok(!out.includes("x-access-token"), `credentials must be stripped from the clone URL: ${out}`);
+  assert.match(out, /https:\/\/github\.com\/org\/repo\.git/, `the sanitized clone URL must remain visible: ${out}`);
 });
 
 test("iter-6: the stdin task form is reachable (an empty stdin fails loudly)", async () => {
@@ -1380,7 +1404,8 @@ test("iter-8: local workspace setup masks secret-shaped process env in the plan"
   assert.equal(code, 0);
   assert.ok(!output.includes("glpat-local-secret-999"), `the process-env secret leaked: ${output}`);
   assert.match(output, /\$\{GITLAB_TOKEN\}/, "the placeholder must remain visible");
-  assert.match(output, /\[REDACTED\]/, "the git URL credential must be masked");
+  assert.ok(!output.includes("x-access-token"), "the git URL credential must be stripped, not merely masked");
+  assert.match(output, /https:\/\/github\.com\/org\/repo\.git/, "the sanitized clone URL must remain visible");
 });
 
 test("iter-8: workflow help documents the provider flags", async () => {
@@ -1445,4 +1470,369 @@ test("iter-7: a secret-shaped var is delivered in the vars channel, never inline
     JSON.stringify(payload.config).includes("${GITLAB_TOKEN}"),
     "the config keeps the placeholder"
   );
+});
+
+// ── self-heal: cross-validated Important findings at 5106b5f ─────────────
+
+test("self-heal: an empty or missing --provider is refused before execution", async () => {
+  const cases = [
+    ["agent", "run", "--provider=", "hello"],
+    ["agent", "run", "--provider", "", "hello"],
+    ["run", "--provider=", "hello"],
+    ["run", "--provider", "", "hello"],
+    ["workflow", "run", "--provider=", "factory"],
+    ["workflow", "resume", "run-1", "--provider="],
+    ["workspace", "setup", "--provider"],
+    ["workspace", "setup", "workspace.yml", "--provider"],
+  ];
+  for (const args of cases) {
+    const r = await runCli(args);
+    assert.equal(r.code, 1, `${args.join(" ")} must fail: ${r.stderr ?? r.message}`);
+    assert.match(`${r.stdout ?? ""}${r.stderr ?? ""}`, /--provider requires a provider name/i);
+  }
+});
+
+test("self-heal: an explicitly supplied empty --workspace is refused, not defaulted", async () => {
+  const cases = [
+    ["agent", "run", "--provider", "coder", "--workspace=", "hello"],
+    ["agent", "run", "--provider", "coder", "--workspace", "", "hello"],
+    ["agent", "run", "--provider", "coder", "hello", "--workspace"],
+    ["run", "--provider", "coder", "--workspace=", "hello"],
+    ["run", "--provider", "coder", "hello", "--workspace"],
+    ["workflow", "run", "--provider", "coder", "--workspace=", "factory"],
+    ["workflow", "run", "--provider", "coder", "factory", "--workspace"],
+    ["workflow", "resume", "run-1", "--provider", "coder", "--workspace="],
+    ["workflow", "resume", "run-1", "--provider", "coder", "--workspace"],
+  ];
+  for (const args of cases) {
+    const r = await runCli(args);
+    assert.equal(r.code, 1, `${args.join(" ")} must fail: ${r.stderr ?? r.message}`);
+    assert.match(`${r.stdout ?? ""}${r.stderr ?? ""}`, /--workspace requires a workspace name/i);
+  }
+});
+
+test("self-heal: an unresolvable workspace file never falls back to default", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-implicit-bad-"));
+  await fs.mkdir(path.join(tmp, ".adlc", "workspaces"), { recursive: true });
+  await fs.writeFile(
+    path.join(tmp, ".adlc", "workspaces", "default.json"),
+    JSON.stringify({ name: "default", host: "mock-default" })
+  );
+  await fs.writeFile(
+    path.join(tmp, ".adlc", "workspace.yml"),
+    "schema_version: 1\nname: ${MISSING_WS_NAME}\nworkspace:\n  dirs: []\n"
+  );
+  const transport = injectedTransport();
+  const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
+  const prevCwd = process.cwd();
+  const prevFile = process.env.ADLC_WORKSPACE_FILE;
+  const cap = captureRoute();
+  delete process.env.ADLC_WORKSPACE_FILE;
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderAgentRun(["hello"], ["agent", "run", "hello"]);
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+    if (prevFile === undefined) delete process.env.ADLC_WORKSPACE_FILE;
+    else process.env.ADLC_WORKSPACE_FILE = prevFile;
+  }
+  assert.equal(code, 1, "an unresolvable implicit name must not execute against default");
+  assert.match(cap.errs.join("\n"), /cannot resolve the workspace name.*MISSING_WS_NAME/i);
+  assert.equal(transport.calls.length, 0, "no workspace may be provisioned or executed");
+});
+
+test("self-heal: workspace values are expanded after parsing, so they cannot inject YAML", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-yaml-inject-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    [
+      "schema_version: 1",
+      "name: inject-safe",
+      "agent: opencode",
+      "workspace:",
+      "  dirs: []",
+      "goal: ${GOAL}",
+      "",
+    ].join("\n")
+  );
+  const prevGoal = process.env.GOAL;
+  process.env.GOAL = "ship it\nagent: attacker";
+  const transport = injectedTransport();
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
+  const prevCwd = process.cwd();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderWorkspaceSetup(["workspace.yml"], {}, []);
+  } finally {
+    process.chdir(prevCwd);
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+    if (prevGoal === undefined) delete process.env.GOAL;
+    else process.env.GOAL = prevGoal;
+  }
+  assert.equal(code, 0);
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const payload = JSON.parse(exec.input);
+  assert.equal(payload.config.agent, "opencode", "an expanded value must not become a YAML key");
+  assert.equal(payload.config.goal, "ship it\nagent: attacker", "the value must remain one scalar");
+  assert.equal(payload.configYaml, undefined, "raw YAML must not travel to the remote");
+});
+
+test("self-heal: non-secret referenced values are forwarded but not used as scrub needles", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-scrub-"));
+  const transport = injectedTransport({ stdout: "main branch main\n" });
+  const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
+  const prevCwd = process.cwd();
+  const prevBranch = process.env.BRANCH;
+  process.env.BRANCH = "main";
+  const cap = captureRoute();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderAgentRun(
+      ["--provider", "coder", "--workspace", "scrub-ws", "deploy ${BRANCH}"],
+      ["agent", "run", "--provider", "coder", "--workspace", "scrub-ws", "deploy ${BRANCH}"]
+    );
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+    if (prevBranch === undefined) delete process.env.BRANCH;
+    else process.env.BRANCH = prevBranch;
+  }
+  assert.equal(code, 0);
+  assert.match(cap.logs.join("\n"), /main branch main/);
+  assert.ok(!cap.logs.join("\n").includes("[REDACTED]"), "ordinary values must not be redacted");
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const payload = JSON.parse(exec.input);
+  assert.equal(payload.vars.BRANCH, "main", "the value still reaches the remote");
+});
+
+test("self-heal: git credentials are stripped from argv and supplied via GIT_ASKPASS", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-git-auth-"));
+  const bin = path.join(tmp, "bin");
+  await fs.mkdir(bin, { recursive: true });
+  const argsFile = path.join(tmp, "git-args.txt");
+  const passFile = path.join(tmp, "git-pass.txt");
+  const askpassFile = path.join(tmp, "git-askpass.txt");
+  const git = path.join(bin, "git");
+  await fs.writeFile(
+    git,
+    [
+      "#!/bin/sh",
+      'printf \'%s\\n\' "$@" > "$ADLC_GIT_ARGS_FILE"',
+      'printf \'%s\\n\' "${ADLC_GIT_PASSWORD:-}" > "$ADLC_GIT_PASSWORD_FILE"',
+      'printf \'%s\\n\' "${GIT_ASKPASS:-}" > "$ADLC_GIT_ASKPASS_FILE"',
+      "exit 0",
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  await fs.chmod(git, 0o755);
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    [
+      "schema_version: 1",
+      "name: auth-ws",
+      "workspace:",
+      "  git:",
+      "    - repo: https://x-access-token:${GIT_TOKEN}@github.com/org/repo.git",
+      "      path: repo",
+      "",
+    ].join("\n")
+  );
+  await fs.writeFile(path.join(tmp, "secrets.env"), "GIT_TOKEN=glpat-secret-123\n");
+  const { cmdWorkspaceSetup, splitGitCredentials } = await import("../src/commands/workspace.mjs");
+  const prevCwd = process.cwd();
+  const prevPath = process.env.PATH;
+  const prevArgs = process.env.ADLC_GIT_ARGS_FILE;
+  const prevPass = process.env.ADLC_GIT_PASSWORD_FILE;
+  const prevAsk = process.env.ADLC_GIT_ASKPASS_FILE;
+  process.env.PATH = `${bin}:${prevPath}`;
+  process.env.ADLC_GIT_ARGS_FILE = argsFile;
+  process.env.ADLC_GIT_PASSWORD_FILE = passFile;
+  process.env.ADLC_GIT_ASKPASS_FILE = askpassFile;
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdWorkspaceSetup(["workspace.yml"], { agents: ["opencode"] });
+  } finally {
+    process.chdir(prevCwd);
+    process.env.PATH = prevPath;
+    if (prevArgs === undefined) delete process.env.ADLC_GIT_ARGS_FILE;
+    else process.env.ADLC_GIT_ARGS_FILE = prevArgs;
+    if (prevPass === undefined) delete process.env.ADLC_GIT_PASSWORD_FILE;
+    else process.env.ADLC_GIT_PASSWORD_FILE = prevPass;
+    if (prevAsk === undefined) delete process.env.ADLC_GIT_ASKPASS_FILE;
+    else process.env.ADLC_GIT_ASKPASS_FILE = prevAsk;
+  }
+  assert.equal(code, 0);
+  const gitArgs = (await fs.readFile(argsFile, "utf-8")).trim().split("\n");
+  assert.deepEqual(gitArgs.slice(0, 3), ["clone", "https://github.com/org/repo.git", "repo"]);
+  assert.ok(!gitArgs.join(" ").includes("glpat-secret-123"));
+  assert.ok(!gitArgs.join(" ").includes("x-access-token"));
+  assert.equal((await fs.readFile(passFile, "utf-8")).trim(), "glpat-secret-123");
+  assert.match(await fs.readFile(askpassFile, "utf-8"), /adlc-git-askpass-/);
+  assert.equal(
+    splitGitCredentials("https://x-access-token:glpat-secret-123@github.com/org/repo.git").url,
+    "https://github.com/org/repo.git"
+  );
+  assert.equal(
+    splitGitCredentials("https://glpat-secret-123@github.com/org/repo.git").url,
+    "https://github.com/org/repo.git",
+    "an HTTP(S) token in the username is a credential too"
+  );
+  assert.equal(
+    splitGitCredentials("ssh://git:hunter2@example.com/org/repo.git").url,
+    "ssh://git@example.com/org/repo.git",
+    "an SSH URL password is stripped without losing the username"
+  );
+});
+
+test("self-heal: workflow resume is routed through the provider", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-resume-route-"));
+  const transport = injectedTransport();
+  const { cmdCoderWorkflowResume } = await import("../src/providers/coder/route.mjs");
+  const prevCwd = process.cwd();
+  const cap = captureRoute();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderWorkflowResume(
+      ["run-123"],
+      {},
+      [
+        "workflow", "resume", "run-123",
+        "--provider", "coder", "--workspace", "resume-ws",
+        "--input", "verdict=approve", "--format", "json",
+      ]
+    );
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0, cap.errs.join("\n"));
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const payload = JSON.parse(exec.input);
+  assert.equal(payload.op, "workflow.resume");
+  assert.equal(payload.runId, "run-123");
+  assert.deepEqual(payload.inputs, { verdict: "approve" });
+  assert.deepEqual(payload.args, ["--format", "json"]);
+});
+
+test("self-heal: an invalid --input value is not echoed raw", async () => {
+  const secret = "do-not-echo-this-input-value";
+  const r = await runCli(["workflow", "run", "factory", "--input", secret]);
+  assert.equal(r.code, 1, "the malformed input must fail");
+  assert.ok(
+    !`${r.stdout ?? ""}${r.stderr ?? ""}`.includes(secret),
+    "the invalid value must not be echoed on the error path"
+  );
+});
+
+test("self-heal: CLI `workflow resume --provider` reaches the provider route", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-resume-cli-"));
+  const transport = injectedTransport();
+  const { dispatch } = await import("../src/dispatch.mjs");
+  const prevCwd = process.cwd();
+  const cap = captureRoute();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await dispatch(
+      [
+        "workflow", "resume", "run-123",
+        "--provider", "coder", "--workspace", "resume-ws",
+        "--input", "verdict=approve", "--format", "json",
+      ],
+      "cli"
+    );
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0, cap.errs.join("\n"));
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const payload = JSON.parse(exec.input);
+  assert.equal(payload.op, "workflow.resume");
+  assert.equal(payload.runId, "run-123");
+  assert.deepEqual(payload.inputs, { verdict: "approve" });
+});
+
+test("self-heal: an execStream with no final result is a failure", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-empty-stream-"));
+  globalThis.__ADLC_CODER_TRANSPORT__ = {
+    async provision(name) { return { name, host: "mock" }; },
+    async *execStream() {
+      // A generator that completes without a final result object.
+    },
+  };
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
+  const prevCwd = process.cwd();
+  const cap = captureRoute();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdCoderWorkflowRun(
+      ["factory"], {}, ["run", "--provider", "coder", "--workspace", "empty-stream-ws", "factory"]
+    );
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.notEqual(code, 0, "a stream without a final exit code must not read as success");
+  assert.match(cap.errs.join("\n"), /no exit code|cannot be trusted/i);
+});
+
+test("self-heal: local workspace setup accepts the provider's JSON config", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-json-ws-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.json"),
+    JSON.stringify({
+      schema_version: 1,
+      name: "json-ws",
+      agent: "opencode",
+      workspace: { dirs: [] },
+    })
+  );
+  const { cmdWorkspaceSetup } = await import("../src/commands/workspace.mjs");
+  const prevCwd = process.cwd();
+  process.chdir(tmp);
+  let code;
+  try {
+    code = await cmdWorkspaceSetup(["workspace.json"], {});
+  } finally {
+    process.chdir(prevCwd);
+  }
+  assert.equal(code, 0, "the JSON config emitted by the provider must be usable locally");
 });

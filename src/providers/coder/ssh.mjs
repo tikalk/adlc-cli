@@ -229,9 +229,16 @@ export function createCoderSshTransport({
     return { envelopePath, failure: null };
   }
 
-  async function exec(handle, input) {
+  async function exec(handle, input, opts = {}) {
     const name = typeof handle === "string" ? handle : handle?.name;
     if (!name) throw new Error("exec requires a workspace name");
+    const offset = Number(opts?.offset ?? opts?.fromOffset ?? 0);
+    if (offset !== 0) {
+      throw new Error(
+        "the live SSH transport does not support stream-offset resume; " +
+          "use `adlc-cli workflow resume <run_id> --provider coder`"
+      );
+    }
     const payload = JSON.parse(String(input ?? "{}"));
     const opened = await openRemote(name, payload);
     if (opened.failure) return opened.failure;
@@ -249,9 +256,16 @@ export function createCoderSshTransport({
   // Streaming variant: stdout lines are yielded as the remote writes them,
   // instead of buffering the whole run and replaying it at exit. The final
   // return value carries the same verdict as exec().
-  async function* execStream(handle, input) {
+  async function* execStream(handle, input, opts = {}) {
     const name = typeof handle === "string" ? handle : handle?.name;
     if (!name) throw new Error("exec requires a workspace name");
+    const offset = Number(opts?.offset ?? opts?.fromOffset ?? 0);
+    if (offset !== 0) {
+      throw new Error(
+        "the live SSH transport does not support stream-offset resume; " +
+          "use `adlc-cli workflow resume <run_id> --provider coder`"
+      );
+    }
     const payload = JSON.parse(String(input ?? "{}"));
     const opened = await openRemote(name, payload);
     if (opened.failure) {
@@ -327,14 +341,36 @@ function remoteRunner(envelopePath) {
   return `
 set -u
 umask 077 || exit 1
-_d=$(mktemp -d)
-_p=$(sed -n 1p "${envelopePath}")
-_s=$(sed -n 2p "${envelopePath}")
-printf '%s' "$_p" | base64 -d > "$_d/payload.json"
-printf '%s' "$_s" | base64 -d > "$_d/step.sh"
+_d=$(mktemp -d) || exit 1
+cleanup() { rm -rf "$_d" "${envelopePath}"; }
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+_p=$(sed -n '1p' "${envelopePath}") || {
+  echo "adlc: transport envelope is missing or unreadable" >&2
+  exit 1
+}
+_s=$(sed -n '2p' "${envelopePath}") || {
+  echo "adlc: transport envelope is missing or truncated" >&2
+  exit 1
+}
+if [ -z "$_p" ] || [ -z "$_s" ]; then
+  echo "adlc: transport envelope is missing or truncated" >&2
+  exit 1
+fi
+printf '%s' "$_p" | base64 -d > "$_d/payload.json" || {
+  echo "adlc: could not decode the transport payload" >&2
+  exit 1
+}
+printf '%s' "$_s" | base64 -d > "$_d/step.sh" || {
+  echo "adlc: could not decode the transport step" >&2
+  exit 1
+}
+if [ ! -s "$_d/payload.json" ] || [ ! -s "$_d/step.sh" ]; then
+  echo "adlc: decoded transport payload is empty" >&2
+  exit 1
+fi
 sh "$_d/step.sh" "$_d"
 _rc=$?
-rm -rf "$_d" "${envelopePath}"
 exit "$_rc"
 `;
 }
@@ -348,6 +384,22 @@ umask 077 || exit 1
 _d="$1"
 _op=$(jq -r '.op // empty' "$_d/payload.json")
 _export_vars() { jq -r '(.vars // {}) | to_entries[] | "export \\(.key)=\\(.value | @sh)"' "$_d/payload.json" > "$_d/vars.sh"; . "$_d/vars.sh"; }
+# workspace setup records the cloned repo's relative path. Agent/workflow
+# steps run there, not in the remote user's home directory.
+_workspace_root() {
+  _root=""
+  if [ -f "$HOME/.adlc/workspace-root" ]; then
+    _root=$(cat "$HOME/.adlc/workspace-root" 2>/dev/null || true)
+    case "$_root" in
+      ""|/*|..|../*|*/..|*/../*) _root="" ;;
+    esac
+  fi
+  if [ -n "$_root" ] && [ -d "$HOME/$_root" ]; then
+    printf '%s\\n' "$HOME/$_root"
+  else
+    printf '%s\\n' "$HOME"
+  fi
+}
 # The hop counter must cross the transport boundary: a step that starts
 # another provider run has to inherit this depth or the recursion guard
 # resets to zero on every hop.
@@ -385,8 +437,18 @@ exit "$_rc"
   switch (op) {
     case "workspace.setup":
       return `${prelude}  workspace.setup)
-    jq -r '.configYaml // empty' "$_d/payload.json" > "$_d/workspace.yml"
+    # Prefer the parsed config object (JSON) over raw YAML: expanding raw YAML
+    # text lets a process-env value inject new keys into the document.
+    _wsfile="$_d/workspace.yml"
+    if jq -e '.config != null' "$_d/payload.json" >/dev/null 2>&1; then
+      jq -c '.config' "$_d/payload.json" > "$_d/workspace.json" || exit 1
+      _wsfile="$_d/workspace.json"
+    else
+      jq -r '.configYaml // empty' "$_d/payload.json" > "$_d/workspace.yml" || exit 1
+    fi
     _export_vars
+    _secret_keys=$(jq -r '(.secretKeys // []) | join(" ")' "$_d/payload.json")
+    if [ -n "$_secret_keys" ]; then export ADLC_SECRET_KEYS="$_secret_keys"; fi
     # The developer's LATER session (a separate shell) must inherit the same
     # env the transport used: persist the referenced vars 0600 for the session
     # to source. Values stay in the workspace's env — never in a command line.
@@ -400,13 +462,22 @@ exit "$_rc"
       "$_d/payload.json" > "$HOME/.adlc/secrets.env" || exit 1
     chmod 600 "$HOME/.adlc/secrets.env" || exit 1
 ${decodedArgs}
-    adlc-cli workspace setup "$_d/workspace.yml" "$@"
+    adlc-cli workspace setup "$_wsfile" "$@"
     _rc=$?
+    if [ "$_rc" -eq 0 ]; then
+      _root=$(jq -r '(.config.workspace.git // [])[0].path // empty' "$_d/payload.json" 2>/dev/null || true)
+      case "$_root" in
+        ""|/*|..|../*|*/..|*/../*) ;;
+        *) printf '%s\\n' "$_root" > "$HOME/.adlc/workspace-root" ;;
+      esac
+    fi
     ;;${tail}`;
     case "agent.run":
       return `${prelude}  agent.run)
     _export_vars
 ${decodedArgs}
+    _root=$(_workspace_root)
+    cd "$_root" || exit 1
     # payload.args carries the same argv the local route received (flags and
     # task). Older payloads only have task; keep that form working.
     if [ "$#" -gt 0 ]; then
@@ -422,6 +493,8 @@ ${decodedArgs}
     _export_vars
     _source=$(jq -r '.source // empty' "$_d/payload.json")
 ${decodedArgs}
+    _root=$(_workspace_root)
+    cd "$_root" || exit 1
     # Add inputs to the same argv array. One base64-encoded pair per line keeps
     # spaces, leading dashes, and embedded newlines inside a single argument
     # (a plain line-based split would let a newline synthesize another flag).
@@ -435,6 +508,27 @@ ${decodedArgs}
       set -- "$@" "--input" "$_pair"
     done < "$_d/inputs.b64"
     adlc-cli workflow run "$_source" "$@"
+    _rc=$?
+    ;;${tail}`;
+    case "workflow.resume":
+      return `${prelude}  workflow.resume)
+    _export_vars
+    _run_id=$(jq -r '.runId // empty' "$_d/payload.json")
+    if [ -z "$_run_id" ]; then
+      echo "adlc: workflow resume is missing its run id" >&2
+      exit 1
+    fi
+${decodedArgs}
+    _root=$(_workspace_root)
+    cd "$_root" || exit 1
+    jq -r '(.inputs // {}) | to_entries[] | "\\(.key)=\\(.value)" | @base64' \
+      "$_d/payload.json" > "$_d/inputs.b64"
+    while IFS= read -r _encoded; do
+      _pair=$(printf '%s' "$_encoded" | base64 -d; printf x)
+      _pair=\${_pair%x}
+      set -- "$@" "--input" "$_pair"
+    done < "$_d/inputs.b64"
+    adlc-cli workflow resume "$_run_id" "$@"
     _rc=$?
     ;;${tail}`;
     default:

@@ -3,17 +3,18 @@ import { join, resolve } from "node:path";
 import { parseYaml } from "../../utils/yaml.mjs";
 import {
   validateWorkspaceConfig,
-  expandWorkspaceText,
   expandWorkspaceVars,
   expansionEnv,
   collectReferencedVars,
   hopGuard,
   currentHopDepth,
+  isExitCode,
   redactSecrets,
   loadSecretsEnv,
   normalizeWorkspaceName,
   scrubSecretValues,
   referencedSecretsEnv,
+  referencedSecretValues,
   remoteInputs,
 } from "../transport.mjs";
 import { createCoderProvider } from "./handle.mjs";
@@ -117,16 +118,24 @@ function optionValue(rawArgv = [], name) {
 }
 
 // The workspace name the user asked for explicitly (--workspace), or null.
+// A present flag with no usable value is an error, never "absent": falling
+// through would silently target the implicit/default workspace.
 function explicitWorkspaceName(rawArgv = []) {
   for (let i = 0; i < rawArgv.length; i++) {
     const arg = rawArgv[i];
     if (arg === "--workspace" || arg === "-w") {
       const value = rawArgv[i + 1];
-      if (value && !value.startsWith("-")) return normalizeWorkspaceName(value);
+      if (value === undefined || value === "" || value.startsWith("-")) {
+        throw new Error("--workspace requires a workspace name");
+      }
+      return normalizeWorkspaceName(value);
     }
     if (arg.startsWith("--workspace=")) {
       const value = arg.slice("--workspace=".length);
-      if (value !== "") return normalizeWorkspaceName(value);
+      if (value === "") {
+        throw new Error("--workspace requires a workspace name");
+      }
+      return normalizeWorkspaceName(value);
     }
   }
   return null;
@@ -136,21 +145,22 @@ function explicitWorkspaceName(rawArgv = []) {
 // resolved. Used as the implicit target so the exec routes address the
 // workspace `workspace setup` provisioned (not a second "default" machine).
 function implicitWorkspaceName(projectRoot) {
-  try {
-    const explicit = (process.env.ADLC_WORKSPACE_FILE || "").trim();
-    const source =
-      explicit || (existsSync(join(projectRoot, WORKSPACE_FILE)) ? WORKSPACE_FILE : null);
-    if (!source) return null;
-    const path = resolve(projectRoot, source);
-    if (!existsSync(path)) return null;
-    const content = readFileSync(path, "utf-8");
-    const parsed = parseYaml(content);
-    if (!parsed || typeof parsed !== "object" || !parsed.name) return null;
-    const expanded = expandWorkspaceVars(parsed, expansionEnv(projectRoot));
-    return normalizeWorkspaceName(expanded.name);
-  } catch {
-    return null;
+  const explicit = (process.env.ADLC_WORKSPACE_FILE || "").trim();
+  const source =
+    explicit || (existsSync(join(projectRoot, WORKSPACE_FILE)) ? WORKSPACE_FILE : null);
+  if (!source) return null;
+  const path = resolve(projectRoot, source);
+  if (!existsSync(path)) {
+    throw new Error(`workspace file not found at ${path}`);
   }
+  const content = readFileSync(path, "utf-8");
+  if (/^[ ]*\t/m.test(content)) {
+    throw new Error("tab indentation is not valid YAML (use spaces)");
+  }
+  const parsed = parseYaml(content);
+  if (!parsed || typeof parsed !== "object" || !parsed.name) return null;
+  const expanded = expandWorkspaceVars(parsed, expansionEnv(projectRoot));
+  return normalizeWorkspaceName(expanded.name);
 }
 
 // explicitWorkspaceName() throws on an unusable name — the callers report it
@@ -201,9 +211,23 @@ async function resolveTargetWorkspace(provider, rawArgv, what) {
     return { ok: false, error: `Error: ${explicit.error}` };
   }
   if (explicit) return { ok: true, name: explicit };
-  const implicit = implicitWorkspaceName(process.cwd());
+  let implicit;
+  try {
+    implicit = implicitWorkspaceName(process.cwd());
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Error: cannot resolve the workspace name from the workspace file: ${err.message}`,
+    };
+  }
   const name = implicit ?? "default";
-  if (!provider.hasHandle(name)) {
+  let hasHandle;
+  try {
+    hasHandle = provider.hasHandle(name);
+  } catch (err) {
+    return { ok: false, error: `Error: ${err.message}` };
+  }
+  if (!hasHandle) {
     return {
       ok: false,
       error:
@@ -224,8 +248,11 @@ async function streamRemote(provider, handle, payload, secrets = {}) {
     console.log(redactLogLine(step.value, secrets));
     step = await iter.next();
   }
-  const result = step.value ?? { exitCode: 0, stderr: "" };
-  const exitCode = Number(result.exitCode ?? 0);
+  const result = step.value;
+  if (!result || typeof result !== "object" || !isExitCode(result.exitCode)) {
+    throw new Error("streaming transport returned no exit code — refusing to report success");
+  }
+  const exitCode = Number(result.exitCode);
   const stderr = String(result.stderr ?? "");
   if (stderr.trim() !== "") console.error(redactLogLine(stderr, secrets));
   if (exitCode !== 0) {
@@ -236,7 +263,16 @@ async function streamRemote(provider, handle, payload, secrets = {}) {
 
 async function loadWorkspaceSource(source, projectRoot) {
   if (/^https?:\/\//.test(source)) {
-    const res = await fetch(source);
+    if (/^http:\/\//i.test(source)) {
+      console.error(`Warning: workspace file source uses plaintext http (prefer https): ${source}`);
+    }
+    let res;
+    try {
+      res = await fetch(source);
+    } catch (err) {
+      console.error(`Error: failed to fetch workspace file from ${source}: ${err.message}`);
+      return null;
+    }
     if (!res.ok) {
       console.error(`Error: failed to fetch workspace file from ${source} (HTTP ${res.status})`);
       return null;
@@ -289,34 +325,44 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     return 1;
   }
   if (content === null) return 1;
-  // Expand the TEXT first: a remote host receives the file, not a parsed
-  // object, so the substitution has to happen while the text is intact.
-  let expandedText;
+  // Parse BEFORE expanding. Expanding raw YAML text lets a process-env value
+  // containing a newline or `:` inject new keys into the document that the
+  // remote setup then executes. Expand the parsed values instead, and send
+  // the resulting object to the remote as JSON.
+  let parsed;
   try {
-    expandedText = expandWorkspaceText(content, expansionEnv(projectRoot));
-  } catch (err) {
-    console.error(`Error: ${err.message}`);
-    return 1;
-  }
-  let wsfile;
-  try {
-    if (/^[ ]*\t/m.test(expandedText)) {
-      throw new Error("tab indentation is not valid YAML (use spaces)");
+    if (content.trim().startsWith("{")) {
+      parsed = JSON.parse(content);
+    } else {
+      if (/^[ ]*\t/m.test(content)) {
+        throw new Error("tab indentation is not valid YAML (use spaces)");
+      }
+      parsed = parseYaml(content);
     }
-    wsfile = parseYaml(expandedText);
-    validateWorkspaceConfig(wsfile);
+    validateWorkspaceConfig(parsed);
   } catch (err) {
     console.error(`Error: invalid workspace file: ${err.message}`);
     return 1;
   }
-  if (!wsfile || typeof wsfile !== "object" || !wsfile.schema_version) {
+  if (!parsed || typeof parsed !== "object" || !parsed.schema_version) {
     console.error(`Error: workspace file missing schema_version (${source})`);
     return 1;
   }
-  const expanded = wsfile;
   // The references come from the ORIGINAL file: after expansion the
   // placeholders are gone, and nothing would be forwarded to the remote.
-  const referenced = collectReferencedVars(parseYaml(content));
+  const referenced = collectReferencedVars(parsed);
+  let expanded;
+  try {
+    expanded = expandWorkspaceVars(parsed, expansionEnv(projectRoot));
+    validateWorkspaceConfig(expanded);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
+  if (!expanded || typeof expanded !== "object" || !expanded.schema_version) {
+    console.error(`Error: workspace file missing schema_version (${source})`);
+    return 1;
+  }
   const { transport } = resolveCoderTransport();
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   const requestedRaw = tryExplicitWorkspaceName(argv ?? []);
@@ -327,7 +373,7 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   }
   let name;
   try {
-    name = normalizeWorkspaceName(expanded.name ?? wsfile.name ?? "default");
+    name = normalizeWorkspaceName(expanded.name ?? "default");
   } catch (err) {
     console.error(`Error: ${err.message}`);
     return 1;
@@ -348,6 +394,8 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     return 1;
   }
   const vars = referencedSecretsEnv(referenced, projectRoot);
+  const secretValues = referencedSecretValues(referenced, projectRoot);
+  const scrubVars = secretValues;
   // Forward the operator's agent selection to the remote local-setup command;
   // otherwise a `-a` on the provider invocation would be silently dropped.
   const remoteArgs = [];
@@ -358,13 +406,13 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
     op: "workspace.setup",
     args: remoteArgs,
     config: expanded,
-    configYaml: expandedText,
     vars,
+    secretKeys: Object.keys(secretValues),
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
   try {
-    const { exitCode } = await streamRemote(provider, handle, payload, vars);
+    const { exitCode } = await streamRemote(provider, handle, payload, scrubVars);
     if (exitCode !== 0) return exitCode || 1;
   } catch (err) {
     console.error(`Error: remote setup failed: ${err.message}`);
@@ -426,7 +474,8 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     console.error(`Error: coder provision failed: ${err.message}`);
     return 1;
   }
-  const rawAgentVars = referencedSecretsEnv(collectReferencedVars(cleanArgs));
+  const referenced = collectReferencedVars(cleanArgs);
+  const rawAgentVars = referencedSecretsEnv(referenced);
   const payload = JSON.stringify({
     op: "agent.run",
     args,
@@ -435,14 +484,84 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
-  // The outbound stream is redacted: referenced values, the task text and
-  // the workspace name never reach the operator's terminal verbatim.
-  const agentVars = { ...rawAgentVars, ...scrubValues([prompt]) };
+  // The outbound stream is redacted: secret values, the task text and the
+  // workspace name never reach the operator's terminal verbatim. Ordinary
+  // referenced values (e.g. BRANCH=main) are not scrub needles.
+  const agentVars = { ...referencedSecretValues(referenced), ...scrubValues([prompt]) };
   try {
     const { exitCode } = await streamRemote(provider, handle, payload, agentVars);
     if (exitCode !== 0) return exitCode || 1;
   } catch (err) {
     console.error(`Error: remote agent run failed: ${err.message}`);
+    return 1;
+  }
+  return 0;
+}
+
+export async function cmdCoderWorkflowResume(args, flags, rawArgv = []) {
+  console.error("provider path: coder workflow resume");
+  try {
+    hopGuard();
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
+  const runId = firstPositional(args ?? [], rawArgv ?? []);
+  if (!runId) {
+    console.error("Error: run ID required (provider path: coder workflow resume)");
+    return 1;
+  }
+  const inputs = {};
+  for (let i = 0; i < (rawArgv ?? []).length; i++) {
+    const arg = rawArgv[i];
+    let pair;
+    if (arg === "--input" || arg === "-i") {
+      pair = rawArgv[++i];
+    } else if (arg.startsWith("--input=")) {
+      pair = arg.slice("--input=".length);
+    } else {
+      continue;
+    }
+    if (pair === undefined || !pair.includes("=")) {
+      console.error("Error: --input expects key=value");
+      return 1;
+    }
+    const eq = pair.indexOf("=");
+    inputs[pair.slice(0, eq)] = pair.slice(eq + 1);
+  }
+  const { transport } = resolveCoderTransport();
+  const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
+  const target = await resolveTargetWorkspace(provider, rawArgv ?? [], "workflow resume");
+  if (!target.ok) {
+    console.error(target.error);
+    return 1;
+  }
+  let handle;
+  try {
+    handle = await provider.provision(target.name);
+  } catch (err) {
+    console.error(`Error: coder provision failed: ${err.message}`);
+    return 1;
+  }
+  const remoteArgs = [];
+  const format = optionValue(rawArgv ?? [], "format");
+  if (format !== null) remoteArgs.push("--format", format);
+  const rawVars = referencedSecretsEnv(collectReferencedVars(inputs));
+  const payload = JSON.stringify({
+    op: "workflow.resume",
+    args: remoteArgs,
+    runId,
+    inputs,
+    vars: rawVars,
+    env: remoteInputs(),
+    hop: currentHopDepth() + 1,
+  });
+  const resumeVars = { ...referencedSecretValues(collectReferencedVars(inputs)), ...scrubValues(Object.values(inputs)) };
+  try {
+    const { exitCode } = await streamRemote(provider, handle, payload, resumeVars);
+    if (exitCode !== 0) return exitCode || 1;
+  } catch (err) {
+    console.error(`Error: remote workflow resume failed: ${err.message}`);
     return 1;
   }
   return 0;
@@ -477,7 +596,7 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
       continue;
     }
     if (pair === undefined || !pair.includes("=")) {
-      console.error(`Error: --input expects key=value (got ${JSON.stringify(pair)})`);
+      console.error("Error: --input expects key=value");
       return 1;
     }
     const eq = pair.indexOf("=");
@@ -504,7 +623,8 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
   const format = optionValue(rawArgv ?? [], "format");
   if (format !== null) remoteArgs.push("--format", format);
   if ((rawArgv ?? []).includes("--headless")) remoteArgs.push("--headless");
-  const rawWfVars = referencedSecretsEnv(collectReferencedVars(inputs));
+  const wfReferenced = collectReferencedVars(inputs);
+  const rawWfVars = referencedSecretsEnv(wfReferenced);
   const payload = JSON.stringify({
     op: "workflow.run",
     args: remoteArgs,
@@ -514,7 +634,7 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
-  const wfVars = { ...rawWfVars, ...scrubValues(Object.values(inputs)) };
+  const wfVars = { ...referencedSecretValues(wfReferenced), ...scrubValues(Object.values(inputs)) };
   try {
     const { exitCode } = await streamRemote(provider, handle, payload, wfVars);
     if (exitCode !== 0) return exitCode || 1;

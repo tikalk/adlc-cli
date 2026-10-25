@@ -52,20 +52,6 @@ export function validateWorkspaceConfig(config) {
   return config;
 }
 
-// Expand ${VAR} in the RAW workspace file text. Used when the file must be
-// materialized on a remote host: the remote receives text, not a parsed
-// object, so the substitution happens here — with the same fail-fast rules
-// and the same "a secret-sourced var keeps its placeholder" rule.
-export function expandWorkspaceText(text, env = {}) {
-  return String(text ?? "").replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => {
-    const v = env[name] ?? process.env[name];
-    if (v === undefined || v === "") {
-      throw new Error(`Missing required workspace variable: ${name}`);
-    }
-    return v;
-  });
-}
-
 export function expandWorkspaceVars(value, env = {}) {
   if (typeof value === "string") {
     return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => {
@@ -106,7 +92,8 @@ export function checkHopDepth(depth) {
   }
 }
 
-const SECRET_KEY_PATTERN = /token|secret|passwd|password|pwd|api[_-]?key|private[_-]?key|auth[_-]?token|bearer|credential|(^|[^a-z])tok([^a-z]|$)/i;
+const SECRET_KEY_PATTERN =
+  /token|secret|secret[_-]?key|passwd|password|passphrase|pwd|api[_-]?key|private[_-]?key|access[_-]?key|auth[_-]?token|bearer|credential|(^|[^a-z0-9])pass([^a-z0-9]|$)|(^|[^a-z])tok([^a-z]|$)/i;
 
 export const REDACTED = "[REDACTED]";
 
@@ -171,6 +158,17 @@ export function hopGuard() {
   checkHopDepth(currentHopDepth() + 1);
 }
 
+// A transport verdict must be a real integer-ish exit code. Number(null) is
+// 0 and Number("") is 0; accepting either would turn a missing result into a
+// silent success.
+export function isExitCode(value) {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") {
+    return value.trim() !== "" && Number.isFinite(Number(value));
+  }
+  return false;
+}
+
 export function remoteInputs(inputs = {}) {
   return { ...inputs, ADLC_HOP_DEPTH: String(currentHopDepth() + 1) };
 }
@@ -227,6 +225,25 @@ export function referencedSecretsEnv(referenced = [], projectRoot = process.cwd(
   return out;
 }
 
+// The subset of referenced values that may be scrubbed from operator-facing
+// output. `referencedSecretsEnv` deliberately carries every referenced value
+// to the remote (the remote needs non-secret inputs too); using all of them
+// as scrub needles redacts ordinary words such as BRANCH=main and corrupts
+// the stream. Only secret-sourced values and secret-shaped process-env names
+// are redaction needles.
+export function referencedSecretValues(referenced = [], projectRoot = process.cwd(), env = process.env) {
+  const secretSourced = loadSecretsEnv(projectRoot);
+  const out = {};
+  for (const key of referenced ?? []) {
+    if (secretSourced[key] !== undefined) {
+      out[key] = secretSourced[key];
+    } else if (env[key] !== undefined && SECRET_KEY_PATTERN.test(key)) {
+      out[key] = env[key];
+    }
+  }
+  return out;
+}
+
 // The expansion environment for a workspace file. Values sourced from a
 // secrets file (secrets.env / docker secrets) are secret by definition: they
 // are NOT substituted into the config — the placeholder is kept so the value
@@ -242,6 +259,13 @@ export function expansionEnv(projectRoot = process.cwd(), env = process.env) {
   // inlined into the config that travels to the remote.
   for (const key of Object.keys(env)) {
     if (SECRET_KEY_PATTERN.test(key)) out[key] = `\${${key}}`;
+  }
+  // The transport carries the exact secret-key list across the boundary:
+  // a secret named FOO in secrets.env is still a secret on the remote even
+  // though its name is not secret-shaped.
+  const forced = new Set(String(env.ADLC_SECRET_KEYS ?? "").split(/\s+/).filter(Boolean));
+  for (const key of forced) {
+    if (out[key] !== undefined) out[key] = `\${${key}}`;
   }
   return out;
 }

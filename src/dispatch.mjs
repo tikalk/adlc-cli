@@ -90,8 +90,17 @@ async function runNewTree({ command, args, flags }, argv) {
   // silently running locally would hand the operator a local run they asked
   // for remotely.
   const providerCapableCommands = providerCommands();
-  const provider = flags?.provider ? resolveProvider(flags.provider) : null;
-  if (flags?.provider && !provider && providerCapableCommands.includes(command)) {
+  const providerRequested = flags?.providerSpecified === true;
+  if (
+    providerRequested &&
+    providerCapableCommands.includes(command) &&
+    (typeof flags.provider !== "string" || flags.provider.trim() === "")
+  ) {
+    console.error("Error: --provider requires a provider name.");
+    return 1;
+  }
+  const provider = providerRequested ? resolveProvider(flags.provider) : null;
+  if (providerRequested && !provider && providerCapableCommands.includes(command)) {
     console.error(
       `Error: unknown --provider "${flags.provider}" ` +
       `(known: ${providerNames().join(", ")}) for '${command}'.`
@@ -276,12 +285,16 @@ function parseArgs(argv) {
     } else if (arg === "--skip-skills") {
       flags.skipSkills = true;
     } else if (arg === "--provider") {
+      flags.providerSpecified = true;
       flags.provider = rest[++i];
     } else if (arg.startsWith("--provider=")) {
+      flags.providerSpecified = true;
       flags.provider = arg.slice("--provider=".length);
     } else if (arg === "--workspace" || arg === "-w") {
+      flags.workspaceSpecified = true;
       flags.workspace = rest[++i];
     } else if (arg.startsWith("--workspace=")) {
+      flags.workspaceSpecified = true;
       flags.workspace = arg.slice("--workspace=".length);
     } else if (arg === "--input" || arg === "-i") {
       flags.inputs = flags.inputs ?? [];

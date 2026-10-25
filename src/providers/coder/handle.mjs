@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { resumeRun, normalizeWorkspaceName } from "../transport.mjs";
+import { resumeRun, normalizeWorkspaceName, isExitCode } from "../transport.mjs";
 
 export { resumeRun };
 export const resume = resumeRun;
@@ -77,10 +77,15 @@ export function createCoderProvider({ transport, workspacesDir = ".adlc/workspac
         if (typeof step.value === "string" && step.value !== "") yield step.value;
         step = await iterator.next();
       }
-      const res = step.value ?? {};
+      const res = step.value;
+      if (!res || typeof res !== "object" || !isExitCode(res.exitCode)) {
+        throw new Error(
+          "streaming transport returned no exit code — the remote result cannot be trusted"
+        );
+      }
       return {
-        exitCode: Number.isFinite(Number(res?.exitCode)) ? Number(res.exitCode) : 0,
-        stderr: String(res?.stderr ?? ""),
+        exitCode: Number(res.exitCode),
+        stderr: String(res.stderr ?? ""),
       };
     }
     // Mock/injected transports only implement exec; preserve the contract by
@@ -95,18 +100,21 @@ export function createCoderProvider({ transport, workspacesDir = ".adlc/workspac
     }
     // The remote's exit code and stderr are the caller's verdict: a remote
     // failure must never read as a local success.
+    if (!isExitCode(res.exitCode)) {
+      throw new Error(
+        "transport returned no exit code — the remote result cannot be trusted"
+      );
+    }
     return {
-      exitCode: Number.isFinite(Number(res?.exitCode)) ? Number(res.exitCode) : 0,
-      stderr: String(res?.stderr ?? ""),
+      exitCode: Number(res.exitCode),
+      stderr: String(res.stderr ?? ""),
     };
   }
 
   function hasHandle(name) {
-    try {
-      return readHandleFile(workspacesDir, name) !== null;
-    } catch {
-      return false;
-    }
+    // A corrupt handle must fail loudly: treating it as "no handle" would
+    // provision a second machine and hide the corrupt file.
+    return readHandleFile(workspacesDir, name) !== null;
   }
 
   return { provision, run, runStream, hasHandle };

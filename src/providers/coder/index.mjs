@@ -6,6 +6,7 @@ import {
   cmdCoderWorkspaceSetup,
   cmdCoderAgentRun,
   cmdCoderWorkflowRun,
+  cmdCoderWorkflowResume,
   resolveCoderTransport,
 } from "./route.mjs";
 import { createCoderSshTransport } from "./ssh.mjs";
@@ -40,6 +41,8 @@ export const routes = {
   workflow: {
     run: ({ args, flags, argv }) =>
       cmdCoderWorkflowRun(args.slice(1), flags, afterCommand(argv, "workflow")),
+    resume: ({ args, flags, argv }) =>
+      cmdCoderWorkflowResume(args.slice(1), flags, afterCommand(argv, "workflow")),
   },
 };
 
@@ -51,7 +54,7 @@ export const help = {
     ],
     [
       "--workspace <name>",
-      "Target workspace (default: the workspace file's name, else 'default').",
+      "Explicit target workspace (provisions if missing). Without it, the workspace file's name must already have a handle.",
     ],
   ],
   workspace: [
@@ -72,7 +75,7 @@ export const help = {
     ],
     [
       "--workspace <name>",
-      "Target workspace (default: the workspace file's name). A missing handle is refused rather than provisioning a second machine.",
+      "Explicit target workspace (provisions if missing). Without it, the workspace file's name must already have a handle.",
     ],
   ],
   examples: [

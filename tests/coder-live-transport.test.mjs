@@ -266,6 +266,10 @@ function decodeEnvelope(stdinFile) {
   return {
     payload: JSON.parse(Buffer.from(lines[0], "base64").toString("utf-8")),
     step: Buffer.from(lines[1], "base64").toString("utf-8"),
+    // The second ssh invocation receives the runner script immediately after
+    // the two-line envelope. Tests that exercise the runner itself (e.g. a
+    // missing envelope) need that text.
+    runner: lines.slice(2).join("\n"),
   };
 }
 
@@ -288,10 +292,30 @@ jq -n --arg hop "\${ADLC_HOP_DEPTH:-unset}" --args '{hop:$hop, args:$ARGS.positi
   const stepPath = join(remote, "step.sh");
   writeFileSync(stepPath, step);
   writeFileSync(join(remote, "payload.json"), JSON.stringify(payload));
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  // Keep the generated step's HOME inside the test dir: workspace setup
+  // writes .adlc/secrets.env and .adlc/workspace-root there.
+  const env = { ...process.env, HOME: dir, PATH: `${bin}:${process.env.PATH}` };
   delete env.ADLC_HOP_DEPTH;
   try {
     const r = spawnSync("sh", [stepPath, remote], { encoding: "utf-8", env });
+    const rootFile = join(dir, ".adlc", "workspace-root");
+    return {
+      status: r.status,
+      stdout: r.stdout ?? "",
+      stderr: r.stderr ?? "",
+      workspaceRoot: existsSync(rootFile) ? readFileSync(rootFile, "utf-8").trim() : null,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function runRunner(runner) {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-runner-"));
+  const path = join(dir, "runner.sh");
+  writeFileSync(path, runner);
+  try {
+    const r = spawnSync("sh", [path], { encoding: "utf-8" });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -527,6 +551,91 @@ test("live transport: workflow --format and --headless are forwarded", { skip: n
       "--headless",
       "--input",
       "goal=do the thing",
+    ]);
+  });
+});
+
+test("live transport: a missing or truncated envelope is a failure, not an empty step", { skip: needsJq }, async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    await transport.exec({ name: "demo" }, JSON.stringify({ op: "agent.run", task: "x", vars: {} }));
+    const decoded = decodeEnvelope(record.stdinFile);
+    const missing = join(tmpdir(), `adlc-envelope-missing-${Date.now()}.b64`);
+    const runner = decoded.runner.replace(/\/tmp\/adlc-envelope-[^\s"']+\.b64/g, missing);
+    assert.ok(
+      runner.includes(missing),
+      `the test must point the runner at a missing envelope; got: ${decoded.runner.slice(0, 400)}`
+    );
+    const r = runRunner(runner);
+    assert.notEqual(r.status, 0, "a missing envelope must not execute an empty step and exit 0");
+    assert.match(r.stderr, /missing or unreadable|missing or truncated/i);
+  });
+});
+
+test("live transport: stream-offset resume is refused, not silently ignored", async () => {
+  const transport = createCoderSshTransport();
+  await assert.rejects(
+    () => transport.exec({ name: "demo" }, JSON.stringify({ op: "agent.run", task: "x", vars: {} }), { offset: 2 }),
+    /stream-offset resume|workflow resume/i
+  );
+});
+
+test("live transport: workspace setup records the cloned project root for later steps", { skip: needsJq }, async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    const payload = {
+      op: "workspace.setup",
+      config: {
+        schema_version: 1,
+        name: "demo",
+        workspace: { git: [{ repo: "git@github.com:org/repo.git", path: "adlc-cli" }] },
+      },
+      vars: {},
+      secretKeys: [],
+    };
+    await transport.exec({ name: "demo" }, JSON.stringify(payload));
+    const decoded = decodeEnvelope(record.stdinFile);
+    const r = runGeneratedStep(decoded.step, decoded.payload);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.workspaceRoot, "adlc-cli", "workspace setup must persist the project root");
+
+    writeFileSync(record.stdinFile, "");
+    await transport.exec({ name: "demo" }, JSON.stringify({ op: "agent.run", task: "x", vars: {} }));
+    const agentStep = decodeEnvelope(record.stdinFile).step;
+    assert.match(agentStep, /_workspace_root/, "agent steps must resolve the cloned workspace");
+    assert.match(agentStep, /cd "\$_root"/, "agent steps must enter the cloned workspace");
+  });
+});
+
+test("live transport: workflow resume is routed and forwards its inputs", { skip: needsJq }, async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    const payload = {
+      op: "workflow.resume",
+      runId: "run-123",
+      args: ["--format", "json"],
+      inputs: { verdict: "approve", note: "-leading\nsecond line" },
+      vars: {},
+      env: { ADLC_HOP_DEPTH: "1" },
+      hop: 1,
+    };
+    await transport.exec({ name: "demo" }, JSON.stringify(payload));
+    const decoded = decodeEnvelope(record.stdinFile);
+    assert.match(decoded.step, /_workspace_root/, "resume must use the cloned workspace root");
+    assert.match(decoded.step, /cd "\$_root"/, "resume must enter the cloned workspace");
+    const r = runGeneratedStep(decoded.step, decoded.payload);
+    assert.equal(r.status, 0, r.stderr);
+    const parsed = JSON.parse(r.stdout.trim());
+    assert.deepEqual(parsed.args, [
+      "workflow",
+      "resume",
+      "run-123",
+      "--format",
+      "json",
+      "--input",
+      "verdict=approve",
+      "--input",
+      "note=-leading\nsecond line",
     ]);
   });
 });

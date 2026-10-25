@@ -84,7 +84,7 @@ function parseInputs(rawArgv, subcommand) {
     if (tail[i] === "--input" || tail[i] === "-i") {
       const pair = tail[++i];
       if (pair === undefined || !pair.includes("=")) {
-        throw new Error(`--input expects key=value (got ${JSON.stringify(pair)})`);
+        throw new Error("--input expects key=value");
       }
       const eq = pair.indexOf("=");
       inputs[pair.slice(0, eq)] = pair.slice(eq + 1);
