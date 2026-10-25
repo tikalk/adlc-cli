@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.3] - 2026-10-25
+
+### Fixed
+
+- **The factory workflow's `execute` step runs the run's issue.** It ran a
+  bare `/factory-mission`: the skill had no mission, asked for one and
+  returned 0, and the step counted as completed with no code written. It now
+  passes `--issue {{ inputs.issue_ref }}`. ([#59], `73317d4`)
+- **`gate-completion` links the code MR.** Its link was `{{ inputs.mr_url }}`,
+  which nothing set; it is now the `mr_url` the `execute` step reports
+  (ADR-444 step output), with the input as the fallback. ([#59], `73317d4`)
+
 ## [2.4.2] - 2026-10-25
 
 ### Fixed
@@ -83,3 +95,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#54]: https://github.com/tikalk/adlc-cli/pull/54
 [#46]: https://github.com/tikalk/adlc-cli/pull/46
 [#57]: https://github.com/tikalk/adlc-cli/pull/57
+[#59]: https://github.com/tikalk/adlc-cli/pull/59
