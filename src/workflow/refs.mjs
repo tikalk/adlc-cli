@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import { err } from "../ui/index.mjs";
 
 export function pushRunRef(projectRoot, runId, runDir) {
   const git = (args, input) =>
@@ -52,8 +53,8 @@ export function pushRunRef(projectRoot, runId, runDir) {
     const update = git(["update-ref", ref, commit.stdout.trim()]);
     if (update.status !== 0) throw new Error(`git update-ref failed: ${update.stderr}`);
     return true;
-  } catch (err) {
-    console.error(`[workflow] git-refs push skipped: ${err.message}`);
+  } catch (cause) {
+    err(`[workflow] git-refs push skipped: ${cause.message}`);
     return false;
   }
 }

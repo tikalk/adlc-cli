@@ -6,6 +6,7 @@
 import { createInterface } from "node:readline";
 import { spawnCompat, isWindows } from "./utils/spawn.mjs";
 import { getRunProfile } from "./registry.mjs";
+import { err, tint, combine } from "./ui/index.mjs";
 
 export function buildRunCommand(agentKey, prompt, opts = {}) {
   const profile = getRunProfile(agentKey);
@@ -38,8 +39,10 @@ function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {
   return { cmd: profile.binary, args, env };
 }
 
-export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }) {
+export function runTask({ profile, prompt, model, requireApproval, cwd, onLine, env: extraEnv }) {
   const { cmd, args, env } = buildCommandFromProfile(profile, prompt, { model, requireApproval });
+  // Caller-supplied variables (e.g. the workflow run context, ADR-444).
+  if (extraEnv) Object.assign(env, extraEnv);
 
   const childCwd = cwd ?? process.cwd();
   // Sync PWD with the spawn cwd — agents that resolve their project directory
@@ -71,7 +74,7 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
       rl.on("line", (line) => {
         lineQueue = lineQueue
           .then(() => onLine(line))
-          .catch((err) => console.error("[run] line error:", err));
+          .catch((cause) => err(combine(tint("[run]", "gray"), ' ', tint("line error:", "red"), ' ', cause)));
       });
     }
 
@@ -79,10 +82,10 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
       child.stderr.on("data", (chunk) => process.stderr.write(chunk));
     }
 
-    child.on("error", (err) => {
+    child.on("error", (cause) => {
       if (resolved) return;
       resolved = true;
-      console.error(`[run] spawn error: ${err.message}`);
+      err(combine(tint("[run]", "gray"), ' ', tint("spawn error:", "red"), ' ', cause.message));
       resolve({ code: 1, signal: null });
     });
 

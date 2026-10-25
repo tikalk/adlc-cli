@@ -432,18 +432,17 @@ test("iter-3: local workspace setup expands ${VAR} like the provider path", asyn
   process.chdir(tmp);
   const prev = process.env.WS_NAME;
   process.env.WS_NAME = "local-ws";
-  const lines = [];
-  const origLog = console.log;
-  console.log = (...args) => lines.push(args.join(" "));
+  const cap = captureRoute();
   let code;
   try {
     code = await cmdWorkspaceSetup(["workspace.yml"], { agents: ["opencode"], dryRun: true });
   } finally {
-    console.log = origLog;
+    cap.restore();
     process.chdir(cwd);
     if (prev === undefined) delete process.env.WS_NAME;
     else process.env.WS_NAME = prev;
   }
+  const lines = cap.logs;
   assert.equal(code, 0, `workspace setup must succeed: ${lines.join(" | ")}`);
   assert.ok(
     lines.some((l) => l.includes("local-ws")),
@@ -467,18 +466,16 @@ test("iter-3: local workspace setup fails fast on a missing ${VAR}", async () =>
   const { cmdWorkspaceSetup } = await import("../src/commands/workspace.mjs");
   const cwd = process.cwd();
   process.chdir(tmp);
-  const errs = [];
-  const origErr = console.error;
-  console.error = (...args) => errs.push(args.join(" "));
+  const cap = captureRoute();
   let code;
   try {
     code = await cmdWorkspaceSetup(["workspace.yml"], { agents: ["opencode"], dryRun: true });
   } finally {
-    console.error = origErr;
+    cap.restore();
     process.chdir(cwd);
   }
   assert.equal(code, 1, "a missing variable must fail the setup");
-  assert.match(errs.join(" "), /WS_NAME_MISSING/, "the error must name the missing variable");
+  assert.match(cap.errs.join(" "), /WS_NAME_MISSING/, "the error must name the missing variable");
 });
 
 // ── iter-4: review findings (independent reviewer @ head 5f406f2) ────────
@@ -486,14 +483,16 @@ test("iter-3: local workspace setup fails fast on a missing ${VAR}", async () =>
 function captureRoute(fn) {
   const logs = [];
   const errs = [];
-  const origLog = console.log;
-  const origErr = console.error;
-  console.log = (...a) => { logs.push(a.join(" ")); };
-  console.error = (...a) => { errs.push(a.join(" ")); };
+  // The UI layer (src/ui/console.mjs) writes straight to the process streams —
+  // console.log/error no longer see command output after the v2.4 UI rewrite.
+  const origOut = process.stdout.write;
+  const origErr = process.stderr.write;
+  process.stdout.write = (chunk) => { logs.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { errs.push(String(chunk)); return true; };
   return {
     logs,
     errs,
-    restore() { console.log = origLog; console.error = origErr; },
+    restore() { process.stdout.write = origOut; process.stderr.write = origErr; },
   };
 }
 

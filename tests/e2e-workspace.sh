@@ -149,10 +149,11 @@ else
   # ── 4. Agent-led workspace init (installed skill runs its bash script) ──
   echo; echo "== 4. workspace init (agent-led, /workspace skill) =="
   OUT="$( cd "$WS" && node "$BIN" workspace init -a opencode )" || { echo "$OUT"; fail "workspace init exited non-zero"; }
+  # Layout created by setup-workspace.sh since the ADR-401 A.4 allowlist
+  # (adlc-team-skills ce04289): product/ + drafts/<type>/.
   assert_exists "$WS/.adlc/product"
-  assert_exists "$WS/.adlc/architecture"
-  assert_exists "$WS/.adlc/context"
-  assert_exists "$WS/.adlc/drafts"
+  assert_exists "$WS/.adlc/drafts/pdr"
+  assert_exists "$WS/.adlc/drafts/adr"
   pass "workspace skill created .adlc/ structure via agent"
 fi
 

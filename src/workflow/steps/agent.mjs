@@ -9,6 +9,8 @@ import { evaluateExpression } from "../expressions.mjs";
 import { runTask } from "../../run.mjs";
 import { getRunProfile } from "../../registry.mjs";
 import { readAgent } from "../../utils/init-options.mjs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const rid = (config) => `'${config.id ?? "?"}'`;
 
@@ -44,6 +46,12 @@ async function runAgentStep({ agentKey, model, prompt, context, config, timeoutS
     });
   }
 
+  // Run context (ADR-444): who the step is and where it may leave a small
+  // structured result. A file from an earlier attempt is removed first so a
+  // retried step can never surface a stale value.
+  const runEnv = runContextEnv(context, config);
+  prepareStepOutput(runEnv.ADLC_STEP_OUTPUT);
+
   // runTask streams lines; collect them as the step's stdout.
   let stdout = "";
   let exit = { code: null, signal: null };
@@ -55,6 +63,7 @@ async function runAgentStep({ agentKey, model, prompt, context, config, timeoutS
     prompt,
     model,
     cwd: context.projectRoot || process.cwd(),
+    env: runEnv,
     onLine: (line) => {
       stdout += line + "\n";
     },
@@ -105,7 +114,76 @@ async function runAgentStep({ agentKey, model, prompt, context, config, timeoutS
       output,
     });
   }
+  Object.assign(output, readStepOutput(runEnv.ADLC_STEP_OUTPUT, rid(config)));
   return new StepResult({ status: StepStatus.COMPLETED, output });
+}
+
+// ── run context + structured step output (ADR-444) ─────────────────────────
+
+const RESERVED_OUTPUT_KEYS = new Set(["integration", "model", "input", "stdout", "stderr", "exit_code", "interrupted"]);
+const OUTPUT_KEY = /^[a-z][a-z0-9_]{0,39}$/;
+const MAX_OUTPUT_ENTRIES = 16;
+const MAX_OUTPUT_VALUE = 2048;
+// Generous bound on the raw file; any valid object is far smaller.
+const MAX_OUTPUT_FILE = 64 * 1024;
+
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+// Remove a file left by an earlier attempt (a retry must never surface a stale
+// value) and create its directory, so a step can write it with a plain redirect.
+export function prepareStepOutput(path) {
+  if (!path) return;
+  try { rmSync(path, { force: true }); } catch {}
+  try { mkdirSync(dirname(path), { recursive: true }); } catch {}
+}
+
+export function runContextEnv(context, config) {
+  const env = {};
+  const runId = typeof context.runId === "string" ? context.runId : null;
+  const stepId = typeof config.id === "string" ? config.id : null;
+  if (runId) env.ADLC_RUN_ID = runId;
+  if (stepId) env.ADLC_STEP_ID = stepId;
+  // Path-safe ids only: the file is deleted before the step and read after it.
+  if (runId && stepId && SAFE_ID.test(runId) && SAFE_ID.test(stepId) && context.projectRoot) {
+    env.ADLC_STEP_OUTPUT = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "steps", `${stepId}.output.json`);
+  }
+  const issueRef = context.inputs?.issue_ref;
+  if (typeof issueRef === "string" && issueRef !== "") env.ADLC_ISSUE_REF = issueRef;
+  return env;
+}
+
+// The step's structured result: a flat object of short strings, merged only
+// when every entry is valid — otherwise nothing (and a log line). The values
+// are untrusted; renderers sanitise them (links: safeMrLink).
+export function readStepOutput(path, stepRef) {
+  if (!path || !existsSync(path)) return {};
+  const reject = (why) => {
+    console.error(`[workflow] step ${stepRef}: step output ignored (${why})`);
+    return {};
+  };
+  let raw;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    return reject(`unreadable: ${err.message}`);
+  }
+  if (raw.length > MAX_OUTPUT_FILE) return reject("file too large");
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return reject("not JSON");
+  }
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return reject("not a JSON object");
+  const entries = Object.entries(data);
+  if (entries.length > MAX_OUTPUT_ENTRIES) return reject(`more than ${MAX_OUTPUT_ENTRIES} fields`);
+  for (const [key, value] of entries) {
+    if (!OUTPUT_KEY.test(key)) return reject(`invalid key ${JSON.stringify(key)}`);
+    if (RESERVED_OUTPUT_KEYS.has(key)) return reject(`reserved key ${JSON.stringify(key)}`);
+    if (typeof value !== "string") return reject(`field ${key} is not a string`);
+    if (value.length > MAX_OUTPUT_VALUE) return reject(`field ${key} exceeds ${MAX_OUTPUT_VALUE} characters`);
+  }
+  return Object.fromEntries(entries);
 }
 
 // ── prompt ───────────────────────────────────────────────────────────────

@@ -179,12 +179,68 @@ Known constraint (inherited upstream): a gate nested inside
 step and its nested body on resume. Keep gates at the top level, or bind a
 `verdict_input` on the gate.
 
+**Agent-step run context and output (ADR-444).** `command` and `prompt` steps
+run the agent with these environment variables:
+
+- `ADLC_RUN_ID` and `ADLC_STEP_ID`.
+- `ADLC_STEP_OUTPUT`, the path `.adlc/workflows/runs/<run_id>/steps/<step_id>.output.json`. Any leftover file there is deleted before the step starts.
+- `ADLC_ISSUE_REF`, only when the run has an `issue_ref` input.
+
+A step can return a few named strings by writing a JSON object to
+`ADLC_STEP_OUTPUT`. The rules:
+
+- At most 16 fields.
+- Keys must match `^[a-z][a-z0-9_]{0,39}$`.
+- Values must be strings of at most 2048 characters.
+- No reserved keys (`stdout`, `exit_code`, …).
+
+After a successful exit, these fields are merged into the step output, so a
+later step or gate can read them, for example
+`context.link: "{{ steps.intent-product.output.mr_url }}"`. If any field breaks
+a rule, the file is ignored with a log line. Stdout is never parsed for
+results.
+
 ### Top-level
 
 | Command | Description |
 |---------|-------------|
 | `version` | Print installed version |
 | `help` | Show full help |
+
+## Terminal output
+
+Human-facing output uses a shared UI layer (`src/ui/`) with the same visual
+language as the `specify` CLI: a cyan accent, bordered panels, aligned tables
+and a step tree for workflow runs. The package stays **dependency-free** — the
+layer is hand-rolled, so `npx adlc-cli` installs instantly and the npm
+provenance surface is unchanged.
+
+```
+▸ OpenCode (opencode)
+  → npx --yes skills@latest add tikalk/adlc-team-skills -a opencode
+  ✓ Found 12 skill(s) in .agents/skills
+  ✓ Generated 12 command file(s) in .opencode/command
+```
+
+### Color control
+
+| Mechanism | Effect |
+|-----------|--------|
+| TTY detection | Color is on automatically in a terminal, off when piped |
+| `NO_COLOR=1` | Disables color (any value; [no-color.org](https://no-color.org)) |
+| `FORCE_COLOR=1` | Forces color on, even when piped |
+| `--color` | Forces color on for this invocation |
+| `--no-color` | Disables color for this invocation |
+| `--format json` | **Always** disables color — the JSONL stream is a machine contract (ADR-406) |
+
+The `workflow state` helper family is also always unstyled: it is the
+LLM-executor's machine API (ADR-395).
+
+### Untrusted output is sanitized
+
+Repo URLs, step labels, agent names and file contents are stripped of control
+characters before they are printed, so a hostile value cannot inject ANSI
+sequences or rewrite the terminal.
 
 ## `.adlc/init-options.json`
 

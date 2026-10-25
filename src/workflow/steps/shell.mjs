@@ -4,6 +4,7 @@
 import { exec } from "node:child_process";
 import { StepBase, StepContext, StepResult, StepStatus, typeName } from "../base.mjs";
 import { evaluateExpression } from "../expressions.mjs";
+import { prepareStepOutput, readStepOutput, runContextEnv } from "./agent.mjs";
 
 export class ShellStep extends StepBase {
   static typeKey = "shell";
@@ -26,7 +27,11 @@ export class ShellStep extends StepBase {
       });
     }
 
-    const env = { ...process.env };
+    // Run context + structured output (ADR-444 §5), as for agent steps. A file
+    // from an earlier attempt is removed first so a retry never surfaces it.
+    const runEnv = runContextEnv(context, config);
+    prepareStepOutput(runEnv.ADLC_STEP_OUTPUT);
+    const env = { ...process.env, ...runEnv };
     if (context.workflowDir) {
       env.ADLC_WORKFLOW_DIR = context.workflowDir;
     } else {
@@ -80,6 +85,10 @@ export class ShellStep extends StepBase {
             output,
           });
         }
+      }
+      // Never overwrite what the step itself reports (exit_code, stdout, data…).
+      for (const [key, value] of Object.entries(readStepOutput(runEnv.ADLC_STEP_OUTPUT, reprId(config)))) {
+        if (!(key in output)) output[key] = value;
       }
       return new StepResult({ status: StepStatus.COMPLETED, output });
     } catch (err) {

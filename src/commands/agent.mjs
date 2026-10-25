@@ -7,6 +7,7 @@ import { normalizeLine } from "../run-events.mjs";
 import { renderTextEvent, handleInlineHitl } from "../render.mjs";
 import { appendFileSync } from "node:fs";
 import { spawnCompat } from "../utils/spawn.mjs";
+import { out, err, error, table, tint, combine, ACCENT } from "../ui/index.mjs";
 
 // ── run ────────────────────────────────────────────────────────────────
 export async function cmdAgentRun(runArgs) {
@@ -34,15 +35,15 @@ export async function cmdAgentRun(runArgs) {
   }
 
   if (!prompt) {
-    console.error("Error: task is required (pass a string, or '-' for stdin)");
+    error("task is required (pass a string, or '-' for stdin)");
     return 1;
   }
 
   let profile;
   try {
     profile = getRunProfile(agent);
-  } catch (err) {
-    console.error(err.message);
+  } catch (cause) {
+    err(cause.message);
     return 1;
   }
 
@@ -69,7 +70,7 @@ export async function cmdAgentRun(runArgs) {
 
   if (timeout) {
     timeoutHandle = setTimeout(() => {
-      console.error(`[run] timeout: killing agent after ${timeout}s`);
+      err(combine(tint("[run]", "gray"), ' ', tint(`timeout: killing agent after ${timeout}s`, "yellow")));
       kill("SIGTERM");
     }, timeout * 1000);
   }
@@ -90,8 +91,8 @@ export async function runAgentInteractive(agentKey, prompt, { cwd } = {}) {
   let profile;
   try {
     profile = getRunProfile(agentKey);
-  } catch (err) {
-    console.error(err.message);
+  } catch (cause) {
+    err(cause.message);
     return 1;
   }
   const spec = profile.interactive;
@@ -106,8 +107,8 @@ export async function runAgentInteractive(agentKey, prompt, { cwd } = {}) {
       env,
       stdio: "inherit",
     });
-    child.on("error", (err) => {
-      console.error(`[interactive] spawn error: ${err.message}`);
+    child.on("error", (cause) => {
+      err(combine(tint("[interactive]", "gray"), ' ', tint("spawn error:", "red"), ' ', cause.message));
       resolvePromise(1);
     });
     child.on("exit", (code, signal) => {
@@ -151,18 +152,39 @@ function parseRunArgs(argv) {
 
 // ── list ───────────────────────────────────────────────────────────────
 export function cmdAgentList() {
-  console.log("Supported agents:\n");
-  console.log("Key                 Name                Commands dir                    Format   Events  Run   Npx agent");
-  console.log("─────────────────── ─────────────────── ─────────────────────────────── ──────── ─────── ───── ─────────────");
-
+  const rows = [];
   for (const [key, agent] of Object.entries(AGENTS)) {
     if (key === "generic") continue;
     const hasRun = RUN_PROFILES[key] ? "yes" : "—";
-    console.log(
-      `${key.padEnd(20)}${agent.name.padEnd(20)}${(agent.commands_dir || "—").padEnd(31)}${agent.format.padEnd(9)}${(agent.events ? "yes" : "no").padEnd(8)}${hasRun.padEnd(6)}${agent.npx_agent || "universal"}`,
-    );
+    rows.push([
+      tint(key, ACCENT),
+      agent.name,
+      agent.commands_dir || "—",
+      agent.format,
+      agent.events ? "yes" : "no",
+      hasRun,
+      agent.npx_agent || "universal",
+    ]);
   }
 
-  console.log("\nUse -a <key> with 'skill add' or 'agent run'.");
+  out("");
+  out(
+    table({
+      title: "Supported agents",
+      columns: [
+        { header: "Key", style: ACCENT },
+        { header: "Name" },
+        { header: "Commands dir" },
+        { header: "Format", optional: true },
+        { header: "Events" },
+        { header: "Run" },
+        { header: "Npx agent", optional: true },
+      ],
+      rows,
+    }),
+  );
+  out("");
+  out(tint("Use -a <key> with 'skills add' or 'agent run'.", "gray"));
+  out("");
   return 0;
 }

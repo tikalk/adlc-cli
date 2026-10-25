@@ -18,6 +18,7 @@ import {
   printWorkflowHelp,
   printHelp,
 } from "./help.mjs";
+import { setColorMode, out, err, style, combine } from "./ui/index.mjs";
 
 // Single source of truth: package.json (drifts when hard-coded — v2.1.0
 // shipped printing "2.0.0"). dispatch.mjs lives in src/, so ../package.json
@@ -26,7 +27,32 @@ const { version: VERSION } = createRequire(import.meta.url)("../package.json");
 
 export async function dispatch(argv, mode = "legacy") {
   const parsed = parseArgs(argv);
+  applyColorMode(argv, parsed.flags);
   return mode === "cli" ? runNewTree(parsed, argv) : runLegacyTree(parsed);
+}
+
+// `--format json` output is a machine contract (ADR-406 freezes the JSONL
+// vocabulary), so color is refused outright — no ANSI byte may reach stdout.
+// `--no-color` / `--color` override TTY detection for human-facing runs.
+function applyColorMode(argv, flags) {
+  if (requestsJsonFormat(argv)) {
+    setColorMode("never");
+  } else if (flags.noColor) {
+    setColorMode("never");
+  } else if (flags.color) {
+    setColorMode("always");
+  } else {
+    setColorMode("auto");
+  }
+}
+
+function requestsJsonFormat(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--format=json") return true;
+    if (arg === "--format" && argv[i + 1] === "json") return true;
+  }
+  return false;
 }
 
 function runLegacyTree({ command, args, flags }) {
@@ -45,7 +71,7 @@ function runLegacyTree({ command, args, flags }) {
       printHelp();
       return 0;
     default:
-      console.error(`Unknown command: "${command}"`);
+      err(combine(style("Unknown", "red"), ' ', style(`command: "${command}"`, "gray")));
       printHelp();
       return 1;
   }
@@ -108,7 +134,7 @@ async function runNewTree({ command, args, flags }, argv) {
           printSkillsHelp();
           return 0;
         default:
-          console.error(`Unknown skills command: "${sub}"`);
+          err(combine(style("Unknown", "red"), ' ', style(`skills command: "${sub}"`, "gray")));
           printSkillsHelp();
           return 1;
       }
@@ -127,7 +153,7 @@ async function runNewTree({ command, args, flags }, argv) {
           printTeamHelp();
           return 0;
         default:
-          console.error(`Unknown team command: "${sub}"`);
+          err(combine(style("Unknown", "red"), ' ', style(`team command: "${sub}"`, "gray")));
           printTeamHelp();
           return 1;
       }
@@ -142,7 +168,7 @@ async function runNewTree({ command, args, flags }, argv) {
           printFactoryHelp();
           return 0;
         default:
-          console.error(`Unknown factory command: "${sub}"`);
+          err(combine(style("Unknown", "red"), ' ', style(`factory command: "${sub}"`, "gray")));
           printFactoryHelp();
           return 1;
       }
@@ -159,7 +185,7 @@ async function runNewTree({ command, args, flags }, argv) {
           printAgentHelp();
           return 0;
         default:
-          console.error(`Unknown agent command: "${sub}"`);
+          err(combine(style("Unknown", "red"), ' ', style(`agent command: "${sub}"`, "gray")));
           printAgentHelp();
           return 1;
       }
@@ -181,7 +207,7 @@ async function runNewTree({ command, args, flags }, argv) {
           printWorkspaceHelp();
           return 0;
         default:
-          console.error(`Unknown workspace command: "${sub}"`);
+          err(combine(style("Unknown", "red"), ' ', style(`workspace command: "${sub}"`, "gray")));
           printWorkspaceHelp();
           return 1;
       }
@@ -204,19 +230,19 @@ async function runNewTree({ command, args, flags }, argv) {
           printWorkflowHelp();
           return 0;
         default:
-          console.error(`Unknown workflow command: "${sub}"`);
+          err(combine(style("Unknown", "red"), ' ', style(`workflow command: "${sub}"`, "gray")));
           printWorkflowHelp();
           return 1;
       }
     }
     case "version":
-      console.log(`adlc-cli ${VERSION}`);
+      out(`adlc-cli ${VERSION}`);
       return 0;
     case "help":
       printCliHelp();
       return 0;
     default:
-      console.error(`Unknown command: "${command}"`);
+      err(combine(style("Unknown", "red"), ' ', style(`command: "${command}"`, "gray")));
       printCliHelp();
       return 1;
   }
@@ -280,6 +306,10 @@ function parseArgs(argv) {
       flags.link = true;
     } else if (arg === "--ignore-only") {
       flags.ignoreOnly = true;
+    } else if (arg === "--no-color") {
+      flags.noColor = true;
+    } else if (arg === "--color") {
+      flags.color = true;
     } else if (!arg.startsWith("-")) {
       args.push(arg);
     }

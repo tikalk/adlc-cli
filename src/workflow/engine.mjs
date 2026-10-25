@@ -628,6 +628,10 @@ export class WorkflowEngine {
   constructor(projectRoot = null) {
     this.projectRoot = projectRoot ?? ".";
     this.onStepStart = null; // (stepId, label) => void
+    // Fired once a step reaches a terminal-ish state: (stepId, label, status,
+    // error). The CLI installs a step-tracker renderer here; the JSONL sink
+    // stays on onEvent.
+    this.onStepComplete = null; // (stepId, label, status, error) => void
     // Structured event sink (stepId-agnostic lifecycle telemetry): the CLI
     // installs a JSONL emitter under --format json; library default silent.
     this.onEvent = null; // (type, payload) => void
@@ -937,6 +941,9 @@ export class WorkflowEngine {
         });
       }
       this.emit("step_completed", { run_id: state.runId, step_id: stepId, step_type: stepType, status: result.status });
+      if (this.onStepComplete !== null) {
+        this.onStepComplete(stepId, label, result.status, result.error);
+      }
 
       if (result.status === StepStatus.PAUSED) {
         state.status = RunStatus.PAUSED;
@@ -1011,6 +1018,9 @@ export class WorkflowEngine {
         state.error = result.error;
         await state.appendLog({ event: "step_failed", step_id: stepId, error: result.error });
         await state.save();
+        if (this.onStepComplete !== null) {
+          this.onStepComplete(stepId, label, result.status, result.error);
+        }
         return;
       }
 
