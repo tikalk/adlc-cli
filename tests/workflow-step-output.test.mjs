@@ -323,7 +323,13 @@ test("O6: a stale shell step output file is removed before the step runs", { ski
 
 // ── the factory workflow publishes itself (ADR-431-amendment §3a) ───────────
 
-async function runFactory({ helper } = {}) {
+// Default run-branch helper: switch to (or create) the issue's run branch.
+const RUN_BRANCH_HELPER = `#!/usr/bin/env bash
+git switch -q factory/intent/p-12 2>/dev/null || git switch -q -c factory/intent/p-12
+echo factory/intent/p-12
+`;
+
+async function runFactory({ helper, runBranch = RUN_BRANCH_HELPER } = {}) {
   const bin = installFakeAgent();
   const dir = project();
   execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dir });
@@ -333,6 +339,7 @@ async function runFactory({ helper } = {}) {
     const h = join(dir, ".agents", "skills", "factory-mission", "scripts", "bash", "open-mr.sh");
     mkdirSync(dirname(h), { recursive: true });
     writeFileSync(h, helper);
+    if (runBranch) writeFileSync(join(dirname(h), "run-branch.sh"), runBranch);
   }
   const wf = join(tempDir("factory-wf-"), "workflow.yml");
   writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
@@ -343,7 +350,7 @@ async function runFactory({ helper } = {}) {
     const events = [];
     engine.onEvent = (e) => events.push(e);
     const state = await engine.execute(engine.loadWorkflow(wf), { issue_ref: "g/p#12", verdict: "" }, "r12", STEP_REGISTRY);
-    return { state, paused: events.find((e) => e.type === "gate_paused") };
+    return { state, paused: events.find((e) => e.type === "gate_paused"), dir };
   });
 }
 
@@ -370,4 +377,48 @@ test("O7: without the open-mr helper the publish step is skipped and the gate ha
 test("O7: a refusing open-mr fails the run (fail-closed)", { skip: !POSIX }, async () => {
   const { state } = await runFactory({ helper: "#!/usr/bin/env bash\necho 'open-mr: tracker token lacks the api scope' >&2\nexit 2\n" });
   assert.equal(state.status, RunStatus.FAILED);
+});
+
+test("O7: a refusing open-mr's stderr is in the step error", { skip: !POSIX }, async () => {
+  const { state } = await runFactory({ helper: "#!/usr/bin/env bash\necho 'open-mr: tracker token lacks the api scope' >&2\nexit 2\n" });
+  assert.match(state.stepResults["publish-product"].error, /exited with code 2\. stderr: open-mr: tracker token lacks the api scope/);
+});
+
+// ── the engine owns the run branch (ADR-431-amendment §1) ───────────────────
+
+// open-mr as shipped: refuses anything but an intent run branch.
+const STRICT_OPEN_MR = `#!/usr/bin/env bash
+b="$(git rev-parse --abbrev-ref HEAD)"
+case "$b" in factory/intent/*) ;; *) echo "open-mr: not on an intent run branch (factory/intent/*): '$b'" >&2; exit 2 ;; esac
+printf '{"mr_url":"https://gl.test/g/p/-/merge_requests/45"}' > "$ADLC_STEP_OUTPUT"
+`;
+
+test("O8: the factory workflow checks out the run branch before the first agent step", { skip: !POSIX }, async () => {
+  const { state, dir } = await runFactory({ helper: STRICT_OPEN_MR });
+  const ids = Object.keys(state.stepResults);
+  assert.equal(ids[0], "run-branch");
+  assert.equal(state.stepResults["run-branch"].status, "completed");
+  assert.ok(ids.indexOf("run-branch") < ids.indexOf("intent-product"));
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir }).toString().trim(), "factory/intent/p-12");
+});
+
+test("O8: publish switches to the run branch even when the intent step left the base branch checked out", { skip: !POSIX }, async () => {
+  // adlc-workspace#12 drill (run 3833ce28): an intent step that changed nothing
+  // returned on the base branch and open-mr refused it. The engine's run-branch
+  // step only runs once, so simulate the agent switching back to the base.
+  const runBranch = `#!/usr/bin/env bash
+if [ "$ADLC_STEP_ID" = run-branch ]; then git switch -q -c factory/intent/p-12 && git switch -q - ; exit 0; fi
+git switch -q factory/intent/p-12
+`;
+  const { state, paused } = await runFactory({ helper: STRICT_OPEN_MR, runBranch });
+  assert.equal(state.stepResults["publish-product"].status, "completed");
+  assert.equal(paused.mr_link, "https://gl.test/g/p/-/merge_requests/45");
+});
+
+test("O8: without the run-branch helper the run-branch and publish steps are skipped", { skip: !POSIX }, async () => {
+  const { state, paused } = await runFactory({ helper: STRICT_OPEN_MR, runBranch: null });
+  assert.equal(state.status, RunStatus.PAUSED);
+  assert.equal(state.stepResults["run-branch"].status, "completed");
+  assert.equal(state.stepResults["publish-product"].status, "completed");
+  assert.ok(!paused.mr_link);
 });

@@ -69,7 +69,7 @@ export class ShellStep extends StepBase {
       if (err) {
         return new StepResult({
           status: StepStatus.FAILED,
-          error: `Shell command exited with code ${output.exit_code}.`,
+          error: `Shell command exited with code ${output.exit_code}.${stderrTail(output.stderr)}`,
           output,
         });
       }
@@ -133,6 +133,16 @@ export class ShellStep extends StepBase {
 
 function reprId(config) {
   return `'${config.id ?? "?"}'`;
+}
+
+// The last stderr lines of a failed step, for its error message: the captured
+// output stays in the step result, but the error is what logs and notifiers show.
+const STDERR_TAIL_CHARS = 500;
+function stderrTail(stderr) {
+  const text = String(stderr ?? "").trim();
+  if (!text) return "";
+  const tail = text.length > STDERR_TAIL_CHARS ? `…${text.slice(-STDERR_TAIL_CHARS)}` : text;
+  return ` stderr: ${tail}`;
 }
 
 function execAsync(cmd, opts) {
