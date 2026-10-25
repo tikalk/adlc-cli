@@ -483,6 +483,10 @@ test("redactSecrets masks URL userinfo, token formats and secret env values", as
   assert.equal(redactSecrets("value plain-secret-abcdef here", env), "value *** here");
   assert.equal(redactSecrets("cwd /home/runner-long-path", env), "cwd /home/runner-long-path");
   assert.equal(redactSecrets("Authorization: Bearer abc.def", env), "Authorization: Bearer ***");
+  assert.equal(redactSecrets("Authorization: token ghx_short", env), "Authorization: token ***");
+  assert.equal(redactSecrets("authorization: Bot opaque-value", env), "authorization: Bot ***");
+  assert.equal(redactSecrets("Authorization: opaque123 trailing", env), "Authorization: *** trailing");
+  assert.equal(redactSecrets("PRIVATE-TOKEN: abc123 extra", env), "PRIVATE-TOKEN: *** extra");
   assert.equal(redactSecrets("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig", env), "jwt ***");
   assert.equal(redactSecrets("ff glffct-abcdefghij12345", env), "ff ***");
   assert.equal(redactSecrets("job opaque-jwt-value-1234", { CI_JOB_JWT_V2: "opaque-jwt-value-1234" }), "job ***");

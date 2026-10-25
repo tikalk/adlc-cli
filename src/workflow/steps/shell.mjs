@@ -164,13 +164,15 @@ const TOKEN_PATTERNS = [
   /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
 ];
 
-/** Mask credentials in text bound for logs or notifiers. */
+/** Mask credentials in text bound for logs, notifiers or persisted run state. */
 export function redactSecrets(text, env = process.env) {
   let out = text
     // userinfo in URLs: https://user:token@host → https://***@host
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1***@")
-    // Authorization-style headers and key=value pairs
-    .replace(/\b(authorization|private-token|x-api-key)(\s*[:=]\s*)(bearer\s+|basic\s+)?\S+/gi, "$1$2$3***");
+    // Authorization-style headers and key=value pairs. Only known auth
+    // schemes are kept; any other word after the separator is the credential
+    // itself (so `PRIVATE-TOKEN: abc def` masks `abc`, not `def`).
+    .replace(/\b(authorization|private-token|x-api-key)(\s*[:=]\s*)((?:bearer|basic|token|bot|digest|negotiate|apikey|key)\s+)?\S+/gi, "$1$2$3***");
   for (const re of TOKEN_PATTERNS) out = out.replace(re, "***");
   for (const [name, value] of Object.entries(env)) {
     if (!value || value.length < 8 || !SECRET_ENV_NAME.test(name)) continue;
