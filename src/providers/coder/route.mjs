@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { parseYaml } from "../utils/yaml.mjs";
+import { parseYaml } from "../../utils/yaml.mjs";
 import {
   validateWorkspaceConfig,
   expandWorkspaceText,
@@ -15,12 +15,11 @@ import {
   scrubSecretValues,
   referencedSecretsEnv,
   remoteInputs,
-} from "./transport.mjs";
-import { createCoderProvider } from "./coder.mjs";
-import { createCoderSshTransport } from "./coder-ssh.mjs";
+} from "../transport.mjs";
+import { createCoderProvider } from "./handle.mjs";
+import { createCoderSshTransport } from "./ssh.mjs";
 
 const WORKSPACE_FILE = ".adlc/workspace.yml";
-const LIVE_MSG = "not implemented: live coder transport";
 
 // Transport selection.
 //
@@ -175,8 +174,9 @@ function stripProviderArgs(args = []) {
 // scrub machinery can use them as needles.
 function scrubValues(values) {
   const out = {};
+  let index = 0;
   for (const value of values ?? []) {
-    if (typeof value === "string" && value.length >= 3) out[`payload:${out.length}`] = value;
+    if (typeof value === "string" && value.length >= 3) out[`payload:${index++}`] = value;
   }
   return out;
 }
@@ -223,16 +223,6 @@ async function streamRemote(provider, handle, payload, secrets = {}) {
     console.error(`Error: remote command failed (exit ${exitCode})`);
   }
   return { exitCode, stderr };
-}
-
-function liveRequired(argv = []) {
-  if (argv.includes("--live")) return true;
-  return false;
-}
-
-function failLive(what) {
-  console.error(`${LIVE_MSG} (${what} requires live SSH)`);
-  return 1;
 }
 
 async function loadWorkspaceSource(source, projectRoot) {
@@ -310,7 +300,6 @@ export async function cmdCoderWorkspaceSetup(args, flags, argv = []) {
   // placeholders are gone, and nothing would be forwarded to the remote.
   const referenced = collectReferencedVars(parseYaml(content));
   const { transport } = resolveCoderTransport();
-  if (!transport) return failLive("workspace setup");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   const requestedRaw = tryExplicitWorkspaceName(argv ?? []);
   const requested = typeof requestedRaw === "string" ? requestedRaw : null;
@@ -399,7 +388,6 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
     return 1;
   }
   const { transport } = resolveCoderTransport();
-  if (!transport) return failLive("agent run");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   const target = await resolveTargetWorkspace(provider, argv ?? [], "agent run");
   if (!target.ok) {
@@ -471,7 +459,6 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     inputs[pair.slice(0, eq)] = pair.slice(eq + 1);
   }
   const { transport } = resolveCoderTransport();
-  if (!transport) return failLive("workflow run");
   const provider = createCoderProvider({ transport, workspacesDir: ".adlc/workspaces" });
   const target = await resolveTargetWorkspace(provider, rawArgv ?? [], "workflow run");
   if (!target.ok) {

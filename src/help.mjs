@@ -4,6 +4,7 @@
 // the same layout the specify CLI uses for its help output.
 
 import { out, panel, style, tint, combine, wrapText, terminalWidth, ACCENT } from "./ui/index.mjs";
+import { providerHelp } from "./providers/registry.mjs";
 
 /**
  * Render a titled panel of body lines.
@@ -244,10 +245,7 @@ export function printAgentHelp() {
   );
   out(
     section("Provider Flags (remote transport)", [
-      ...pairs([
-        ["--provider coder", "Run the task on the remote workspace via the provider transport (SSH). Secrets stay env-only and are redacted from the output."],
-        ["--workspace <name>", "Target workspace (default: default)"],
-      ]),
+      ...pairs(providerHelp("agent")),
     ]),
   );
   out("");
@@ -298,10 +296,7 @@ export function printWorkspaceHelp() {
   );
   out(
     section("Provider Flags (remote transport)", [
-      ...pairs([
-        ["--provider coder", "Route through the coder provider transport (SSH). The workspace file stays location-free — a 'provider:' key inside it is rejected, never ignored."],
-        ["--workspace <name>", "Target workspace (default: the workspace file's name)."],
-      ]),
+      ...pairs(providerHelp("workspace")),
     ]),
   );
   out(
@@ -310,7 +305,7 @@ export function printWorkspaceHelp() {
         ["adlc-cli workspace setup", "use .adlc/workspace.yml"],
         ["adlc-cli workspace setup https://host/w.yml", "fetch workspace file over HTTP"],
         ["adlc-cli workspace setup -a opencode --dry-run", "preview planned actions"],
-        ["adlc-cli workspace setup --provider coder", "remote workspace setup"],
+        ...providerHelp("examples"),
       ]),
     ]),
   );

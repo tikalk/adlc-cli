@@ -103,11 +103,11 @@ Contract:
 
 - **Location-free workspace files** — a `provider:` key (at any level) inside a workspace file is **rejected**, never ignored; the provider is selected only by the flag.
 - **`${VAR}` expansion, fail-fast** — a missing or empty variable fails with its name. Process-env values expand in place; values sourced from `secrets.env`/Docker secrets are never inlined into the config — they travel only in the transport's `vars` channel, referenced-only. A secret-sourced variable may not *name* a workspace (it would leak into the handle filename).
-- **Secrets env-only** — `secrets.env` (gitignored) → Docker secrets → process env. Referenced values are forwarded to the remote; the outbound stream is scrubbed (referenced values, `--input` values and the task text never reach the terminal verbatim).
+- **Secrets env-only on the wire** — `secrets.env` (gitignored) → Docker secrets → process env. Referenced values are forwarded to the remote; the outbound stream is scrubbed (referenced values, `--input` values and the task text never reach the terminal verbatim). On the remote, `workspace setup` deliberately persists the referenced vars at `$HOME/.adlc/secrets.env` (mode 0600) so the developer's later session inherits them; that is at-rest storage on a developer-owned workspace, not an env-only-at-rest claim.
 - **Recursion guard** — at most 2 hops (`ADLC_HOP_DEPTH`); a malformed, negative or whitespace depth fails closed.
 - **Loud failure** — a remote non-zero exit (its code is propagated), a corrupt handle, a missing handle, an invalid workspace file, or a transport that returns no result exits non-zero with the remote's stderr. There is no silent fallback.
 
-The live SSH transport is not implemented yet: `--live` (or `ADLC_CODER_LIVE=1`) exits non-zero with `not implemented: live coder transport` rather than pretending to provision. Tests run against the mock transport.
+The live SSH transport is the default: `--provider coder` provisions or reuses a real Coder workspace and runs the step over `coder ssh`. The mock transport is opt-in for offline contract tests via `ADLC_CODER_MOCK=1` (or an injected `globalThis.__ADLC_CODER_TRANSPORT__`); there is no `--live` flag and `ADLC_CODER_LIVE` is not read. The default is deliberate: a command that asks for a remote workspace must never silently get a mock.
 
 ### Agent execution
 

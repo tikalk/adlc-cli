@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { resumeRun, normalizeWorkspaceName } from "./transport.mjs";
+import { resumeRun, normalizeWorkspaceName } from "../transport.mjs";
 
 export { resumeRun };
 export const resume = resumeRun;
@@ -70,6 +70,21 @@ export function createCoderProvider({ transport, workspacesDir = ".adlc/workspac
 
   async function* runStream(handle, input) {
     const h = typeof handle === "string" ? handles.get(handle) ?? { name: handle } : handle;
+    if (typeof transport.execStream === "function") {
+      const iterator = transport.execStream(h, input);
+      let step = await iterator.next();
+      while (!step.done) {
+        if (typeof step.value === "string" && step.value !== "") yield step.value;
+        step = await iterator.next();
+      }
+      const res = step.value ?? {};
+      return {
+        exitCode: Number.isFinite(Number(res?.exitCode)) ? Number(res.exitCode) : 0,
+        stderr: String(res?.stderr ?? ""),
+      };
+    }
+    // Mock/injected transports only implement exec; preserve the contract by
+    // replaying its buffered stdout line by line.
     const res = await transport.exec(h, input);
     if (!res || typeof res !== "object") {
       throw new Error("transport returned no result — the remote call cannot be trusted");

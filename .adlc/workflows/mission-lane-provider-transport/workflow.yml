@@ -4,10 +4,10 @@ workflow:
   version: "1.1.0"
 description: >-
   Validation mission for the ADR-007 remote lane — workspace setup is done by
-  adlc-cli, not by a skill-side script. Scope: the transport CONTRACT under the
-  mock transport (provision-or-reuse, name expansion, secret channel, loud
-  failure). The live SSH transport is not implemented, so this mission proves
-  the delegation contract, not a real remote workspace.
+  adlc-cli, not by a skill-side script. Scope: the transport CONTRACT
+  (provision-or-reuse, name expansion, secret channel, loud failure) against a
+  real Coder workspace by default. Set ADLC_CODER_MOCK=1 for the offline
+  contract mock; the live SSH transport is the default, not a stub.
 steps:
   - id: provision
     type: shell

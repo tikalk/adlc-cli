@@ -19,6 +19,12 @@ import {
   printHelp,
 } from "./help.mjs";
 import { setColorMode, out, err, style, combine } from "./ui/index.mjs";
+import {
+  resolveProvider,
+  providerNames,
+  providerCommands,
+  providerRoutes,
+} from "./providers/registry.mjs";
 
 // Single source of truth: package.json (drifts when hard-coded — v2.1.0
 // shipped printing "2.0.0"). dispatch.mjs lives in src/, so ../package.json
@@ -78,44 +84,35 @@ function runLegacyTree({ command, args, flags }) {
 }
 
 async function runNewTree({ command, args, flags }, argv) {
-  // `--provider` on the workspace/agent/workflow commands selects the remote
-  // transport. An unknown value must be refused — silently running locally
-  // would hand the operator a local run they asked for remotely.
-  const providerCommands = ["workspace", "agent", "run", "workflow"];
-  if (flags?.provider && flags.provider !== "coder" && providerCommands.includes(command)) {
-    console.error(`Error: unknown --provider "${flags.provider}" (known: coder) for '${command}'.`);
+  // `--provider` selects a remote transport. Resolve it from the registry:
+  // adding a provider must not require editing this generic dispatcher.
+  // An unknown value on a provider-capable command must be refused —
+  // silently running locally would hand the operator a local run they asked
+  // for remotely.
+  const providerCapableCommands = providerCommands();
+  const provider = flags?.provider ? resolveProvider(flags.provider) : null;
+  if (flags?.provider && !provider && providerCapableCommands.includes(command)) {
+    console.error(
+      `Error: unknown --provider "${flags.provider}" ` +
+      `(known: ${providerNames().join(", ")}) for '${command}'.`
+    );
     return 1;
   }
-  if (flags?.provider === "coder") {
-    const { cmdCoderWorkspaceSetup, cmdCoderAgentRun, cmdCoderWorkflowRun } = await import("./providers/coder-route.mjs");
-    let routed = false;
-    if (command === "workspace" && (args[0] ?? "status") === "setup") {
-      routed = true;
-      return cmdCoderWorkspaceSetup(args.slice(1), flags, argv);
-    }
-    if (command === "agent" && (args[0] ?? "help") === "run") {
-      routed = true;
-      const rest = argv.slice(argv.indexOf("run") + 1);
-      return cmdCoderAgentRun(rest, argv);
-    }
-    if (command === "run") {
-      routed = true;
-      return cmdCoderAgentRun(argv.slice(1), argv);
-    }
-    if (command === "workflow" && (args[0] ?? "help") === "run") {
-      routed = true;
-      const workflowArgv = argv.slice(argv.indexOf("workflow") + 1);
-      return cmdCoderWorkflowRun(args.slice(1), flags, workflowArgv);
-    }
-    if (!routed) {
-      // `--provider coder` on a command with no provider route would silently
-      // run locally — the operator asked for a remote workspace.
+  if (provider) {
+    const route = provider.routes?.[command];
+    const sub = command === "run" ? "*" : (args[0] ?? "");
+    const handler = route?.[sub];
+    if (!handler) {
+      // A known provider on a command it cannot serve must not silently run
+      // locally — the operator asked for a remote workspace.
       console.error(
-        `Error: --provider coder is not supported for '${command}` +
-        `${args[0] ? ` ${args[0]}` : ""}' (provider routes: workspace setup, agent run, run, workflow run).`
+        `Error: --provider ${provider.name} is not supported for '${command}` +
+        `${args[0] ? ` ${args[0]}` : ""}' ` +
+        `(provider routes: ${providerRoutes(provider).join(", ")}).`
       );
       return 1;
     }
+    return handler({ command, args, flags, argv });
   }
   switch (command) {
     case "skills": {

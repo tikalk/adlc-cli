@@ -6,11 +6,13 @@
 // SKIPPED on Windows: relies on bash script faking `coder` CLI.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createCoderSshTransport } from "../src/providers/coder-ssh.mjs";
+import { createCoderSshTransport } from "../src/providers/coder/ssh.mjs";
+import { createCoderProvider } from "../src/providers/coder/handle.mjs";
 
 if (process.platform === "win32") {
   // eslint-disable-next-line no-console
@@ -19,11 +21,28 @@ if (process.platform === "win32") {
 }
 
 /** A fake `coder` CLI. `record` collects what the transport asked for. */
-function fakeCoder(dir, { status = "running", sshExit = 0, sshStderr = "", sshStdout = "" } = {}) {
+function fakeCoder(
+  dir,
+  {
+    status = "running",
+    sshExit = 0,
+    sshStderr = "",
+    sshStdout = "",
+    sshStdout2 = "",
+    sshNoStdin = false,
+    sshDelayMs = "",
+    stepExit = null,
+    stepStderr = "",
+    listWorkspaces = null,
+  } = {}
+) {
   const record = { creates: [], shows: [], ssh: [], stdin: [] };
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
   const script = join(bin, "coder");
+  const listBody = JSON.stringify(
+    listWorkspaces ?? [{ name: "demo", latest_build: { status } }]
+  );
   writeFileSync(script, `#!/usr/bin/env bash
 set -u
 case "\${1:-}" in
@@ -33,13 +52,28 @@ case "\${1:-}" in
     exit 0 ;;
   list)
     echo "list $*" >> "$FAKE_CODER_RECORD"
-    printf '%s' '${JSON.stringify([{ name: "demo", latest_build: { status } }])}'
+    printf '%s' '${listBody}'
     exit 0 ;;
   ssh)
     shift
     echo "ssh $*" >> "$FAKE_CODER_RECORD"
+    _n=$(cat "$FAKE_CODER_RECORD.ssh" 2>/dev/null || echo 0)
+    _n=$((_n + 1))
+    echo "$_n" > "$FAKE_CODER_RECORD.ssh"
+    if [ -n "\${FAKE_CODER_SSH_NO_STDIN:-}" ]; then
+      printf '%s' '${sshStderr}' >&2
+      exit ${sshExit}
+    fi
     cat >> "$FAKE_CODER_STDIN"
+    if [ -n "\${FAKE_CODER_STEP_EXIT:-}" ] && [ "$_n" -ge 2 ]; then
+      printf '%s' "\${FAKE_CODER_STEP_STDERR:-}" >&2
+      exit "$FAKE_CODER_STEP_EXIT"
+    fi
     printf '%s' '${sshStdout}'
+    if [ "$_n" -ge 2 ] && [ -n "\${FAKE_CODER_SSH_DELAY_MS:-}" ]; then
+      sleep "\${FAKE_CODER_SSH_DELAY_MS}"
+    fi
+    printf '%s' '${sshStdout2}'
     printf '%s' '${sshStderr}' >&2
     exit ${sshExit} ;;
   *)
@@ -65,9 +99,21 @@ async function withFakeCoder(options, fn) {
   const prevPath = process.env.PATH;
   const prevRecord = process.env.FAKE_CODER_RECORD;
   const prevStdin = process.env.FAKE_CODER_STDIN;
+  const extraEnv = {
+    FAKE_CODER_STEP_EXIT: options?.stepExit,
+    FAKE_CODER_STEP_STDERR: options?.stepStderr,
+    FAKE_CODER_SSH_NO_STDIN: options?.sshNoStdin ? "1" : undefined,
+    FAKE_CODER_SSH_DELAY_MS: options?.sshDelayMs,
+  };
+  const prevExtra = {};
   process.env.PATH = `${bin}:/usr/bin:/bin`;
   process.env.FAKE_CODER_RECORD = recordFile;
   process.env.FAKE_CODER_STDIN = stdinFile;
+  for (const [key, value] of Object.entries(extraEnv)) {
+    prevExtra[key] = process.env[key];
+    if (value === undefined || value === null || value === "") delete process.env[key];
+    else process.env[key] = String(value);
+  }
   try {
     return await fn(record);
   } finally {
@@ -76,6 +122,10 @@ async function withFakeCoder(options, fn) {
     else process.env.FAKE_CODER_RECORD = prevRecord;
     if (prevStdin === undefined) delete process.env.FAKE_CODER_STDIN;
     else process.env.FAKE_CODER_STDIN = prevStdin;
+    for (const [key, value] of Object.entries(prevExtra)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 
@@ -158,17 +208,23 @@ test("live transport: the step script is op-specific and travels in the envelope
   });
 });
 
-test("live transport: a failing remote propagates its exit code and stderr", async () => {
-  await withFakeCoder({ sshExit: 7, sshStderr: "fatal: clone failed\n" }, async () => {
-    const transport = createCoderSshTransport();
-    const result = await transport.exec({ name: "demo" }, JSON.stringify({ op: "agent.run", task: "x" }));
-    assert.equal(result.exitCode, 7, "the remote's exit code must be propagated");
-    assert.match(result.stderr, /fatal: clone failed/);
-  });
+test("live transport: a failing remote step propagates its exit code and stderr", async () => {
+  await withFakeCoder(
+    { stepExit: 7, stepStderr: "fatal: clone failed\n" },
+    async () => {
+      const transport = createCoderSshTransport();
+      const result = await transport.exec(
+        { name: "demo" },
+        JSON.stringify({ op: "agent.run", task: "x" })
+      );
+      assert.equal(result.exitCode, 7, "the remote's exit code must be propagated");
+      assert.match(result.stderr, /fatal: clone failed/);
+    }
+  );
 });
 
 test("live transport: the transport file exists and exports the factory", () => {
-  assert.ok(existsSync(join(process.cwd(), "src/providers/coder-ssh.mjs")));
+  assert.ok(existsSync(join(process.cwd(), "src/providers/coder/ssh.mjs")));
 });
 
 test("live transport: the referenced vars are persisted for the developer's later session", async () => {
@@ -195,55 +251,199 @@ test("live transport: the referenced vars are persisted for the developer's late
   });
 });
 
-test("live transport: a deleted workspace is reported, never silently re-created", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "adlc-gone-"));
+const hasJq = spawnSync("jq", ["--version"], { encoding: "utf-8" }).status === 0;
+const needsJq = hasJq ? false : "jq is required to execute the generated remote step";
+
+function decodeEnvelope(stdinFile) {
+  const lines = readFileSync(stdinFile, "utf-8").split("\n");
+  return {
+    payload: JSON.parse(Buffer.from(lines[0], "base64").toString("utf-8")),
+    step: Buffer.from(lines[1], "base64").toString("utf-8"),
+  };
+}
+
+// Execute the generated remote step locally with a stub adlc-cli. This
+// exercises the shell contract (argv, env) rather than only grepping source.
+function runGeneratedStep(step, payload) {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-step-"));
   const bin = join(dir, "bin");
+  const remote = join(dir, "remote");
   mkdirSync(bin, { recursive: true });
-  const recordFile = join(dir, "record.txt");
-  const script = join(bin, "coder");
+  mkdirSync(remote, { recursive: true });
+  const stub = join(bin, "adlc-cli");
   writeFileSync(
-    script,
-    `#!/usr/bin/env bash
-set -u
-case "\${1:-}" in
-  create)
-    echo "create $*" >> "$FAKE_CODER_RECORD"
-    exit 0 ;;
-  list)
-    printf '%s' '[{"name":"demo","latest_build":{"status":"running"}}]'
-    exit 0 ;;
-  ssh)
-    shift
-    cat >> "$FAKE_CODER_STDIN"
-    echo "Resource not found or you do not have access to this resource" >&2
-    exit 1 ;;
-  *) exit 0 ;;
-esac
+    stub,
+    `#!/usr/bin/env sh
+printf 'HOP[%s]\\n' "\${ADLC_HOP_DEPTH:-unset}"
+printf 'ARG[%s]\\n' "$@"
 `
   );
-  chmodSync(script, 0o755);
-  writeFileSync(recordFile, "");
-  const prevPath = process.env.PATH;
-  const prevRecord = process.env.FAKE_CODER_RECORD;
-  process.env.PATH = `${bin}:${prevPath}`;
-  process.env.FAKE_CODER_RECORD = recordFile;
+  chmodSync(stub, 0o755);
+  const stepPath = join(remote, "step.sh");
+  writeFileSync(stepPath, step);
+  writeFileSync(join(remote, "payload.json"), JSON.stringify(payload));
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  delete env.ADLC_HOP_DEPTH;
   try {
-    const transport = createCoderSshTransport({ pollMs: 10 });
-    const result = await transport.exec(
-      { name: "demo" },
-      JSON.stringify({ op: "agent.run", task: "x", vars: {} })
-    );
-    assert.notEqual(result.exitCode, 0, "a missing workspace is a failure, not a success");
-    assert.match(result.stderr, /was NOT re-created/i);
-    assert.match(result.stderr, /stale/i);
-    const calls = readFileSync(recordFile, "utf-8");
-    assert.ok(
-      !/create demo/.test(calls),
-      "a deliberately torn-down workspace must never be resurrected"
-    );
+    const r = spawnSync("sh", [stepPath, remote], { encoding: "utf-8", env });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   } finally {
-    process.env.PATH = prevPath;
-    if (prevRecord === undefined) delete process.env.FAKE_CODER_RECORD;
-    else process.env.FAKE_CODER_RECORD = prevRecord;
+    rmSync(dir, { recursive: true, force: true });
   }
+}
+
+test("live transport: an early-exiting child reports its verdict instead of crashing on EPIPE", async () => {
+  await withFakeCoder(
+    { sshNoStdin: true, sshExit: 3, sshStderr: "auth failed before stdin\n" },
+    async () => {
+      const transport = createCoderSshTransport();
+      // > the 64 KiB pipe buffer, the threshold from the review.
+      const result = await transport.exec(
+        { name: "demo" },
+        JSON.stringify({ op: "agent.run", task: "x".repeat(200 * 1024), vars: {} })
+      );
+      assert.equal(result.exitCode, 3, "the child's exit code must survive the EPIPE");
+      assert.match(result.stderr, /auth failed before stdin/);
+      assert.ok(!/stale|no longer exists/i.test(result.stderr));
+    }
+  );
+});
+
+test("live transport: provider runStream yields the first line before the remote exits", async () => {
+  await withFakeCoder(
+    { sshStdout: "first-line\n", sshStdout2: "second-line\n", sshDelayMs: "0.6" },
+    async () => {
+      const provider = createCoderProvider({
+        transport: createCoderSshTransport(),
+        workspacesDir: join(tmpdir(), "adlc-stream-ws"),
+      });
+      const started = Date.now();
+      const iter = provider.runStream(
+        { name: "demo" },
+        JSON.stringify({ op: "agent.run", task: "stream", vars: {} })
+      );
+      const first = await iter.next();
+      const firstMs = Date.now() - started;
+      assert.equal(first.done, false);
+      assert.equal(first.value, "first-line");
+      assert.ok(
+        firstMs < 500,
+        `runStream buffered the first line for ${firstMs}ms instead of streaming it`
+      );
+      const second = await iter.next();
+      assert.equal(second.value, "second-line");
+      const done = await iter.next();
+      assert.equal(done.done, true);
+      assert.equal(done.value.exitCode, 0);
+    }
+  );
+});
+
+test("live transport: a step's 'not found' is a step failure, never a stale handle", async () => {
+  await withFakeCoder(
+    { stepExit: 127, stepStderr: "sh: adlc-cli: not found\n" },
+    async (record) => {
+      const transport = createCoderSshTransport();
+      const result = await transport.exec(
+        { name: "demo" },
+        JSON.stringify({ op: "agent.run", task: "x", vars: {} })
+      );
+      assert.equal(result.exitCode, 127);
+      assert.match(result.stderr, /not found/);
+      assert.ok(
+        !/stale|no longer exists/i.test(result.stderr),
+        `a missing binary must not delete a healthy handle: ${result.stderr}`
+      );
+      const calls = readFileSync(record.recordFile, "utf-8");
+      assert.ok(!/\blist\b/.test(calls), "a step failure must not trigger a provider lookup");
+    }
+  );
+});
+
+test("live transport: a coder ssh write failure is not stale when the provider confirms the workspace", async () => {
+  await withFakeCoder(
+    {
+      sshNoStdin: true,
+      sshExit: 1,
+      sshStderr: "Resource not found or you do not have access to this resource",
+      listWorkspaces: [{ name: "demo", latest_build: { status: "running" } }],
+    },
+    async () => {
+      const transport = createCoderSshTransport();
+      const result = await transport.exec(
+        { name: "demo" },
+        JSON.stringify({ op: "agent.run", task: "x", vars: {} })
+      );
+      assert.equal(result.exitCode, 1);
+      assert.match(result.stderr, /failed to write the transport envelope/);
+      assert.ok(
+        !/stale|no longer exists/i.test(result.stderr),
+        `an existing workspace must not be called stale: ${result.stderr}`
+      );
+    }
+  );
+});
+
+test("live transport: a deleted workspace is confirmed with the provider, never silently re-created", async () => {
+  await withFakeCoder(
+    {
+      sshNoStdin: true,
+      sshExit: 1,
+      sshStderr: "Resource not found or you do not have access to this resource",
+      listWorkspaces: [],
+    },
+    async (record) => {
+      const transport = createCoderSshTransport({ pollMs: 10 });
+      const result = await transport.exec(
+        { name: "demo" },
+        JSON.stringify({ op: "agent.run", task: "x", vars: {} })
+      );
+      assert.notEqual(result.exitCode, 0, "a missing workspace is a failure, not a success");
+      assert.match(result.stderr, /was NOT re-created/i);
+      assert.match(result.stderr, /stale/i);
+      const calls = readFileSync(record.recordFile, "utf-8");
+      assert.match(calls, /list --all -o json/, "the provider lookup must confirm the workspace is gone");
+      assert.ok(
+        !/create demo/.test(calls),
+        "a deliberately torn-down workspace must never be resurrected"
+      );
+    }
+  );
+});
+
+test("live transport: workflow --input keeps spaces and leading dashes as one argv entry", { skip: needsJq }, async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    const payload = {
+      op: "workflow.run",
+      source: "factory",
+      inputs: { goal: "do the thing", note: "-leading-dash" },
+      vars: {},
+      env: { ADLC_HOP_DEPTH: "2" },
+      hop: 2,
+    };
+    await transport.exec({ name: "demo" }, JSON.stringify(payload));
+    const decoded = decodeEnvelope(record.stdinFile);
+    assert.equal(decoded.payload.inputs.goal, "do the thing");
+
+    const r = runGeneratedStep(decoded.step, decoded.payload);
+    assert.equal(r.status, 0, r.stderr);
+    const lines = r.stdout.trim().split("\n");
+    assert.ok(
+      lines.includes("HOP[2]"),
+      `the remote step must export payload.env.ADLC_HOP_DEPTH: ${r.stdout}`
+    );
+    assert.ok(
+      lines.includes("ARG[goal=do the thing]"),
+      `a multi-word --input value must stay one argument: ${r.stdout}`
+    );
+    assert.ok(
+      lines.includes("ARG[--input]"),
+      `--input must remain a separate flag argument: ${r.stdout}`
+    );
+    assert.ok(
+      lines.includes("ARG[note=-leading-dash]"),
+      `a value beginning with '-' must not become a flag: ${r.stdout}`
+    );
+  });
 });

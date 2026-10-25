@@ -44,4 +44,5 @@ Checks:
 - node_modules/
 - dist/
 - *.generated.*
-- .adlc/
+- .adlc/workflows/runs/
+- .adlc/workspaces/

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { validateWorkspaceConfig, expandWorkspaceVars, normalizeEvent, checkHopDepth, MAX_HOPS } from "../src/providers/transport.mjs";
-import { createCoderProvider } from "../src/providers/coder.mjs";
+import { createCoderProvider } from "../src/providers/coder/handle.mjs";
 
 // The provider transport defaults to the REAL SSH transport; the contract
 // tests run against the mock, explicitly.
@@ -157,7 +157,7 @@ test("workspace var expansion forwards only referenced vars", async () => {
 
 test("resumeRun resumes after machine loss mid-stream (mock-level, no real git)", async () => {
   const m = await import("../src/providers/transport.mjs").catch(() => ({}));
-  const cm = await import("../src/providers/coder.mjs").catch(() => ({}));
+  const cm = await import("../src/providers/coder/handle.mjs").catch(() => ({}));
   const resume = m.resumeRun ?? m.replayStream ?? cm.resumeRun ?? cm.resume;
   assert.equal(typeof resume, "function", "must export resumeRun/stream-replay helper (FAIL: no resume)");
   let calls = 0;
@@ -266,7 +266,7 @@ test("review fix: stdout is pure JSONL, secrets redacted on output paths", async
   console.error = () => {};
   process.chdir(tmp);
   try {
-    const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+    const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
     const code = await cmdCoderWorkspaceSetup([], {}, []);
     assert.equal(code, 0);
   } finally {
@@ -319,9 +319,9 @@ test("iter-2: raw secret values never leak even when key is non-secret", async (
   assert.ok(noOp.includes("sek-live-789"), "scrubbing [REDACTED] literal proves the old bug");
 });
 
-test("iter-2: coder-route payloads carry env.ADLC_HOP_DEPTH for nested hopGuard", async () => {
+test("iter-2: coder route payloads carry env.ADLC_HOP_DEPTH for nested hopGuard", async () => {
   const fs = await import("node:fs/promises");
-  const src = await fs.readFile(new URL("../src/providers/coder-route.mjs", import.meta.url), "utf-8");
+  const src = await fs.readFile(new URL("../src/providers/coder/route.mjs", import.meta.url), "utf-8");
   assert.ok(/remoteInputs\(\)/.test(src), "payloads must wire remoteInputs()");
   assert.ok(/env:\s*remoteInputs\(\)/.test(src), "remote hop env must be set on payload");
 });
@@ -348,7 +348,7 @@ test("iter-4: expansion keeps secret-sourced values out of the config, process-e
   assert.equal(vars.ONLY_FILE, "file-only");
 });
 
-test("iter-2: coder.mjs preserves transport-provided handlePath", async () => {
+test("iter-2: coder handle.mjs preserves transport-provided handlePath", async () => {
   const { default: os } = await import("node:os");
   const { default: path } = await import("node:path");
   const tmp = await import("node:fs/promises").then((mk) => mk.mkdtemp(path.join(os.tmpdir(), "adlc-handle-")));
@@ -368,7 +368,7 @@ test("iter-3: workspace name expands ${VAR} from env (per-mission workspace name
     wsFile,
     ["schema_version: 1", "name: ${WORKSPACE_NAME}", "workspace:", "  dirs: []", ""].join("\n")
   );
-  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
   const prev = process.env.WORKSPACE_NAME;
   process.env.WORKSPACE_NAME = "repo-mission-42";
   const cwd = process.cwd();
@@ -398,7 +398,7 @@ test("iter-3: workspace name is sanitized before use as a handle filename", asyn
     wsFile,
     ["schema_version: 1", "name: ../../etc/passwd", "workspace:", "  dirs: []", ""].join("\n")
   );
-  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
   const cwd = process.cwd();
   process.chdir(tmp);
   try {
@@ -523,7 +523,7 @@ test("iter-4: a remote failure exits non-zero and surfaces the remote stderr", a
     "schema_version: 1\nname: fail-ws\nworkspace:\n  dirs: []\n"
   );
   injectedTransport({ stdout: "remote step FAILED\n", stderr: "fatal: clone failed\n", exitCode: 1 });
-  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
   const prevCwd = process.cwd();
   const cap = captureRoute();
   process.chdir(tmp);
@@ -541,7 +541,7 @@ test("iter-4: a remote failure exits non-zero and surfaces the remote stderr", a
 
 test("iter-4: outbound vars carry the real value — redaction belongs on the output path", async () => {
   const transport = injectedTransport();
-  const { cmdCoderAgentRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
   const prev = process.env.MY_API_TOKEN;
   process.env.MY_API_TOKEN = "tok-secret-999";
   const cap = captureRoute();
@@ -582,7 +582,7 @@ test("iter-4: secret-sourced vars are not inlined into the config payload", asyn
   );
   await fs.writeFile(path.join(tmp, "secrets.env"), "APP_TOKEN=sek-live-789\n");
   const transport = injectedTransport();
-  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
   const prevCwd = process.cwd();
   const prevToken = process.env.APP_TOKEN;
   const cap = captureRoute();
@@ -637,7 +637,7 @@ test("iter-4: the local setup path rejects a provider: key instead of ignoring i
 
 test("iter-4: an --input value is never mistaken for the workflow source", async () => {
   const transport = injectedTransport();
-  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   let code;
   try {
@@ -659,7 +659,7 @@ test("iter-4: an --input value is never mistaken for the workflow source", async
 
 test("iter-4: agent run without a task fails even when --provider is given", async () => {
   injectedTransport();
-  const { cmdCoderAgentRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   let code;
   try {
@@ -692,7 +692,7 @@ test("iter-4: a corrupt handle file fails loudly instead of re-provisioning", as
   await fs.mkdir(path.join(tmp, "w"), { recursive: true });
   await fs.writeFile(path.join(tmp, "w", "demo.json"), "{not json");
   const transport = injectedTransport();
-  const { createCoderProvider } = await import("../src/providers/coder.mjs");
+  const { createCoderProvider } = await import("../src/providers/coder/handle.mjs");
   const p = createCoderProvider({ transport, workspacesDir: path.join(tmp, "w") });
   await assert.rejects(() => p.provision("demo"), /handle|corrupt|unreadable/i);
   assert.equal(
@@ -708,7 +708,7 @@ test("iter-4: --workspace selects the workspace for the agent/workflow routes", 
   const { default: fs } = await import("node:fs/promises");
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-wssel-"));
   const transport = injectedTransport();
-  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   const prevCwd = process.cwd();
   process.chdir(tmp);
@@ -742,7 +742,7 @@ test("iter-5: a secret-sourced name fails loudly instead of naming another works
   );
   await fs.writeFile(path.join(tmp, "secrets.env"), "WORKSPACE_NAME=repo-mission-42\n");
   injectedTransport();
-  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
   const prevCwd = process.cwd();
   const cap = captureRoute();
   process.chdir(tmp);
@@ -760,7 +760,7 @@ test("iter-5: a secret-sourced name fails loudly instead of naming another works
 
 test("iter-5: a literal input value never reaches stdout", async () => {
   const transport = injectedTransport();
-  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   let code;
   try {
@@ -783,6 +783,75 @@ test("iter-5: a literal input value never reaches stdout", async () => {
   assert.equal(payload.inputs.session, "s3cr3t-literal-value", "the remote still receives the value");
 });
 
+test("iter-8: every --input value is scrubbed, not just the last one", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderWorkflowRun(
+      ["factory"],
+      {},
+      [
+        "run",
+        "--provider",
+        "coder",
+        "--workspace",
+        "redact-ws",
+        "--input",
+        "first=first-secret-value",
+        "--input",
+        "second=second-secret-value",
+        "factory",
+      ]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0);
+  const out = cap.logs.join("\n");
+  assert.ok(!out.includes("first-secret-value"), `the first input leaked: ${out}`);
+  assert.ok(!out.includes("second-secret-value"), `the second input leaked: ${out}`);
+  assert.match(out, /\[REDACTED\]/, "both values must be replaced with the mask");
+  // Both values still reach the remote payload.
+  const exec = transport.calls.find((c) => c.op === "exec");
+  const sent = JSON.parse(exec.input).inputs;
+  assert.equal(sent.first, "first-secret-value");
+  assert.equal(sent.second, "second-secret-value");
+});
+
+test("review follow-up: dispatch resolves providers from the registry, with no coder branch", async () => {
+  const { readFileSync } = await import("node:fs");
+  const dispatchSrc = readFileSync(new URL("../src/dispatch.mjs", import.meta.url), "utf-8");
+  assert.ok(
+    !/providers\/coder/.test(dispatchSrc),
+    "dispatch must not import a provider module directly"
+  );
+  assert.ok(
+    !/["'`]coder["'`]/.test(dispatchSrc),
+    "dispatch must not hardcode the coder name"
+  );
+  const registry = await import("../src/providers/registry.mjs");
+  const coder = registry.resolveProvider("coder");
+  assert.ok(coder, "registry must resolve coder");
+  assert.equal(registry.resolveProvider("agentcore"), null);
+  assert.ok(registry.providerNames().includes("coder"));
+  assert.ok(registry.providerCommands().includes("workflow"));
+  const routes = registry.providerRoutes(coder);
+  for (const route of ["workspace setup", "agent run", "run", "workflow run"]) {
+    assert.ok(routes.includes(route), `missing provider route: ${route} (got ${routes.join(", ")})`);
+  }
+  assert.ok(
+    registry.providerHelp("agent").some(([flag]) => flag === "--provider coder"),
+    "agent help must travel with the coder provider"
+  );
+  assert.ok(
+    registry.providerHelp("workspace").some(([flag]) => flag === "--provider coder"),
+    "workspace help must travel with the coder provider"
+  );
+});
+
 test("iter-5: workspace setup refuses a --workspace that conflicts with the file's name", async () => {
   const { default: os } = await import("node:os");
   const { default: path } = await import("node:path");
@@ -793,7 +862,7 @@ test("iter-5: workspace setup refuses a --workspace that conflicts with the file
     "schema_version: 1\nname: file-ws\nworkspace:\n  dirs: []\n"
   );
   injectedTransport();
-  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
   const prevCwd = process.cwd();
   const cap = captureRoute();
   process.chdir(tmp);
@@ -815,7 +884,7 @@ test("iter-5: the exec routes refuse to provision a second machine implicitly", 
   const { default: fs } = await import("node:fs/promises");
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-nohandle-"));
   const transport = injectedTransport();
-  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   const prevCwd = process.cwd();
   process.chdir(tmp);
@@ -834,7 +903,7 @@ test("iter-5: the exec routes refuse to provision a second machine implicitly", 
 
 test("iter-5: --input=k=v (equals form) is forwarded", async () => {
   const transport = injectedTransport();
-  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   let code;
   try {
@@ -860,7 +929,7 @@ test("iter-5: a handle file holding valid non-object JSON is treated as corrupt"
   await fs.mkdir(path.join(tmp, "w"), { recursive: true });
   await fs.writeFile(path.join(tmp, "w", "demo.json"), "null");
   const transport = injectedTransport();
-  const { createCoderProvider } = await import("../src/providers/coder.mjs");
+  const { createCoderProvider } = await import("../src/providers/coder/handle.mjs");
   const p = createCoderProvider({ transport, workspacesDir: path.join(tmp, "w") });
   await assert.rejects(() => p.provision("demo"), /handle|corrupt|unreadable/i);
   assert.equal(transport.calls.filter((c) => c.op === "provision").length, 0);
@@ -879,7 +948,7 @@ test("iter-5: a transport that returns no result is a failure, not a success", a
     async provision(name) { return { name, host: "h" }; },
     async exec() { return undefined; },
   };
-  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   let code;
   try {
@@ -975,7 +1044,7 @@ test("iter-5: an empty ${VAR} is missing (pinned)", async () => {
 
 test("iter-5: the remote exit code is propagated exactly", async () => {
   injectedTransport({ stdout: "boom\n", stderr: "remote failed\n", exitCode: 7 });
-  const { cmdCoderWorkflowRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   let code;
   try {
@@ -1015,9 +1084,7 @@ test("iter-6: the repo's own workspace file is satisfiable by the documented lan
   }
 });
 
-const isWindows = process.platform === "win32";
-const stdinTest = isWindows ? test.skip : test;
-stdinTest("iter-7: the stdin task REPLACES the '-' in the outbound args", async () => {
+test("iter-7: the stdin task REPLACES the '-' in the outbound args", async () => {
   // The remote agent must receive the task text, not the "-" marker.
   const { spawnSync } = await import("node:child_process");
   const { writeFileSync, mkdirSync, rmSync } = await import("node:fs");
@@ -1044,13 +1111,13 @@ stdinTest("iter-7: the stdin task REPLACES the '-' in the outbound args", async 
     ].join("\n")
   );
   const testFile = fileURLToPath(import.meta.url);
-  const routePath = path.resolve(path.dirname(testFile), "../src/providers/coder-route.mjs");
+  const routePath = path.resolve(path.dirname(testFile), "../src/providers/coder/route.mjs");
   const cli = path.join(tmp, "cli.mjs");
   writeFileSync(
     cli,
     [
-      `import(${JSON.stringify(transport)});`,
       `const { pathToFileURL } = await import("node:url");`,
+      `await import(pathToFileURL(${JSON.stringify(transport)}).href);`,
       `const routeUrl = pathToFileURL(process.argv[2]);`,
       `const { cmdCoderAgentRun } = await import(routeUrl);`,
       "const code = await cmdCoderAgentRun(['--provider','coder','--workspace','stdin-ws','-'], ['agent','run','--provider','coder','--workspace','stdin-ws','-']);",
@@ -1120,7 +1187,7 @@ test("iter-6: the stdin task form is reachable (an empty stdin fails loudly)", a
 
 test("iter-6: a flag value is never dispatched as the task", async () => {
   const transport = injectedTransport();
-  const { cmdCoderAgentRun } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
   const cap = captureRoute();
   let code;
   try {
@@ -1159,7 +1226,7 @@ test("iter-7: a secret-shaped var is delivered in the vars channel, never inline
     ].join("\n")
   );
   const transport = injectedTransport();
-  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder-route.mjs");
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
   const prevCwd = process.cwd();
   const prevToken = process.env.GITLAB_TOKEN;
   const prevName = process.env.WORKSPACE_NAME;
