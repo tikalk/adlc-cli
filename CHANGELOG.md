@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   userinfo, `Authorization`/`PRIVATE-TOKEN`/`x-api-key` values (to the end of
   the line, keeping only a known scheme), GitLab/GitHub/Slack/`sk-` token
   formats, JWTs, and the values of secret-named env vars. ([#57], `497f97f`,
-  `e5e5454`, `6919534`, `18847c6`)
+  `e5e5454`, `6919534`, `18847c6`, `e66464d`)
 
 ## [2.4.1] - 2026-10-25
 
