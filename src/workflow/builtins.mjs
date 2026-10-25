@@ -4,16 +4,21 @@
 // checkpoints; consumed via `adlc-cli workflow run factory`).
 
 // Shell command for an engine step that runs factory-mission helper scripts
-// in order. A missing helper (factory-mission skill not installed) or a bash
-// that cannot start skips the step (exit 0); a helper's non-zero exit fails it.
+// in order. Each helper is checked on its own: a missing one (factory-mission
+// skill not installed) or a bash that cannot start is skipped and reported as
+// `skipped` in the step output (ADLC_STEP_OUTPUT) and on stdout/stderr, so a
+// gate without a link is explained; a present helper's non-zero exit fails
+// the step (fail-closed: open-mr still refuses a non-intent branch).
 const HELPER_DIR = ".agents/skills/factory-mission/scripts/bash";
 function helperRun(label, names) {
   const files = JSON.stringify(names.map((n) => `${HELPER_DIR}/${n}`)).replaceAll('"', "'");
-  return `node -e "const fs=require('fs'),cp=require('child_process');const fl=${files};` +
-    `if(!fl.every((f)=>fs.existsSync(f))){console.error('${label}: factory-mission helpers not installed, skipped');process.exit(0)}` +
-    `for(const f of fl){const r=cp.spawnSync('bash',[f],{stdio:'inherit'});` +
-    `if(r.error){console.error('${label}: '+r.error.message+', skipped');process.exit(0)}` +
-    `if(r.status!==0)process.exit(r.status===null?1:r.status)}"`;
+  return `node -e "const fs=require('fs'),cp=require('child_process');const fl=${files};const miss=[];` +
+    `for(const f of fl){const n=f.split('/').pop();if(!fs.existsSync(f)){miss.push(n);continue}` +
+    `const r=cp.spawnSync('bash',[f],{stdio:'inherit'});if(r.error){miss.push(n+' ('+r.error.message+')');continue}` +
+    `if(r.status!==0)process.exit(r.status===null?1:r.status)}` +
+    `if(miss.length){const m='${label}: skipped '+miss.join(', ')+' (factory-mission helpers not installed)';` +
+    `console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;` +
+    `if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"`;
 }
 
 export const BUILTIN_WORKFLOWS = {
@@ -44,9 +49,9 @@ steps:
   - id: run-branch
     type: shell
     # The engine checks out the intent run branch before any agent step
-    # (ADR-431-amendment §1), so agent commits land on it and a re-dispatch
-    # continues the issue's branch and MR. Idempotent with the orchestrator's
-    # own run-branch call; skipped without the helper.
+    # (ADR-431-amendment §1, §3a), so agent commits land on it and a
+    # re-dispatch continues the issue's branch and MR. Idempotent with the
+    # orchestrator's own run-branch call; skipped without the helper.
     run: |-
       ${helperRun("run-branch", ["run-branch.sh"])}
   - id: intent-product
@@ -58,8 +63,8 @@ steps:
     # (ADR-431-amendment §3a), so the gate link never depends on the agent.
     # run-branch first: an intent step that changed nothing may never have
     # left the base branch, and open-mr refuses anything but factory/intent/*.
-    # open-mr is idempotent and opens nothing for an empty run; without the
-    # helpers (factory-mission skill not installed) the step is skipped.
+    # open-mr is idempotent and opens nothing for an empty run; a missing
+    # helper (factory-mission skill not installed) is skipped and reported.
     run: |-
       ${helperRun("publish", ["run-branch.sh", "open-mr.sh"])}
   - id: gate-product
@@ -73,6 +78,13 @@ steps:
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
+  - id: run-branch-architecture
+    type: shell
+    # Again after the product gate: a parked run resumes after it, possibly
+    # restored into a fresh clone on the base branch, and resume never re-runs
+    # the first run-branch step.
+    run: |-
+      ${helperRun("run-branch", ["run-branch.sh"])}
   - id: intent-architecture
     type: command
     command: factory-architect
@@ -82,8 +94,8 @@ steps:
     # (ADR-431-amendment §3a), so the gate link never depends on the agent.
     # run-branch first: an intent step that changed nothing may never have
     # left the base branch, and open-mr refuses anything but factory/intent/*.
-    # open-mr is idempotent and opens nothing for an empty run; without the
-    # helpers (factory-mission skill not installed) the step is skipped.
+    # open-mr is idempotent and opens nothing for an empty run; a missing
+    # helper (factory-mission skill not installed) is skipped and reported.
     run: |-
       ${helperRun("publish", ["run-branch.sh", "open-mr.sh"])}
   - id: gate-architecture

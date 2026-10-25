@@ -172,15 +172,15 @@ test("built-in factory: loads, validates, headless-valid", () => {
     assert.deepEqual(validateWorkflow(def, STEP_REGISTRY), []);
     assert.deepEqual(headlessGateErrors(def), []);
     // Every gate declares verdict_input; stages are command steps, plus the
-    // engine's shell steps: run-branch first (ADR-431-amendment §1) and one
-    // publish step after each intent step (§3a).
+    // engine's shell steps: run-branch before each intent stage
+    // (ADR-431-amendment §1, §3a) and one publish step after each.
     const gates = def.steps.filter((s) => s.type === "gate");
     const commands = def.steps.filter((s) => s.type !== "gate" && s.type !== "shell");
     const shells = def.steps.filter((s) => s.type === "shell");
     assert.equal(gates.length, 3);
     assert.ok(gates.every((g) => g.verdict_input === "verdict"));
     assert.ok(commands.every((c) => c.type === "command" && typeof c.command === "string"));
-    assert.deepEqual(shells.map((s) => s.id), ["run-branch", "publish-product", "publish-architecture"]);
+    assert.deepEqual(shells.map((s) => s.id), ["run-branch", "publish-product", "run-branch-architecture", "publish-architecture"]);
     assert.equal(def.steps[0].id, "run-branch");
   } finally {
     cleanup();

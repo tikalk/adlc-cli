@@ -329,7 +329,7 @@ git switch -q factory/intent/p-12 2>/dev/null || git switch -q -c factory/intent
 echo factory/intent/p-12
 `;
 
-async function runFactory({ helper, runBranch = RUN_BRANCH_HELPER } = {}) {
+async function runFactory({ helper, runBranch = RUN_BRANCH_HELPER, beforeResume } = {}) {
   const bin = installFakeAgent();
   const dir = project();
   execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dir });
@@ -350,7 +350,11 @@ async function runFactory({ helper, runBranch = RUN_BRANCH_HELPER } = {}) {
     const events = [];
     engine.onEvent = (e) => events.push(e);
     const state = await engine.execute(engine.loadWorkflow(wf), { issue_ref: "g/p#12", verdict: "" }, "r12", STEP_REGISTRY);
-    return { state, paused: events.find((e) => e.type === "gate_paused"), dir };
+    const paused = events.find((e) => e.type === "gate_paused");
+    if (!beforeResume) return { state, paused, dir };
+    beforeResume(dir);
+    const resumed = await new WorkflowEngine(dir).resume("r12", { verdict: "approve" }, STEP_REGISTRY);
+    return { state, paused, dir, resumed };
   });
 }
 
@@ -371,6 +375,7 @@ test("O7: without the open-mr helper the publish step is skipped and the gate ha
   const { state, paused } = await runFactory({});
   assert.equal(state.status, RunStatus.PAUSED);
   assert.equal(state.stepResults["publish-product"].status, "completed");
+  assert.match(state.stepResults["publish-product"].output.skipped, /publish: skipped run-branch\.sh, open-mr\.sh/);
   assert.ok(!paused.mr_link);
 });
 
@@ -415,12 +420,44 @@ git switch -q factory/intent/p-12
   assert.equal(paused.mr_link, "https://gl.test/g/p/-/merge_requests/45");
 });
 
-test("O8: without the run-branch helper the run-branch and publish steps are skipped", { skip: !POSIX }, async () => {
-  const { state, paused } = await runFactory({ helper: STRICT_OPEN_MR, runBranch: null });
-  assert.equal(state.status, RunStatus.PAUSED);
+test("O8: a missing run-branch helper is skipped and reported; open-mr still fails closed off the run branch", { skip: !POSIX }, async () => {
+  const { state } = await runFactory({ helper: STRICT_OPEN_MR, runBranch: null });
   assert.equal(state.stepResults["run-branch"].status, "completed");
-  assert.equal(state.stepResults["publish-product"].status, "completed");
-  assert.ok(!paused.mr_link);
+  assert.match(state.stepResults["run-branch"].output.skipped, /run-branch: skipped run-branch\.sh/);
+  assert.equal(state.stepResults["publish-product"].status, "failed");
+  assert.match(state.stepResults["publish-product"].error, /not on an intent run branch/);
+});
+
+test("O8: a resumed run checks out the run branch again before intent-architecture", { skip: !POSIX }, async () => {
+  // A parked run restored into a fresh clone starts on the base branch; resume
+  // continues after gate-product and never re-runs the first run-branch step.
+  let base;
+  const { state, resumed, dir } = await runFactory({
+    helper: STRICT_OPEN_MR,
+    beforeResume: (d) => {
+      base = execFileSync("git", ["rev-list", "--max-parents=0", "HEAD"], { cwd: d }).toString().trim();
+      execFileSync("git", ["switch", "-q", "--detach", base], { cwd: d });
+    },
+  });
+  assert.equal(state.status, RunStatus.PAUSED);
+  assert.ok(base);
+  assert.equal(resumed.stepResults["run-branch-architecture"].status, "completed");
+  const ids = Object.keys(resumed.stepResults);
+  assert.ok(ids.indexOf("run-branch-architecture") < ids.indexOf("intent-architecture"));
+  assert.equal(resumed.stepResults["publish-architecture"].status, "completed");
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir }).toString().trim(), "factory/intent/p-12");
+});
+
+test("O7: a failed shell step's persisted state holds no raw credential", { skip: !POSIX }, async () => {
+  // state.json is what parkRun pushes to refs/factory-runs/<run_id> on the remote.
+  const helper = "#!/usr/bin/env bash\necho 'fatal: token glpat-EXAMPLE1234567890 rejected' >&2\necho 'out glpat-EXAMPLE1234567890'\nexit 2\n";
+  const { state, dir } = await runFactory({ helper });
+  const r = state.stepResults["publish-product"];
+  assert.doesNotMatch(r.output.stderr, /glpat-/);
+  assert.doesNotMatch(r.output.stdout, /glpat-/);
+  const raw = readFileSync(join(dir, ".adlc", "workflows", "runs", "r12", "state.json"), "utf8");
+  assert.doesNotMatch(raw, /glpat-EXAMPLE1234567890/);
+  assert.match(raw, /fatal: token \*\*\* rejected/);
 });
 
 test("O7: a failed step's stderr is redacted before it reaches the error", { skip: !POSIX }, async () => {
@@ -446,4 +483,7 @@ test("redactSecrets masks URL userinfo, token formats and secret env values", as
   assert.equal(redactSecrets("value plain-secret-abcdef here", env), "value *** here");
   assert.equal(redactSecrets("cwd /home/runner-long-path", env), "cwd /home/runner-long-path");
   assert.equal(redactSecrets("Authorization: Bearer abc.def", env), "Authorization: Bearer ***");
+  assert.equal(redactSecrets("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig", env), "jwt ***");
+  assert.equal(redactSecrets("ff glffct-abcdefghij12345", env), "ff ***");
+  assert.equal(redactSecrets("job opaque-jwt-value-1234", { CI_JOB_JWT_V2: "opaque-jwt-value-1234" }), "job ***");
 });
