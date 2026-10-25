@@ -20,13 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A failed shell step's error includes the tail of its stderr**, so the
   reason reaches logs and notifiers, not only the step result. ([#57],
   `eadc411`)
+
+### Security
+
 - **Credentials are redacted from shell step output before it is stored.**
   stdout, stderr, step-output values and the error are masked before they
   enter the step result, so `state.json` (pushed to `refs/factory-runs/<run_id>`
   when a run parks) and the pod log/Slack hold no raw token. Masked: URL
-  userinfo, `Authorization`/`PRIVATE-TOKEN`/`x-api-key` values (after any
-  known scheme), GitLab/GitHub/Slack/`sk-` token formats, JWTs, and the values
-  of secret-named env vars. ([#57], `497f97f`, `e5e5454`, `6919534`)
+  userinfo, `Authorization`/`PRIVATE-TOKEN`/`x-api-key` values (to the end of
+  the line, keeping only a known scheme), GitLab/GitHub/Slack/`sk-` token
+  formats, JWTs, and the values of secret-named env vars. ([#57], `497f97f`,
+  `e5e5454`, `6919534`, `18847c6`)
 
 ## [2.4.1] - 2026-10-25
 
