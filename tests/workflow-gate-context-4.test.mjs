@@ -459,7 +459,8 @@ test("S5: builtin factory declares optional input mr_url and gate-completion con
   assert.equal(inputs.mr_url.default, "", "mr_url defaults to empty");
   assert.notEqual(inputs.mr_url.required, true);
   const completion = def.steps.find((s) => s.id === "gate-completion");
-  assert.equal(completion.context.link, "{{ inputs.mr_url }}");
+  // The code MR from the execute step first; the operator input stays the fallback.
+  assert.equal(completion.context.link, "{{ steps.execute.output.mr_url | default(inputs.mr_url) }}");
   // Superseded 2026-10-22 (ADR-444 §5, ADR-431-amendment §3a): the intent
   // gates link the draft MR the engine's publish step opened.
   for (const [id, step] of [["gate-product", "publish-product"], ["gate-architecture", "publish-architecture"]]) {

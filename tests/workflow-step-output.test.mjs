@@ -501,3 +501,53 @@ test("redactSecrets masks URL userinfo, token formats and secret env values", as
   assert.equal(redactSecrets("ff glffct-abcdefghij12345", env), "ff ***");
   assert.equal(redactSecrets("job opaque-jwt-value-1234", { CI_JOB_JWT_V2: "opaque-jwt-value-1234" }), "job ***");
 });
+
+// ── the execute step gets the issue and links its code MR ───────────────────
+
+// Records each agent step's prompt; the execute step reports a code MR.
+function installExecuteFake() {
+  const bin = tempDir("fake-exec-bin-");
+  const script = join(bin, "opencode");
+  writeFileSync(script, `#!${process.execPath}
+const fs = require("node:fs"), path = require("node:path");
+const step = process.env.ADLC_STEP_ID || "";
+if (process.env.FAKE_PROMPTS) fs.appendFileSync(process.env.FAKE_PROMPTS, JSON.stringify({ step, argv: process.argv.slice(2) }) + "\\n");
+if (step === "execute" && process.env.ADLC_STEP_OUTPUT) {
+  fs.mkdirSync(path.dirname(process.env.ADLC_STEP_OUTPUT), { recursive: true });
+  fs.writeFileSync(process.env.ADLC_STEP_OUTPUT, JSON.stringify({ mr_url: "https://gl.test/g/argo/-/merge_requests/38" }));
+}
+console.log(JSON.stringify({ type: "text", text: "ok" }));
+`);
+  chmodSync(script, 0o755);
+  return bin;
+}
+
+test("O9: execute runs factory-mission with the run's issue, and gate-completion links its MR", { skip: !POSIX }, async () => {
+  const bin = installExecuteFake();
+  const dir = project();
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dir });
+  mkdirSync(join(dir, ".adlc"), { recursive: true });
+  writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
+  const prompts = join(tempDir("prompts-"), "prompts.jsonl");
+  const wf = join(tempDir("factory-wf-"), "workflow.yml");
+  writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
+  await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_PROMPTS: prompts }, async () => {
+    const inputs = { issue_ref: "g/p#12", verdict: "" };
+    const e1 = new WorkflowEngine(dir);
+    const s1 = await e1.execute(e1.loadWorkflow(wf), inputs, "r9", STEP_REGISTRY);
+    assert.equal(s1.currentStepId, "gate-product");
+    const s2 = await new WorkflowEngine(dir).resume("r9", { verdict: "approve" }, STEP_REGISTRY);
+    assert.equal(s2.currentStepId, "gate-architecture");
+    const e3 = new WorkflowEngine(dir);
+    const events = [];
+    e3.onEvent = (ev) => events.push(ev);
+    const s3 = await e3.resume("r9", { verdict: "approve" }, STEP_REGISTRY);
+    assert.equal(s3.currentStepId, "gate-completion");
+    assert.equal(s3.stepResults.execute.output.mr_url, "https://gl.test/g/argo/-/merge_requests/38");
+    const paused = events.find((ev) => ev.type === "gate_paused");
+    assert.equal(paused.mr_link, "https://gl.test/g/argo/-/merge_requests/38");
+  });
+  const exec = readFileSync(prompts, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((p) => p.step === "execute");
+  assert.ok(exec.argv.some((a) => a.includes("/factory-mission --issue g/p#12")), JSON.stringify(exec.argv));
+});
+

@@ -111,13 +111,21 @@ steps:
   - id: execute
     type: command
     command: factory-mission
+    # The mission is the run's issue (ADR-444 §4): without it factory-mission
+    # asked for one and returned, and the step counted as completed
+    # (adlc-workspace#12 M9 pilot, run 84412db5). The skill also falls back to
+    # ADLC_ISSUE_REF and fails the step when neither is set.
+    input:
+      args: "--issue {{ inputs.issue_ref }}"
   - id: gate-completion
     type: gate
     message: "Approve completion (ChDRs and merge request)?"
     context:
       records: [".adlc/drafts/chdr/*.md"]
       since: last_approved
-      link: "{{ inputs.mr_url }}"
+      # The code MR factory-mission opened (its mr_url step output, ADR-444);
+      # an operator-supplied mr_url input is the fallback.
+      link: "{{ steps.execute.output.mr_url | default(inputs.mr_url) }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
