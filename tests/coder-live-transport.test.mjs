@@ -274,8 +274,7 @@ function runGeneratedStep(step, payload) {
   writeFileSync(
     stub,
     `#!/usr/bin/env sh
-printf 'HOP[%s]\\n' "\${ADLC_HOP_DEPTH:-unset}"
-printf 'ARG[%s]\\n' "$@"
+jq -n --arg hop "\${ADLC_HOP_DEPTH:-unset}" --args '{hop:$hop, args:$ARGS.positional}' -- "$@"
 `
   );
   chmodSync(stub, 0o755);
@@ -411,13 +410,14 @@ test("live transport: a deleted workspace is confirmed with the provider, never 
   );
 });
 
-test("live transport: workflow --input keeps spaces and leading dashes as one argv entry", { skip: needsJq }, async () => {
+test("live transport: workflow --input keeps spaces, leading dashes, and newlines in one argv entry", { skip: needsJq }, async () => {
   await withFakeCoder({}, async (record) => {
     const transport = createCoderSshTransport();
+    const injected = "do\n--provider\ncoder\n";
     const payload = {
       op: "workflow.run",
       source: "factory",
-      inputs: { goal: "do the thing", note: "-leading-dash" },
+      inputs: { goal: "do the thing", note: "-leading-dash", inject: injected },
       vars: {},
       env: { ADLC_HOP_DEPTH: "2" },
       hop: 2,
@@ -428,22 +428,27 @@ test("live transport: workflow --input keeps spaces and leading dashes as one ar
 
     const r = runGeneratedStep(decoded.step, decoded.payload);
     assert.equal(r.status, 0, r.stderr);
-    const lines = r.stdout.trim().split("\n");
-    assert.ok(
-      lines.includes("HOP[2]"),
-      `the remote step must export payload.env.ADLC_HOP_DEPTH: ${r.stdout}`
+    const parsed = JSON.parse(r.stdout.trim());
+    assert.equal(parsed.hop, "2", "the remote step must export payload.env.ADLC_HOP_DEPTH");
+    assert.deepEqual(
+      parsed.args,
+      [
+        "workflow",
+        "run",
+        "factory",
+        "--input",
+        "goal=do the thing",
+        "--input",
+        "note=-leading-dash",
+        "--input",
+        `inject=${injected}`,
+      ],
+      `the remote argv was re-split: ${r.stdout}`
     );
-    assert.ok(
-      lines.includes("ARG[goal=do the thing]"),
-      `a multi-word --input value must stay one argument: ${r.stdout}`
-    );
-    assert.ok(
-      lines.includes("ARG[--input]"),
-      `--input must remain a separate flag argument: ${r.stdout}`
-    );
-    assert.ok(
-      lines.includes("ARG[note=-leading-dash]"),
-      `a value beginning with '-' must not become a flag: ${r.stdout}`
+    assert.equal(
+      parsed.args.filter((arg) => arg === "--provider").length,
+      0,
+      "an input value must not be able to synthesize another flag"
     );
   });
 });

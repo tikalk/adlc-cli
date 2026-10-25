@@ -386,15 +386,20 @@ exit "$_rc"
       return `${prelude}  workflow.run)
     _export_vars
     _source=$(jq -r '.source // empty' "$_d/payload.json")
-    # Build an argv array: unquoted command substitution word-splits every
-    # value with a space and turns a leading "-" into a flag. One line per
-    # argument, read verbatim, keeps each pair intact.
-    jq -r '(.inputs // {}) | to_entries[] | "--input", "\\(.key)=\\(.value)"' \
-      "$_d/payload.json" > "$_d/inputs.args"
+    # Build an argv array without re-parsing values through the shell. One
+    # base64-encoded pair per line keeps spaces, leading dashes, and embedded
+    # newlines inside a single argument (a plain line-based split would let a
+    # newline synthesize another flag).
+    jq -r '(.inputs // {}) | to_entries[] | "\\(.key)=\\(.value)" | @base64' \
+      "$_d/payload.json" > "$_d/inputs.b64"
     set --
-    while IFS= read -r _arg; do
-      set -- "$@" "$_arg"
-    done < "$_d/inputs.args"
+    while IFS= read -r _encoded; do
+      # base64 -d adds no newline of its own; the trailing sentinel keeps
+      # command substitution from stripping a newline that is part of the value.
+      _pair=$(printf '%s' "$_encoded" | base64 -d; printf x)
+      _pair=\${_pair%x}
+      set -- "$@" "--input" "$_pair"
+    done < "$_d/inputs.b64"
     adlc-cli workflow run "$_source" "$@"
     _rc=$?
     ;;${tail}`;
