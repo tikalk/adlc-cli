@@ -17,7 +17,9 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_TEMPLATE = "general";
-const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+// Default 15 minutes; override with ADLC_TRANSPORT_TIMEOUT_MS (milliseconds).
+const DEFAULT_TIMEOUT_MS =
+  Number(process.env.ADLC_TRANSPORT_TIMEOUT_MS) || 15 * 60 * 1000;
 const DEFAULT_POLL_MS = 4000;
 
 function sleep(ms) {
