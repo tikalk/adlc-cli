@@ -1620,7 +1620,13 @@ test("self-heal: non-secret referenced values are forwarded but not used as scru
   assert.equal(payload.vars.BRANCH, "main", "the value still reaches the remote");
 });
 
-test("self-heal: git credentials are stripped from argv and supplied via GIT_ASKPASS", async () => {
+// The fake `git` below is a #!/bin/sh script placed on PATH. On Windows,
+// spawnSync("git") resolves the real git.exe (and Node ≥18 refuses .cmd
+// fakes without shell: true), so the interception cannot work there — the
+// clone hits the network and fails with exit 128. Same precedent as
+// coder-live-transport.test.mjs (bash fake coder CLI). The pure URL-splitting
+// assertions live in their own test below and run on every platform.
+test("self-heal: git credentials are stripped from argv and supplied via GIT_ASKPASS", { skip: process.platform === "win32" }, async () => {
   const { default: os } = await import("node:os");
   const { default: path } = await import("node:path");
   const { default: fs } = await import("node:fs/promises");
@@ -1657,7 +1663,7 @@ test("self-heal: git credentials are stripped from argv and supplied via GIT_ASK
     ].join("\n")
   );
   await fs.writeFile(path.join(tmp, "secrets.env"), "GIT_TOKEN=glpat-secret-123\n");
-  const { cmdWorkspaceSetup, splitGitCredentials } = await import("../src/commands/workspace.mjs");
+  const { cmdWorkspaceSetup } = await import("../src/commands/workspace.mjs");
   const prevCwd = process.cwd();
   const prevPath = process.env.PATH;
   const prevArgs = process.env.ADLC_GIT_ARGS_FILE;
@@ -1688,10 +1694,14 @@ test("self-heal: git credentials are stripped from argv and supplied via GIT_ASK
   assert.ok(!gitArgs.join(" ").includes("x-access-token"));
   assert.equal((await fs.readFile(passFile, "utf-8")).trim(), "glpat-secret-123");
   assert.match(await fs.readFile(askpassFile, "utf-8"), /adlc-git-askpass-/);
-  assert.equal(
-    splitGitCredentials("https://x-access-token:glpat-secret-123@github.com/org/repo.git").url,
-    "https://github.com/org/repo.git"
-  );
+});
+
+test("self-heal: splitGitCredentials strips credentials from every URL shape (pure)", async () => {
+  const { splitGitCredentials } = await import("../src/commands/workspace.mjs");
+  const full = splitGitCredentials("https://x-access-token:glpat-secret-123@github.com/org/repo.git");
+  assert.equal(full.url, "https://github.com/org/repo.git");
+  assert.equal(full.username, "x-access-token");
+  assert.equal(full.password, "glpat-secret-123");
   assert.equal(
     splitGitCredentials("https://glpat-secret-123@github.com/org/repo.git").url,
     "https://github.com/org/repo.git",
@@ -1701,6 +1711,16 @@ test("self-heal: git credentials are stripped from argv and supplied via GIT_ASK
     splitGitCredentials("ssh://git:hunter2@example.com/org/repo.git").url,
     "ssh://git@example.com/org/repo.git",
     "an SSH URL password is stripped without losing the username"
+  );
+  assert.equal(
+    splitGitCredentials("https://user:pw%40x@github.com/org/repo.git").password,
+    "pw@x",
+    "a percent-encoded password is decoded"
+  );
+  assert.equal(
+    splitGitCredentials("https://github.com/org/repo.git"),
+    null,
+    "a URL with no credentials is not split"
   );
 });
 
