@@ -40,6 +40,11 @@ export class ShellStep extends StepBase {
 
     try {
       const proc = await execAsync(runCmd, { cwd, env, timeout: timeout * 1000 });
+      // Redact before the streams enter the step result: it is saved to
+      // state.json, which parkRun pushes to refs/factory-runs/<run_id> on the
+      // remote, and its error reaches the pod log and Slack.
+      if (proc.stdout != null) proc.stdout = redactSecrets(String(proc.stdout), env);
+      if (proc.stderr != null) proc.stderr = redactSecrets(String(proc.stderr), env);
       if (proc.interrupted) {
         return new StepResult({
           status: StepStatus.FAILED,
@@ -57,7 +62,7 @@ export class ShellStep extends StepBase {
       const output = {
         exit_code: typeof exitCode === "number" ? exitCode : 1,
         stdout: proc.stdout ?? "",
-        stderr: proc.stderr ?? (err ? String(err.message) : ""),
+        stderr: proc.stderr ?? (err ? redactSecrets(String(err.message), env) : ""),
       };
       if (err && err.killed) {
         return new StepResult({
@@ -69,7 +74,7 @@ export class ShellStep extends StepBase {
       if (err) {
         return new StepResult({
           status: StepStatus.FAILED,
-          error: `Shell command exited with code ${output.exit_code}.`,
+          error: `Shell command exited with code ${output.exit_code}.${stderrTail(output.stderr, env)}`,
           output,
         });
       }
@@ -88,14 +93,14 @@ export class ShellStep extends StepBase {
       }
       // Never overwrite what the step itself reports (exit_code, stdout, data…).
       for (const [key, value] of Object.entries(readStepOutput(runEnv.ADLC_STEP_OUTPUT, reprId(config)))) {
-        if (!(key in output)) output[key] = value;
+        if (!(key in output)) output[key] = redactSecrets(value, env);
       }
       return new StepResult({ status: StepStatus.COMPLETED, output });
     } catch (err) {
       return new StepResult({
         status: StepStatus.FAILED,
-        error: `Shell command failed: ${err.message}`,
-        output: { exit_code: -1, stdout: "", stderr: String(err.message) },
+        error: `Shell command failed: ${redactSecrets(String(err.message))}`,
+        output: { exit_code: -1, stdout: "", stderr: redactSecrets(String(err.message)) },
       });
     }
   }
@@ -133,6 +138,45 @@ export class ShellStep extends StepBase {
 
 function reprId(config) {
   return `'${config.id ?? "?"}'`;
+}
+
+// The last stderr lines of a failed step, for its error message (what logs
+// and notifiers such as Slack show). Redacted again here so the error is safe
+// even for a caller passing raw text.
+const STDERR_TAIL_CHARS = 500;
+function stderrTail(stderr, env = process.env) {
+  const text = redactSecrets(String(stderr ?? ""), env).trim();
+  if (!text) return "";
+  const tail = text.length > STDERR_TAIL_CHARS ? `…${text.slice(-STDERR_TAIL_CHARS)}` : text;
+  return ` stderr: ${tail}`;
+}
+
+// Secret-shaped env var names whose values never appear in an error message.
+const SECRET_ENV_NAME = /TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL|JWT/i;
+// Well-known token formats (GitLab, GitHub, Slack, Anthropic/OpenAI-style keys, JWTs).
+const TOKEN_PATTERNS = [
+  /\bglpat-[A-Za-z0-9_-]{10,}/g,
+  /\bgl(?:dt|rt|cbt|ptt|ft|ffct|imt|oas|agent|soat)-[A-Za-z0-9_-]{10,}/g,
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
+  /\bsk-[A-Za-z0-9_-]{20,}/g,
+  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+];
+
+/** Mask credentials in text bound for logs or notifiers. */
+export function redactSecrets(text, env = process.env) {
+  let out = text
+    // userinfo in URLs: https://user:token@host → https://***@host
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1***@")
+    // Authorization-style headers and key=value pairs
+    .replace(/\b(authorization|private-token|x-api-key)(\s*[:=]\s*)(bearer\s+|basic\s+)?\S+/gi, "$1$2$3***");
+  for (const re of TOKEN_PATTERNS) out = out.replace(re, "***");
+  for (const [name, value] of Object.entries(env)) {
+    if (!value || value.length < 8 || !SECRET_ENV_NAME.test(name)) continue;
+    out = out.split(value).join("***");
+  }
+  return out;
 }
 
 function execAsync(cmd, opts) {
