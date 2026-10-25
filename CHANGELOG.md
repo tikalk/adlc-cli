@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2] - 2026-10-25
+
+### Fixed
+
+- **The factory workflow checks out the intent run branch itself.** A
+  `run-branch` shell step runs before each intent stage (`run-branch` first,
+  `run-branch-architecture` after `gate-product`, so a resumed or restored
+  run is back on the branch), and the publish steps run `run-branch` before
+  `open-mr`. An intent step that changed nothing used to leave the workspace
+  on `main`, `open-mr` refused it, and the run failed before the gate.
+  Missing helpers are skipped and reported as `skipped` in the step output.
+  (ADR-431-amendment §1/§3a, [#57], `eadc411`, `e5e5454`)
+- **A failed shell step's error includes the tail of its stderr**, so the
+  reason reaches logs and notifiers, not only the step result. ([#57],
+  `eadc411`)
+
+### Security
+
+- **Credentials are redacted from shell step output before it is stored.**
+  stdout, stderr, step-output values and the error are masked before they
+  enter the step result, so `state.json` (pushed to `refs/factory-runs/<run_id>`
+  when a run parks) and the pod log/Slack hold no raw token. Masked: URL
+  userinfo, `Authorization`/`PRIVATE-TOKEN`/`x-api-key` values (to the end of
+  the line, keeping only a known scheme), GitLab/GitHub/Slack/`sk-` token
+  formats, JWTs, and the values of secret-named env vars. ([#57], `497f97f`,
+  `e5e5454`, `6919534`, `18847c6`, `e66464d`)
+
 ## [2.4.1] - 2026-10-25
 
 > Supersedes the `2.4.0` version bump, which landed on `main` via [#53] but was
@@ -55,3 +82,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#53]: https://github.com/tikalk/adlc-cli/pull/53
 [#54]: https://github.com/tikalk/adlc-cli/pull/54
 [#46]: https://github.com/tikalk/adlc-cli/pull/46
+[#57]: https://github.com/tikalk/adlc-cli/pull/57
