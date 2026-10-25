@@ -422,3 +422,28 @@ test("O8: without the run-branch helper the run-branch and publish steps are ski
   assert.equal(state.stepResults["publish-product"].status, "completed");
   assert.ok(!paused.mr_link);
 });
+
+test("O7: a failed step's stderr is redacted before it reaches the error", { skip: !POSIX }, async () => {
+  const helper = `#!/usr/bin/env bash
+echo "fatal: unable to access 'https://oauth2:glpat-abcdefghij1234567890@gl.test/g/p.git/': 403" >&2
+echo "token in env: $FAKE_SECRET_TOKEN" >&2
+echo "PRIVATE-TOKEN: glpat-zyxwvutsrq0987654321" >&2
+exit 2
+`;
+  const { state } = await withEnv({ FAKE_SECRET_TOKEN: "s3cr3t-value-123456" }, () => runFactory({ helper }));
+  const err = state.stepResults["publish-product"].error;
+  assert.match(err, /exited with code 2\. stderr: /);
+  assert.doesNotMatch(err, /glpat-|s3cr3t-value-123456|oauth2:/);
+  assert.match(err, /https:\/\/\*\*\*@gl\.test/);
+});
+
+test("redactSecrets masks URL userinfo, token formats and secret env values", async () => {
+  const { redactSecrets } = await import("../src/workflow/steps/shell.mjs");
+  const env = { GITLAB_TOKEN: "plain-secret-abcdef", HOME: "/home/runner-long-path" };
+  assert.equal(redactSecrets("push https://u:p@h/x failed", env), "push https://***@h/x failed");
+  assert.equal(redactSecrets("bot xoxb-1234567890-abcdefghij", env), "bot ***");
+  assert.equal(redactSecrets("ghp_ABCDEFGHIJKLMNOPQRSTuvwx1234 leaked", env), "*** leaked");
+  assert.equal(redactSecrets("value plain-secret-abcdef here", env), "value *** here");
+  assert.equal(redactSecrets("cwd /home/runner-long-path", env), "cwd /home/runner-long-path");
+  assert.equal(redactSecrets("Authorization: Bearer abc.def", env), "Authorization: Bearer ***");
+});

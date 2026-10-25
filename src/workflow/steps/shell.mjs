@@ -136,13 +136,41 @@ function reprId(config) {
 }
 
 // The last stderr lines of a failed step, for its error message: the captured
-// output stays in the step result, but the error is what logs and notifiers show.
+// output stays in the step result, but the error is what logs and notifiers
+// (Slack) show, so it is redacted before it leaves the step.
 const STDERR_TAIL_CHARS = 500;
-function stderrTail(stderr) {
-  const text = String(stderr ?? "").trim();
+function stderrTail(stderr, env = process.env) {
+  const text = redactSecrets(String(stderr ?? ""), env).trim();
   if (!text) return "";
   const tail = text.length > STDERR_TAIL_CHARS ? `…${text.slice(-STDERR_TAIL_CHARS)}` : text;
   return ` stderr: ${tail}`;
+}
+
+// Secret-shaped env var names whose values never appear in an error message.
+const SECRET_ENV_NAME = /TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL/i;
+// Well-known token formats (GitLab, GitHub, Slack, Anthropic/OpenAI-style keys).
+const TOKEN_PATTERNS = [
+  /\bglpat-[A-Za-z0-9_-]{10,}/g,
+  /\bgl(?:dt|rt|cbt|ptt|ft|imt|oas|agent|soat)-[A-Za-z0-9_-]{10,}/g,
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
+  /\bsk-[A-Za-z0-9_-]{20,}/g,
+];
+
+/** Mask credentials in text bound for logs or notifiers. */
+export function redactSecrets(text, env = process.env) {
+  let out = text
+    // userinfo in URLs: https://user:token@host → https://***@host
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1***@")
+    // Authorization-style headers and key=value pairs
+    .replace(/\b(authorization|private-token|x-api-key)(\s*[:=]\s*)(bearer\s+|basic\s+)?\S+/gi, "$1$2$3***");
+  for (const re of TOKEN_PATTERNS) out = out.replace(re, "***");
+  for (const [name, value] of Object.entries(env)) {
+    if (!value || value.length < 8 || !SECRET_ENV_NAME.test(name)) continue;
+    out = out.split(value).join("***");
+  }
+  return out;
 }
 
 function execAsync(cmd, opts) {
