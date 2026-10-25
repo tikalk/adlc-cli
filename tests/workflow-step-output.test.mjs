@@ -485,8 +485,15 @@ test("redactSecrets masks URL userinfo, token formats and secret env values", as
   assert.equal(redactSecrets("Authorization: Bearer abc.def", env), "Authorization: Bearer ***");
   assert.equal(redactSecrets("Authorization: token ghx_short", env), "Authorization: token ***");
   assert.equal(redactSecrets("authorization: Bot opaque-value", env), "authorization: Bot ***");
-  assert.equal(redactSecrets("Authorization: opaque123 trailing", env), "Authorization: *** trailing");
-  assert.equal(redactSecrets("PRIVATE-TOKEN: abc123 extra", env), "PRIVATE-TOKEN: *** extra");
+  assert.equal(redactSecrets("Authorization: opaque123 trailing", env), "Authorization: ***");
+  assert.equal(redactSecrets("PRIVATE-TOKEN: abc123 extra\nnext line", env), "PRIVATE-TOKEN: ***\nnext line");
+  assert.equal(
+    redactSecrets("Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/x, Signature=deadbeef", env),
+    "Authorization: ***",
+  );
+  assert.equal(redactSecrets('Authorization: Digest username="u", response="abc"', env), "Authorization: Digest ***");
+  // A scheme with no value masks the scheme word and leaves the next line alone.
+  assert.equal(redactSecrets("Authorization: Bearer\nnext line", env), "Authorization: ***\nnext line");
   assert.equal(redactSecrets("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig", env), "jwt ***");
   assert.equal(redactSecrets("ff glffct-abcdefghij12345", env), "ff ***");
   assert.equal(redactSecrets("job opaque-jwt-value-1234", { CI_JOB_JWT_V2: "opaque-jwt-value-1234" }), "job ***");

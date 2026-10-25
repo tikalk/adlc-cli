@@ -169,10 +169,11 @@ export function redactSecrets(text, env = process.env) {
   let out = text
     // userinfo in URLs: https://user:token@host → https://***@host
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1***@")
-    // Authorization-style headers and key=value pairs. Only known auth
-    // schemes are kept; any other word after the separator is the credential
-    // itself (so `PRIVATE-TOKEN: abc def` masks `abc`, not `def`).
-    .replace(/\b(authorization|private-token|x-api-key)(\s*[:=]\s*)((?:bearer|basic|token|bot|digest|negotiate|apikey|key)\s+)?\S+/gi, "$1$2$3***");
+    // Authorization-style headers and key=value pairs: everything after the
+    // separator to the end of the line is masked, keeping only a known auth
+    // scheme. Multi-parameter schemes (AWS SigV4, Digest) carry credentials
+    // past the first word, and over-masking an error message costs nothing.
+    .replace(/\b(authorization|private-token|x-api-key)([ \t]*[:=][ \t]*)((?:bearer|basic|token|bot|digest|negotiate|apikey|key)[ \t]+)?[^\s][^\r\n]*/gi, "$1$2$3***");
   for (const re of TOKEN_PATTERNS) out = out.replace(re, "***");
   for (const [name, value] of Object.entries(env)) {
     if (!value || value.length < 8 || !SECRET_ENV_NAME.test(name)) continue;
