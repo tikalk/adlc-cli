@@ -188,7 +188,8 @@ test("live transport: the step script is op-specific and travels in the envelope
     // command line through the remote shell.
     const calls = readFileSync(record.recordFile, "utf-8");
     assert.ok(!calls.includes("adlc-cli workspace setup"), "the step script must not be in argv");
-    assert.match(calls, /tee \/tmp\/adlc-envelope-/);
+    assert.match(calls, /umask 077 && tee \/tmp\/adlc-envelope-/);
+    assert.match(calls, /chmod 600 \/tmp\/adlc-envelope-/);
     assert.match(calls, /umask 077/, "the envelope must be created private");
     const chunks = readFileSync(record.stdinFile, "utf-8")
       .split("\n")
@@ -248,8 +249,12 @@ test("live transport: the referenced vars are persisted for the developer's late
       });
     const step = chunks.join("\n");
     assert.match(step, /secrets\.env/, "the step must persist the vars for the session");
-    assert.match(step, /umask 077/, "the remote step must create files private by default");
-    assert.match(step, /chmod 600/, "the persisted vars file must be 0600");
+    assert.match(step, /umask 077 \|\| exit 1/, "the remote step must fail closed if umask fails");
+    assert.match(
+      step,
+      /chmod 600 .*\|\| exit 1/,
+      "the persisted vars file must be 0600 or the step must fail"
+    );
   });
 });
 

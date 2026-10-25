@@ -220,7 +220,7 @@ export function createCoderSshTransport({
     // umask. coder ssh joins its argv into a remote command line, so keep this
     // a single, path-only command: the path is an internally generated UUID.
     const written = await runCoder(
-      ["ssh", name, "--", `umask 077; tee ${envelopePath}`],
+      ["ssh", name, "--", `umask 077 && tee ${envelopePath} && chmod 600 ${envelopePath}`],
       { input: envelope, timeoutMs }
     );
     if (written.code !== 0) {
@@ -326,7 +326,7 @@ export function createCoderSshTransport({
 function remoteRunner(envelopePath) {
   return `
 set -u
-umask 077
+umask 077 || exit 1
 _d=$(mktemp -d)
 _p=$(sed -n 1p "${envelopePath}")
 _s=$(sed -n 2p "${envelopePath}")
@@ -344,7 +344,7 @@ exit "$_rc"
 function remoteStep(op) {
   const prelude = `
 set -u
-umask 077
+umask 077 || exit 1
 _d="$1"
 _op=$(jq -r '.op // empty' "$_d/payload.json")
 _export_vars() { jq -r '(.vars // {}) | to_entries[] | "export \\(.key)=\\(.value | @sh)"' "$_d/payload.json" > "$_d/vars.sh"; . "$_d/vars.sh"; }
@@ -370,10 +370,14 @@ exit "$_rc"
   // each argument opaque, so a value with spaces, leading dashes, or embedded
   // newlines can never be re-split or synthesize another flag.
   const decodedArgs = `
-    jq -r '(.args // [])[] | @base64' "$_d/payload.json" > "$_d/args.b64"
+    jq -r '(.args // [])[] | @base64' "$_d/payload.json" > "$_d/args.b64" || exit 1
     set --
     while IFS= read -r _encoded; do
-      _arg=$(printf '%s' "$_encoded" | base64 -d; printf x)
+      if ! printf '%s' "$_encoded" | base64 -d > "$_d/arg.bin"; then
+        echo "adlc: could not decode payload args" >&2
+        exit 1
+      fi
+      _arg=$(cat "$_d/arg.bin"; printf x)
       _arg=\${_arg%x}
       set -- "$@" "$_arg"
     done < "$_d/args.b64"
@@ -386,14 +390,15 @@ exit "$_rc"
     # The developer's LATER session (a separate shell) must inherit the same
     # env the transport used: persist the referenced vars 0600 for the session
     # to source. Values stay in the workspace's env — never in a command line.
-    mkdir -p "$HOME/.adlc"
+    mkdir -p "$HOME/.adlc" || exit 1
     # Make the destination private BEFORE writing secrets. umask covers a new
-    # file; chmod also covers a file left behind by an older version.
-    : > "$HOME/.adlc/secrets.env"
-    chmod 600 "$HOME/.adlc/secrets.env"
+    # file; chmod also covers a file left behind by an older version. Fail
+    # closed: a mode we cannot enforce must not leave the secret at rest.
+    : > "$HOME/.adlc/secrets.env" || exit 1
+    chmod 600 "$HOME/.adlc/secrets.env" || exit 1
     jq -r '(.vars // {}) | to_entries[] | "export \\(.key)=\\(.value | @sh)"' \
-      "$_d/payload.json" > "$HOME/.adlc/secrets.env"
-    chmod 600 "$HOME/.adlc/secrets.env"
+      "$_d/payload.json" > "$HOME/.adlc/secrets.env" || exit 1
+    chmod 600 "$HOME/.adlc/secrets.env" || exit 1
 ${decodedArgs}
     adlc-cli workspace setup "$_d/workspace.yml" "$@"
     _rc=$?

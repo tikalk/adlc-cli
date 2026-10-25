@@ -1224,6 +1224,38 @@ test("iter-8: provider workspace setup refuses --dry-run before provisioning", a
   assert.match(cap.errs.join("\n"), /--dry-run is not supported with --provider coder/i);
 });
 
+test("iter-8: provider workspace setup forwards -a to the remote command", async () => {
+  const { default: os } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { default: fs } = await import("node:fs/promises");
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "adlc-setup-args-"));
+  await fs.writeFile(
+    path.join(tmp, "workspace.yml"),
+    ["schema_version: 1", "name: arg-ws", "workspace:", "  dirs: []", ""].join("\n")
+  );
+  const transport = injectedTransport();
+  const { cmdCoderWorkspaceSetup } = await import("../src/providers/coder/route.mjs");
+  const prevCwd = process.cwd();
+  const cap = captureRoute();
+  let code;
+  try {
+    process.chdir(tmp);
+    code = await cmdCoderWorkspaceSetup(
+      ["workspace.yml"],
+      { agents: ["opencode"] },
+      ["workspace", "setup", "--provider", "coder", "-a", "opencode"]
+    );
+  } finally {
+    process.chdir(prevCwd);
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+  assert.equal(code, 0);
+  const payload = JSON.parse(transport.calls.find((c) => c.op === "exec").input);
+  assert.deepEqual(payload.args, ["-a", "opencode"]);
+});
+
 test("iter-8: provider agent forwards flags and task in the payload argv", async () => {
   const transport = injectedTransport();
   const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
