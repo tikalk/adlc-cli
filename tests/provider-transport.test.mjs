@@ -1169,19 +1169,21 @@ test("self-heal-2: 1-2 char --input values are scrubbed as key=value pairs, neve
   );
 });
 
-test("iter-6: the repo's own workspace file is satisfiable by the documented lane command", async () => {
-  // The shipped .adlc/workspace.yml must only reference variables the lane
-  // contract supplies (WORKSPACE_NAME, BRANCH) — otherwise the documented
-  // command fails on arrival.
+test("iter-6: the lane fixture workspace file is satisfiable by the documented lane command", async () => {
+  // The lane fixture tests/e2e/profiles/provider-lane-workspace.yml must only
+  // reference variables the lane contract supplies (WORKSPACE_NAME, BRANCH) —
+  // otherwise the documented command fails on arrival. The fixture lives next
+  // to team-directives-workspace.yml; the tool repo keeps no workspace file
+  // of its own (adlc-cli is workspace-agnostic, ADR-443).
   const { readFileSync } = await import("node:fs");
   const { collectReferencedVars } = await import("../src/providers/transport.mjs");
-  const content = readFileSync(".adlc/workspace.yml", "utf-8");
+  const content = readFileSync("tests/e2e/profiles/provider-lane-workspace.yml", "utf-8");
   const refs = collectReferencedVars(content);
   const laneVars = ["WORKSPACE_NAME", "BRANCH"];
   for (const ref of refs) {
     assert.ok(
       laneVars.includes(ref),
-      `the repo's workspace file references ${ref}, which the lane does not supply (lane supplies: ${laneVars.join(", ")})`
+      `the lane fixture references ${ref}, which the lane does not supply (lane supplies: ${laneVars.join(", ")})`
     );
   }
 });

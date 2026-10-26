@@ -86,12 +86,12 @@ preview it.
 provider transport.
 
 ```bash
-# provision (or reuse) a remote workspace from the repo's workspace file.
-# The repo's .adlc/workspace.yml declares the per-run values it needs; every
-# ${VAR} it references must be supplied, or setup fails fast naming it:
+# provision (or reuse) a remote workspace from an explicit workspace file.
+# The lane fixture tests/e2e/profiles/provider-lane-workspace.yml declares the per-run values it needs;
+# every ${VAR} it references must be supplied, or setup fails fast naming it:
 #   WORKSPACE_NAME  the workspace name  (e.g. repo-mission-42)
 #   BRANCH          the branch to clone
-WORKSPACE_NAME=repo-mission-42 BRANCH=main adlc-cli workspace setup --provider coder
+WORKSPACE_NAME=repo-mission-42 BRANCH=main adlc-cli workspace setup tests/e2e/profiles/provider-lane-workspace.yml --provider coder
 
 # run a step on that workspace
 adlc-cli workflow run factory --input run_id=r-7 --provider coder --workspace repo-mission-42

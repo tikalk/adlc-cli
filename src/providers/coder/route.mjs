@@ -170,7 +170,7 @@ function explicitWorkspaceName(rawArgv = []) {
   return null;
 }
 
-// The workspace name the repo's workspace file declares, when it can be
+// The workspace name the resolved workspace file declares, when it can be
 // resolved. Used as the implicit target so the exec routes address the
 // workspace `workspace setup` provisioned (not a second "default" machine).
 function implicitWorkspaceName(projectRoot) {
