@@ -275,16 +275,18 @@ function decodeEnvelope(stdinFile) {
 
 // Execute the generated remote step locally with a stub adlc-cli. This
 // exercises the shell contract (argv, env) rather than only grepping source.
-function runGeneratedStep(step, payload) {
+function runGeneratedStep(step, payload, { stubBody, setup } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "adlc-step-"));
   const bin = join(dir, "bin");
   const remote = join(dir, "remote");
   mkdirSync(bin, { recursive: true });
   mkdirSync(remote, { recursive: true });
+  if (setup) setup(dir);
   const stub = join(bin, "adlc-cli");
   writeFileSync(
     stub,
-    `#!/usr/bin/env sh
+    stubBody ??
+      `#!/usr/bin/env sh
 jq -n --arg hop "\${ADLC_HOP_DEPTH:-unset}" --args '{hop:$hop, args:$ARGS.positional}' -- "$@"
 `
   );
@@ -299,16 +301,94 @@ jq -n --arg hop "\${ADLC_HOP_DEPTH:-unset}" --args '{hop:$hop, args:$ARGS.positi
   try {
     const r = spawnSync("sh", [stepPath, remote], { encoding: "utf-8", env });
     const rootFile = join(dir, ".adlc", "workspace-root");
+    const callsFile = join(dir, "calls.log");
     return {
       status: r.status,
       stdout: r.stdout ?? "",
       stderr: r.stderr ?? "",
       workspaceRoot: existsSync(rootFile) ? readFileSync(rootFile, "utf-8").trim() : null,
+      dir,
+      calls: existsSync(callsFile) ? readFileSync(callsFile, "utf-8") : null,
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test("self-heal-2: workflow.resume restores the parked run from git on a fresh machine", { skip: needsJq }, async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    const payload = {
+      op: "workflow.resume",
+      runId: "r1",
+      inputs: { verdict: "ok" },
+      vars: {},
+      env: { ADLC_HOP_DEPTH: "2" },
+      hop: 2,
+    };
+    await transport.exec({ name: "demo" }, JSON.stringify(payload));
+    const decoded = decodeEnvelope(record.stdinFile);
+    // The stub plays restoreRun: it materializes the run state from the
+    // "git ref" and records every adlc-cli call it receives, in order.
+    const r = runGeneratedStep(decoded.step, decoded.payload, {
+      stubBody: `#!/usr/bin/env sh
+printf 'cwd=%s\\n' "$PWD" >> "$HOME/calls.log"
+printf '%s\\n' "$*" >> "$HOME/calls.log"
+case "$1 $2" in
+  "workflow restore")
+    mkdir -p .adlc/workflows/runs/r1
+    touch .adlc/workflows/runs/r1/state.json
+    ;;
+esac
+exit 0;
+`
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.calls, "the stub must have been invoked");
+    // Each invocation also records its cwd; the non-cwd lines, in order,
+    // are the adlc-cli argv sequence the step actually made.
+    const invocations = r.calls
+      .trim()
+      .split("\n")
+      .filter((line) => !line.startsWith("cwd="));
+    assert.deepEqual(
+      invocations,
+      [
+        "workflow restore r1",
+        "workflow resume r1 --input verdict=ok",
+      ],
+      "without local run state, restore must run first, then the resume (order matters)"
+    );
+  });
+});
+
+test("self-heal-2: workflow.resume skips the restore when run state already exists", { skip: needsJq }, async () => {
+  await withFakeCoder({}, async (record) => {
+    const transport = createCoderSshTransport();
+    const payload = {
+      op: "workflow.resume",
+      runId: "r1",
+      inputs: { verdict: "ok" },
+      vars: {},
+      env: { ADLC_HOP_DEPTH: "2" },
+      hop: 2,
+    };
+    await transport.exec({ name: "demo" }, JSON.stringify(payload));
+    const decoded = decodeEnvelope(record.stdinFile);
+    const r = runGeneratedStep(decoded.step, decoded.payload, {
+      setup: (dir) => {
+        mkdirSync(join(dir, ".adlc", "workflows", "runs", "r1"), { recursive: true });
+        writeFileSync(join(dir, ".adlc", "workflows", "runs", "r1", "state.json"), "{}\n");
+      },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    // One jq document on stdout: the resume call itself. A restore call
+    // would add a second document and break this parse.
+    const parsed = JSON.parse(r.stdout.trim());
+    assert.equal(parsed.hop, "2");
+    assert.deepEqual(parsed.args, ["workflow", "resume", "r1", "--input", "verdict=ok"]);
+  });
+});
 
 function runRunner(runner) {
   const dir = mkdtempSync(join(tmpdir(), "adlc-runner-"));
@@ -623,7 +703,14 @@ test("live transport: workflow resume is routed and forwards its inputs", { skip
     const decoded = decodeEnvelope(record.stdinFile);
     assert.match(decoded.step, /_workspace_root/, "resume must use the cloned workspace root");
     assert.match(decoded.step, /cd "\$_root"/, "resume must enter the cloned workspace");
-    const r = runGeneratedStep(decoded.step, decoded.payload);
+    // The run state exists here (the fresh-machine restore path has its own
+    // test) — single resume call, the args assertion stays exact.
+    const r = runGeneratedStep(decoded.step, decoded.payload, {
+      setup: (dir) => {
+        mkdirSync(join(dir, ".adlc", "workflows", "runs", "run-123"), { recursive: true });
+        writeFileSync(join(dir, ".adlc", "workflows", "runs", "run-123", "state.json"), "{}\n");
+      },
+    });
     assert.equal(r.status, 0, r.stderr);
     const parsed = JSON.parse(r.stdout.trim());
     assert.deepEqual(parsed.args, [

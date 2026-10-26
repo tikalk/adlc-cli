@@ -66,35 +66,64 @@ const VALUED_FLAGS = [
   "--require-approval", "--effort", "--skill", "-s",
 ];
 
-function valuedFlagValues(rawArgv = []) {
-  const values = new Set();
-  for (let i = 0; i < rawArgv.length; i++) {
-    const arg = rawArgv[i];
-    if (!arg.startsWith("-")) continue;
+// The positional tokens in argv, decided by POSITION rather than text
+// membership. Excluding a token because its text equals some flag's value
+// silently drops a legitimate positional (a task that coincides with the
+// `-a` value, a workflow source that coincides with `--format json`); the
+// local CLI accepts both. The scan therefore walks argv: after a two-form
+// valued flag (`--flag value`) the NEXT token is consumed as the value, and
+// every remaining non-flag token is a positional.
+function positionalTokens(tokens = []) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const arg = tokens[i];
+    if (typeof arg !== "string") continue;
+    if (!arg.startsWith("-")) {
+      out.push(arg);
+      continue;
+    }
+    let valued = null;
     for (const name of VALUED_FLAGS) {
-      if (arg === name) {
-        const value = rawArgv[i + 1];
-        if (value !== undefined && !value.startsWith("-")) values.add(value);
-        i++;
-        break;
-      }
-      if (arg.startsWith(`${name}=`)) {
-        const value = arg.slice(name.length + 1);
-        if (value !== "") values.add(value);
+      if (arg === name || arg.startsWith(`${name}=`)) {
+        valued = name;
         break;
       }
     }
+    if (valued === null) continue; // boolean or unknown flag: skip the flag only
+    if (!arg.includes("=")) i++; // consume the two-form value (`--flag value`)
   }
-  return values;
+  return out;
 }
 
-// The first real positional token — flag values excluded.
+// The first real positional token. Flags are skipped positionally: a token
+// is a flag's value when its FIRST occurrence in rawArgv directly follows a
+// valued flag — decided by argv position, not by text membership
+// (`agent run opencode -a opencode` keeps the task; an --input value split
+// across the (args, argv) strings never becomes the source).
+function isFlagValueToken(token, rawArgv = []) {
+  if (typeof token !== "string") return false;
+  const i = (rawArgv ?? []).indexOf(token);
+  if (i <= 0) return false;
+  return VALUED_FLAGS.includes(rawArgv[i - 1]);
+}
+
 function firstPositional(tokens = [], rawArgv = []) {
-  const consumed = valuedFlagValues(rawArgv);
-  for (const token of tokens) {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
     if (typeof token !== "string") continue;
-    if (token.startsWith("-")) continue;
-    if (consumed.has(token)) continue;
+    if (token.startsWith("-")) {
+      // A two-form valued flag consumes the token after it (`--format json`).
+      let valued = false;
+      for (const name of VALUED_FLAGS) {
+        if (token === name) {
+          valued = true;
+          break;
+        }
+      }
+      if (valued && !token.includes("=")) i++;
+      continue;
+    }
+    if (isFlagValueToken(token, rawArgv)) continue;
     return token;
   }
   return null;
@@ -196,6 +225,22 @@ function scrubValues(values) {
   let index = 0;
   for (const value of values ?? []) {
     if (typeof value === "string" && value.length >= 3) out[`payload:${index++}`] = value;
+  }
+  return out;
+}
+
+// Scrub needles for the `--input key=value` pairs. A long value is a needle
+// by itself. A short one must never be a bare needle: 1-2-char values would
+// redact innocent text across the whole stream. Their echo travels as the
+// pair the CLI forwards (`key=value`), so the PAIR is the needle instead —
+// specific enough at any value length, and it never corrupts output.
+function scrubValuePairs(inputs) {
+  const out = {};
+  let index = 0;
+  for (const [key, value] of Object.entries(inputs ?? {})) {
+    if (typeof value !== "string" || value === "") continue;
+    if (value.length >= 3) out[`payload:${index++}`] = value;
+    else out[`payload:${index++}`] = `${key}=${value}`;
   }
   return out;
 }
@@ -432,13 +477,9 @@ export async function cmdCoderAgentRun(runArgs, argv = []) {
   // The provider/workspace flags are not part of the task: strip them before
   // the task is read, or the provider name is mistaken for the task.
   const cleanArgs = stripProviderArgs(runArgs ?? []);
-  // The task is the first positional that is not the value of a valued flag
-  // (`-a opencode`, `--model x`, …) — otherwise a flag value is dispatched
-  // as the prompt and a taskless run looks successful.
-  const taskValues = valuedFlagValues(runArgs ?? []);
-  const positionals = cleanArgs.filter(
-    (a) => !a.startsWith("-") && !taskValues.has(a)
-  );
+  // The task is the last positional token — decided by POSITION, not by
+  // value membership (`agent run opencode -a opencode` keeps the task).
+  const positionals = positionalTokens(cleanArgs);
   let prompt = positionals.pop();
   let args = cleanArgs;
   if (prompt === undefined && cleanArgs.includes("-")) {
@@ -556,7 +597,7 @@ export async function cmdCoderWorkflowResume(args, flags, rawArgv = []) {
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
-  const resumeVars = { ...referencedSecretValues(collectReferencedVars(inputs)), ...scrubValues(Object.values(inputs)) };
+  const resumeVars = { ...referencedSecretValues(collectReferencedVars(inputs)), ...scrubValuePairs(inputs) };
   try {
     const { exitCode } = await streamRemote(provider, handle, payload, resumeVars);
     if (exitCode !== 0) return exitCode || 1;
@@ -634,7 +675,7 @@ export async function cmdCoderWorkflowRun(args, flags, rawArgv = []) {
     env: remoteInputs(),
     hop: currentHopDepth() + 1,
   });
-  const wfVars = { ...referencedSecretValues(wfReferenced), ...scrubValues(Object.values(inputs)) };
+  const wfVars = { ...referencedSecretValues(wfReferenced), ...scrubValuePairs(inputs) };
   try {
     const { exitCode } = await streamRemote(provider, handle, payload, wfVars);
     if (exitCode !== 0) return exitCode || 1;

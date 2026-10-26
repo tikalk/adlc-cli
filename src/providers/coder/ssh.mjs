@@ -523,6 +523,16 @@ ${decodedArgs}
 ${decodedArgs}
     _root=$(_workspace_root)
     cd "$_root" || exit 1
+    # Fresh machine: no local run state. The parked run ref in git
+    # (refs/factory-runs, Tier-3) is the only copy - restore it before
+    # resuming, or the resume dies with "Run state not found" on exactly
+    # the machine-loss path this op serves.
+    if [ ! -f ".adlc/workflows/runs/$_run_id/state.json" ]; then
+      adlc-cli workflow restore "$_run_id" || {
+        echo "adlc: workflow resume could not restore run state for $_run_id (was the run parked/pushed?)" >&2
+        exit 1
+      }
+    fi
     jq -r '(.inputs // {}) | to_entries[] | "\\(.key)=\\(.value)" | @base64' \
       "$_d/payload.json" > "$_d/inputs.b64"
     while IFS= read -r _encoded; do

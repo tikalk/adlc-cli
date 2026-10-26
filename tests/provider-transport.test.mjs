@@ -1090,6 +1090,85 @@ test("iter-5: the dispatch consumes an --input value (not a positional)", async 
   );
 });
 
+test("self-heal-2: a task equal to a flag value is kept (agent run opencode -a opencode)", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderAgentRun } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderAgentRun(
+      ["--provider", "coder", "--workspace", "task-parity-ws", "opencode", "-a", "opencode"],
+      ["agent", "run", "--provider", "coder", "--workspace", "task-parity-ws", "opencode", "-a", "opencode"]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0, `${cap.errs.join("\n")}`);
+  const payload = JSON.parse(transport.calls.find((c) => c.op === "exec").input);
+  assert.equal(
+    payload.task,
+    "opencode",
+    "the task must be the positional token, not dropped for membership in the flag-value set"
+  );
+});
+
+test("self-heal-2: a source equal to a flag value is kept (workflow run json --format json)", async () => {
+  const transport = injectedTransport();
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderWorkflowRun(
+      ["json", "--format", "json"],
+      {},
+      ["run", "json", "--format", "json", "--provider", "coder", "--workspace", "source-parity-ws"]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0, `${cap.errs.join("\n")}`);
+  const payload = JSON.parse(transport.calls.find((c) => c.op === "exec").input);
+  assert.equal(
+    payload.source,
+    "json",
+    "the source must be the positional token, not swallowed by the --format value"
+  );
+});
+
+test("self-heal-2: 1-2 char --input values are scrubbed as key=value pairs, never as bare needles", async () => {
+  const transport = injectedTransport({
+    stdout: "the pipeline picks `xy` up from the stream\n--input session=xy\n--input wall=t\n",
+  });
+  const { cmdCoderWorkflowRun } = await import("../src/providers/coder/route.mjs");
+  const cap = captureRoute();
+  let code;
+  try {
+    code = await cmdCoderWorkflowRun(
+      ["factory"],
+      {},
+      [
+        "run", "factory",
+        "--input", "session=xy", "--input", "wall=t",
+        "--provider", "coder", "--workspace", "short-scrub-ws",
+      ]
+    );
+  } finally {
+    cap.restore();
+    delete globalThis.__ADLC_CODER_TRANSPORT__;
+  }
+  assert.equal(code, 0);
+  const out = cap.logs.join("\n");
+  assert.ok(!out.includes("session=xy"), `short values must not echo verbatim: ${out}`);
+  assert.ok(out.includes("--input [REDACTED]"), `the pair form is the scrub needle: ${out}`);
+  assert.ok(out.split("--input [REDACTED]").length >= 3, "every short-value pair is masked");
+  assert.ok(
+    out.includes("the pipeline picks `xy` up from the stream"),
+    "short values must never become bare needles that corrupt unrelated text"
+  );
+});
+
 test("iter-6: the repo's own workspace file is satisfiable by the documented lane command", async () => {
   // The shipped .adlc/workspace.yml must only reference variables the lane
   // contract supplies (WORKSPACE_NAME, BRANCH) — otherwise the documented
