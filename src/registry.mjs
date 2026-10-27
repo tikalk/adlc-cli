@@ -745,7 +745,7 @@ export const MCP_AGENTS = {
 
 export function getMcpAgent(key) {
   const normalized = key === "claude" ? "claude-code" : key;
-  return MCP_AGENTS[normalized] || null;
+  return Object.hasOwn(MCP_AGENTS, normalized) ? MCP_AGENTS[normalized] : null;
 }
 
 export function getEventAgentConfig(agentKey) {

@@ -33,8 +33,12 @@ describe("MCP_AGENTS adapter table", () => {
   });
 
   it("getMcpAgent normalises the claude alias and rejects unknown agents", () => {
+    assert.equal(getMcpAgent("claude-code"), MCP_AGENTS["claude-code"]);
     assert.equal(getMcpAgent("claude"), getMcpAgent("claude-code"));
     assert.equal(getMcpAgent("gemini"), null);
+    // Garbage keys must not resolve through the prototype chain: the contract
+    // is McpAgentRow | null, never a truthy non-row.
+    assert.equal(getMcpAgent("constructor"), null);
   });
 
   it("maps the opencode, codex and cursor target files", () => {
