@@ -8,6 +8,7 @@ import { cmdFactorySetup } from "./commands/factory.mjs";
 import { cmdAgentRun, cmdAgentList } from "./commands/agent.mjs";
 import { cmdWorkspaceSetup, cmdWorkspaceInit, cmdWorkspaceStatus } from "./commands/workspace.mjs";
 import { cmdWorkflow } from "./commands/workflow.mjs";
+import { cmdMcpInstall } from "./commands/mcp.mjs";
 import {
   printCliHelp,
   printSkillsHelp,
@@ -16,6 +17,7 @@ import {
   printAgentHelp,
   printWorkspaceHelp,
   printWorkflowHelp,
+  printMcpHelp,
   printHelp,
 } from "./help.mjs";
 import { setColorMode, out, err, style, combine } from "./ui/index.mjs";
@@ -241,6 +243,21 @@ async function runNewTree({ command, args, flags }, argv) {
           return 1;
       }
     }
+    case "mcp": {
+      const sub = args[0] ?? "help";
+      const rest = args.slice(1);
+      switch (sub) {
+        case "install":
+          return cmdMcpInstall(rest, flags);
+        case "help":
+          printMcpHelp();
+          return 0;
+        default:
+          err(combine(style("Unknown", "red"), ' ', style(`mcp command: "${sub}"`, "gray")));
+          printMcpHelp();
+          return 1;
+      }
+    }
     case "version":
       out(`adlc-cli ${VERSION}`);
       return 0;
@@ -264,7 +281,7 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
 
-    if (arg === "-a" || arg === "--agent") {
+    if (arg === "-a" || arg === "--agent" || arg === "--agents") {
       flags.agents.push(rest[++i]);
     } else if (arg === "-g" || arg === "--global") {
       flags.global = true;
