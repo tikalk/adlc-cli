@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-10-28
+
+### Added
+
+- **Provider transport interface + coder adapter.** `workspace setup`,
+  `agent run`, and `workflow run` accept `--provider coder` and route through
+  a run-level transport (ADR-443); the live SSH transport is the default, a
+  mock is opt-in for offline tests (`ADLC_CODER_MOCK=1` or an injected
+  transport). Commands that ask for a remote workspace never silently fall
+  back to a mock or a local run. ([#47], `ee19788`)
+- **Remote `workspace setup`**: validates the workspace file, resolves and
+  normalizes the name, provisions or reuses the workspace via the persisted
+  `.adlc/workspaces/<name>.json` handle, and runs the local setup contract
+  on the remote. A remote `--dry-run` is refused before any provision/exec —
+  it must not create a workspace just to preview it. ([#47], `ee19788`)
+- **Remote `agent run`**: forwards the agent task plus the full local argv
+  (`-a`, `--model`, `--format`, `--cwd`, `--timeout`,
+  `--require-approval`), reconstructing argv from base64 entries so values
+  with spaces, leading dashes, or newlines stay one argument. The stdin task
+  form still works. ([#47], `ee19788`)
+- **Remote `workflow run`**: forwards `--input` values (base64-encoded per
+  key=value pair, decoded into a single argv element) with the workspace,
+  provider, and resume path intact. ([#47], `ee19788`)
+
+### Security
+
+- **The provider surface keeps the workspace file location-free** (a
+  `provider:` key is rejected), expands `${VAR}` references fail-fast
+  naming the missing variable, refuses to silently provision a second
+  workspace for one target, carries the hop guard across the transport
+  boundary, and streams redacted remote output. ([#47], `ee19788`)
+
 ## [2.4.3] - 2026-10-25
 
 ### Fixed
@@ -94,5 +126,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#53]: https://github.com/tikalk/adlc-cli/pull/53
 [#54]: https://github.com/tikalk/adlc-cli/pull/54
 [#46]: https://github.com/tikalk/adlc-cli/pull/46
+[#47]: https://github.com/tikalk/adlc-cli/pull/47
 [#57]: https://github.com/tikalk/adlc-cli/pull/57
 [#59]: https://github.com/tikalk/adlc-cli/pull/59
