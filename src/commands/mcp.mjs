@@ -23,9 +23,17 @@
 //
 // `.mcp.json` is the source of truth and is never rewritten here;
 // `claude-code` is therefore a no-op that reports every server kept.
+//
+// ── The copy-once gap report (PDR-140) ────────────────────────────────
+// After the install, the team's .mcp.json (the upstream declaration) is
+// compared against the project's (the copy). What the copy lacks is
+// reported as a warning — never written, never blocking — so it can never
+// change the exit code. A missing team source is itself reported: a
+// report that quietly reports nothing is worse than no report.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { droppedDefaults, reportGap } from "../mcp/gap.mjs";
 import { installForAgent } from "../mcp/install.mjs";
 import { getMcpAgent, MCP_AGENTS } from "../registry.mjs";
 import { readAgent } from "../utils/init-options.mjs";
@@ -83,6 +91,10 @@ export async function cmdMcpInstall(args = [], flags = {}) {
   const sourcePath = join(projectRoot, MCP_SOURCE);
   if (!existsSync(sourcePath)) {
     out(`nothing to install: no ${MCP_SOURCE} in ${projectRoot}`);
+    // The copy-once contract is drift detection, not an install
+    // postscript: a project that has not copied yet lacks every
+    // team-declared server, and never-blocking means exit stays 0.
+    printGapReport(projectRoot, {}, named);
     return 0;
   }
   let doc;
@@ -106,6 +118,7 @@ export async function cmdMcpInstall(args = [], flags = {}) {
   const names = Object.keys(servers);
   if (names.length === 0) {
     out(`nothing to install: ${MCP_SOURCE} declares no servers`);
+    printGapReport(projectRoot, servers, named);
     return 0;
   }
 
@@ -131,6 +144,10 @@ export async function cmdMcpInstall(args = [], flags = {}) {
       reportByHand(report.target, targetFailed ? names : refused);
     }
   }
+
+  // Copy-once gap report: additive warning lines after the install report,
+  // before the verdict — it must never change the exit code (PDR-140).
+  printGapReport(projectRoot, servers, named);
 
   if (failedAgents.length > 0) {
     failure(`MCP install failed for: ${failedAgents.join(", ")} — add the listed servers by hand`);
@@ -170,6 +187,45 @@ function reportNoAdapter(agent, names) {
 function reportByHand(target, names) {
   err(`add these servers by hand to ${target}:`);
   for (const name of names) err(`  ${name}`);
+}
+
+// ── The copy-once gap report (PDR-140) ─────────────────────────────────
+// Additive warning lines on stdout: they never change the exit code and
+// never write anything. Silence when there is nothing to say; a missing
+// team source is itself reported — a report that quietly reports nothing
+// is worse than no report.
+function printGapReport(projectRoot, servers, named) {
+  const gap = reportGap({ projectRoot, servers });
+  const lines = [];
+  if (gap.teamSourceUnavailable) {
+    lines.push(`team MCP source unavailable — gap not checked (team-ai-directives not configured or unreadable)`);
+  }
+  if (gap.missing.length > 0) {
+    lines.push(`team declares servers missing from ${MCP_SOURCE}: ${gap.missing.join(", ")} (add them by hand if you want them)`);
+  }
+  if (gap.notCarried.length > 0) {
+    lines.push(`team ${MCP_SOURCE} keys not carried to any target: ${gap.notCarried.join(", ")}`);
+  }
+  appendDroppedDefaults(lines, servers, named);
+  if (lines.length === 0) return;
+  section("MCP gap (warning only — nothing written, nothing blocked)");
+  for (const line of lines) item(line, { glyph: sym.warn, color: "yellow" });
+}
+
+// ${VAR:-default} fallbacks are dropped by every variable syntax except
+// "passthrough". The install report already carries the note for "env-vars"
+// targets (droppedDefaultsNote in install.mjs prints it in the entry
+// detail), so the gap report surfaces the drop only for the targets where
+// it would otherwise stay silent.
+function appendDroppedDefaults(lines, servers, named) {
+  const targets = [...new Set(named.filter((agent) => {
+    const row = getMcpAgent(agent);
+    return row && (row.var_syntax === "env-braces" || row.var_syntax === "env-prefix");
+  }))];
+  if (targets.length === 0) return;
+  for (const { server, vars } of droppedDefaults(servers)) {
+    lines.push(`${server}: defaults dropped in translation to ${targets.join(", ")} — set explicitly: ${vars.join(", ")}`);
+  }
 }
 
 function isPlainObject(v) {
