@@ -1,0 +1,302 @@
+import { it } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { installForAgent } from "../src/mcp/install.mjs";
+
+// Minimal project sandbox: a temp dir plus helpers to lay out foreign configs.
+function project() {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-mcp-install-"));
+  return {
+    dir,
+    path: (rel) => join(dir, rel),
+    write(rel, content) {
+      const abs = join(dir, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, content, "utf-8");
+    },
+    read(rel) { return readFileSync(join(dir, rel), "utf-8"); },
+    readBytes(rel) { return readFileSync(join(dir, rel)); },
+    exists(rel) { return existsSync(join(dir, rel)); },
+    cleanup() { rmSync(dir, { recursive: true, force: true }); },
+  };
+}
+
+const CONTEXT7 = {
+  command: "npx",
+  args: ["-y", "@upstash/context7-mcp"],
+  env: { TOKEN: "${GITLAB_TOKEN}" },
+};
+
+// ── The brief's contract tests (values verbatim) ───────────────────────
+
+it("adds entries in the target's shape and leaves foreign keys alone", () => {
+  const p = project();
+  try {
+    p.write("opencode.json", JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      plugin: ["p@git+https://x/p.git"],
+      mcp: { unrelated: { type: "local", command: ["x"] } },
+    }, null, 2));
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "opencode", servers: { context7: CONTEXT7 } });
+
+    const cfg = JSON.parse(p.read("opencode.json"));
+    assert.equal(cfg.$schema, "https://opencode.ai/config.json");
+    assert.deepEqual(cfg.plugin, ["p@git+https://x/p.git"]);
+    assert.equal(cfg.mcp.unrelated.type, "local");           // untouched
+    assert.deepEqual(cfg.mcp.unrelated.command, ["x"]);
+    assert.equal(cfg.mcp.context7.type, "local");            // translated
+    assert.deepEqual(cfg.mcp.context7.command, ["npx", "-y", "@upstash/context7-mcp"]);
+    assert.equal(cfg.mcp.context7.environment.TOKEN, "{env:GITLAB_TOKEN}");
+    assert.equal(r.written.find((w) => w.name === "context7").action, "added");
+    assert.equal(r.errors.length, 0);
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("a name in .mcp.json is tool-owned: a hand-edited body is overwritten and reported", () => {
+  const p = project();
+  try {
+    p.write("opencode.json", JSON.stringify({
+      mcp: { context7: { type: "local", command: ["hand", "edited"], environment: {} } },
+    }, null, 2));
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "opencode", servers: { context7: CONTEXT7 } });
+
+    assert.equal(r.written.find((w) => w.name === "context7").action, "updated");
+    const cfg = JSON.parse(p.read("opencode.json"));
+    assert.deepEqual(cfg.mcp.context7.command, ["npx", "-y", "@upstash/context7-mcp"]);
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("a bare {\"enabled\": false} override is kept, not replaced", () => {
+  const p = project();
+  try {
+    p.write("opencode.json", JSON.stringify({ mcp: { gitlab: { enabled: false } } }, null, 2));
+
+    const r = installForAgent({
+      projectRoot: p.dir,
+      agent: "opencode",
+      servers: {
+        gitlab: {
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-gitlab"],
+          env: { GITLAB_TOKEN: "${GITLAB_TOKEN}" },
+        },
+      },
+    });
+
+    assert.equal(r.written.find((w) => w.name === "gitlab").action, "kept");
+    const cfg = JSON.parse(p.read("opencode.json"));
+    assert.deepEqual(cfg.mcp.gitlab, { enabled: false }); // not replaced with a full entry
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("a refused entry is not written, and names the server and the reason", () => {
+  const p = project();
+  try {
+    const r = installForAgent({
+      projectRoot: p.dir,
+      agent: "codex",
+      servers: { docs: { type: "http", url: "https://mcp.example/${TENANT}" } },
+    });
+
+    const w = r.written.find((x) => x.name === "docs");
+    assert.equal(w.action, "refused");
+    assert.match(w.detail, /url/);
+    // The codex target is TOML and was never created (ruling 2: never JSON.parse a .toml).
+    assert.equal(p.exists(".codex/config.toml"), false);
+    // Refusals live in written[], never in errors[] (ruling 1).
+    assert.equal(r.errors.length, 0);
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("disabled:true writes the off switch where one exists and skips where none does", () => {
+  // opencode has an off switch -> {"enabled": false}; cursor has none -> omitted.
+  const po = project();
+  try {
+    po.write("opencode.json", JSON.stringify({ mcp: {} }, null, 2));
+    const ro = installForAgent({
+      projectRoot: po.dir,
+      agent: "opencode",
+      servers: { foo: { command: "x", disabled: true } },
+    });
+    assert.deepEqual(JSON.parse(po.read("opencode.json")).mcp.foo, { enabled: false });
+    const wo = ro.written.find((w) => w.name === "foo");
+    assert.ok(wo.action === "added" || wo.action === "updated");
+  } finally {
+    po.cleanup();
+  }
+
+  const pc = project();
+  try {
+    pc.write(".cursor/mcp.json", JSON.stringify({ mcpServers: {} }, null, 2));
+    const rc = installForAgent({
+      projectRoot: pc.dir,
+      agent: "cursor",
+      servers: { foo: { command: "x", disabled: true } },
+    });
+    assert.equal(JSON.parse(pc.read(".cursor/mcp.json")).mcpServers.foo, undefined);
+    assert.equal(rc.written.find((w) => w.name === "foo").action, "disabled-skipped");
+  } finally {
+    pc.cleanup();
+  }
+});
+
+it("is idempotent: a second run writes byte-identical files and reports kept", () => {
+  const p = project();
+  try {
+    p.write("opencode.json", JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      mcp: { unrelated: { type: "local", command: ["x"] } },
+    }, null, 2));
+    const servers = {
+      context7: CONTEXT7,
+      gitlab: { command: "y", disabled: true },
+    };
+
+    installForAgent({ projectRoot: p.dir, agent: "opencode", servers }); // first run
+    const first = p.readBytes("opencode.json");
+    const r2 = installForAgent({ projectRoot: p.dir, agent: "opencode", servers }); // second run
+
+    assert.deepEqual(p.readBytes("opencode.json"), first);
+    assert.ok(r2.written.every((w) => w.action === "kept"));
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("refuses a config that is not plain JSON instead of editing it", () => {
+  const p = project();
+  try {
+    const original = '{\n  // a JSONC comment\n  "mcp": {}\n}\n';
+    p.write("opencode.json", original);
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "opencode", servers: { context7: CONTEXT7 } });
+
+    assert.ok(r.errors.some((e) => /not plain JSON/.test(e)));
+    assert.equal(p.read("opencode.json"), original); // untouched
+    assert.equal(r.written.length, 0);               // target-level failure, not per-server (ruling 1)
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ── Codex (TOML) merge: marker fragments, foreign preservation, ownership ──
+
+it("codex writes a marker-paired TOML fragment and preserves foreign TOML", () => {
+  const p = project();
+  try {
+    p.write(".codex/config.toml", 'model = "gpt"\n\n[mcp_servers.foreign]\ncommand = "keep"\n');
+
+    const r = installForAgent({
+      projectRoot: p.dir,
+      agent: "codex",
+      servers: { context7: { command: "npx", args: ["-y", "x"] } },
+    });
+
+    const text = p.read(".codex/config.toml"); // read as text, never JSON.parse a .toml
+    assert.match(text, /\[mcp_servers\.context7\]/);
+    assert.match(text, /adlc-mcp-begin context7/);
+    assert.match(text, /adlc-mcp-end context7/);
+    assert.match(text, /model = "gpt"/);                 // foreign root preserved
+    assert.match(text, /\[mcp_servers\.foreign\]/);      // foreign server preserved
+    assert.match(text, /command = "keep"/);
+    assert.equal(r.written.find((w) => w.name === "context7").action, "added");
+    assert.equal(r.errors.length, 0);
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("codex is idempotent and regenerates a hand-edited owned block", () => {
+  const p = project();
+  try {
+    p.write(".codex/config.toml", 'model = "gpt"\n');
+    const servers = { context7: { command: "npx", args: ["-y", "x"] } };
+
+    installForAgent({ projectRoot: p.dir, agent: "codex", servers }); // first run
+    const first = p.readBytes(".codex/config.toml");
+    const r2 = installForAgent({ projectRoot: p.dir, agent: "codex", servers }); // second run
+    assert.deepEqual(p.readBytes(".codex/config.toml"), first);
+    assert.ok(r2.written.every((w) => w.action === "kept"));
+
+    // Hand-edit the owned block: ownership is the name, so it is regenerated.
+    p.write(".codex/config.toml",
+      p.read(".codex/config.toml").replace('command = "npx"', 'command = "hand-edited"'));
+    const r3 = installForAgent({ projectRoot: p.dir, agent: "codex", servers });
+    assert.equal(r3.written.find((w) => w.name === "context7").action, "updated");
+    assert.match(p.read(".codex/config.toml"), /command = "npx"/); // regenerated
+    assert.match(p.read(".codex/config.toml"), /model = "gpt"/);   // foreign still preserved
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ── Target-level failures (ruling 1): wrong shape, reported and untouched ──
+
+it("refuses a target whose section is the wrong shape instead of editing it", () => {
+  const p = project();
+  try {
+    const original = JSON.stringify({ mcp: ["not", "an", "object"] }, null, 2) + "\n";
+    p.write("opencode.json", original);
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "opencode", servers: { context7: CONTEXT7 } });
+
+    assert.ok(r.errors.length > 0);
+    assert.equal(p.read("opencode.json"), original);
+    assert.equal(r.written.length, 0);
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ── Security: a server named __proto__ must not pollute the prototype ──
+
+it("writes a server named __proto__ as a normal key without prototype pollution", () => {
+  const p = project();
+  try {
+    p.write("opencode.json", "{}");
+    const servers = JSON.parse('{ "__proto__": { "command": "x" } }'); // own key, as JSON.parse produces
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "opencode", servers });
+
+    assert.equal(r.written.find((w) => w.name === "__proto__").action, "added");
+    const cfg = JSON.parse(p.read("opencode.json"));
+    assert.ok(Object.hasOwn(cfg.mcp, "__proto__"));       // stored as a normal key
+    assert.equal(({}).polluted, undefined);               // the prototype is untouched
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ── disabled-skipped actually disables: a stale owned entry is removed ──
+
+it("disabled:true with no off switch removes a stale owned entry to actually disable", () => {
+  const p = project();
+  try {
+    p.write(".cursor/mcp.json", JSON.stringify({
+      mcpServers: { foo: { type: "stdio", command: "stale" } },
+    }, null, 2));
+
+    const r = installForAgent({
+      projectRoot: p.dir,
+      agent: "cursor",
+      servers: { foo: { command: "x", disabled: true } },
+    });
+
+    assert.equal(r.written.find((w) => w.name === "foo").action, "disabled-skipped");
+    assert.equal(JSON.parse(p.read(".cursor/mcp.json")).mcpServers.foo, undefined);
+  } finally {
+    p.cleanup();
+  }
+});
