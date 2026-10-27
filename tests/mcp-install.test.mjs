@@ -300,3 +300,94 @@ it("disabled:true with no off switch removes a stale owned entry to actually dis
     p.cleanup();
   }
 });
+
+// ── Fix round 1 — Important 1: .mcp.json is the source, never written ──
+
+it("claude is a no-op: .mcp.json is never rewritten and every server reports kept", () => {
+  const p = project();
+  try {
+    const original = JSON.stringify({
+      mcpServers: { context7: CONTEXT7, gitlab: { command: "y", disabled: true } },
+    }, null, 2) + "\n";
+    p.write(".mcp.json", original);
+    const servers = { context7: CONTEXT7, gitlab: { command: "y", disabled: true } };
+
+    const before = p.readBytes(".mcp.json");
+    const r = installForAgent({ projectRoot: p.dir, agent: "claude", servers });
+
+    assert.deepEqual(p.readBytes(".mcp.json"), before);           // byte-identical
+    assert.equal(r.written.find((w) => w.name === "context7").action, "kept");
+    const gw = r.written.find((w) => w.name === "gitlab");
+    assert.equal(gw.action, "kept");
+    assert.match(gw.detail, /no effect in claude/);               // disabled does not delete
+    assert.match(gw.detail, /delete the entry/);
+    assert.equal(r.errors.length, 0);
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ── Fix round 1 — Important 2: a TOML bare off-switch override is kept ──
+
+it("codex keeps a bare off-switch override instead of clobbering it", () => {
+  const p = project();
+  try {
+    p.write(".codex/config.toml", '[mcp_servers.gitlab]\nenabled = false\n');
+
+    const r = installForAgent({
+      projectRoot: p.dir,
+      agent: "codex",
+      servers: { gitlab: { command: "npx", args: ["-y", "x"] } },
+    });
+
+    const text = p.read(".codex/config.toml");
+    assert.match(text, /enabled = false/);          // the override is still there
+    assert.doesNotMatch(text, /command = "npx"/);   // not rebuilt into a full entry
+    assert.equal(r.written.find((w) => w.name === "gitlab").action, "kept");
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ── Fix round 1 — Important 3: malformed marker pairs lose no data ──
+
+it("an unterminated marker block is reported and the file is left untouched", () => {
+  const p = project();
+  try {
+    const original = '# adlc-mcp-begin context7\n[mcp_servers.context7]\ncommand = "x"\n'
+      + '[mcp_servers.foreign]\ncommand = "keep"\n';
+    p.write(".codex/config.toml", original);
+
+    const r = installForAgent({
+      projectRoot: p.dir,
+      agent: "codex",
+      servers: { context7: { command: "npx", args: ["-y", "x"] } },
+    });
+
+    assert.ok(r.errors.some((e) => /unterminated/.test(e)));   // reported
+    assert.equal(p.read(".codex/config.toml"), original);       // untouched, foreign kept
+    assert.equal(r.written.length, 0);                          // target-level failure
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("an orphan end marker is reported and the file is left untouched", () => {
+  const p = project();
+  try {
+    const original = '# adlc-mcp-end context7\nmodel = "gpt"\n';
+    p.write(".codex/config.toml", original);
+
+    const r = installForAgent({
+      projectRoot: p.dir,
+      agent: "codex",
+      servers: { context7: { command: "npx", args: ["-y", "x"] } },
+    });
+
+    assert.ok(r.errors.some((e) => /orphan/.test(e)));
+    assert.equal(p.read(".codex/config.toml"), original);
+    assert.equal(r.written.length, 0);
+  } finally {
+    p.cleanup();
+  }
+});

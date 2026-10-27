@@ -20,12 +20,22 @@
 // written. A disabled server either becomes an off switch where one exists
 // (has_off_switch) or is omitted/reported where none does.
 //
-// .mcp.json itself is never rewritten; only the agent configs are.
+// ── .mcp.json is the source, never a target ──────────────────────────
+// .mcp.json is the source of truth and is never rewritten by tooling.
+// claude-code ("the standard is its file") is therefore a no-op: every
+// server reports kept and nothing is written — those servers came FROM
+// .mcp.json. disabled:true does not delete there either. A write-layer
+// guard additionally refuses to write the resolved source path for any row.
+// A malformed TOML marker pair is a target-level error: the file is left
+// untouched rather than risk losing a user's content.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { getMcpAgent } from "../registry.mjs";
 import { translateEntry, describeRefusal, offSwitchEntry, expressibleVars } from "./translate.mjs";
+
+// The protected source of truth. Never written by tooling.
+const MCP_SOURCE = ".mcp.json";
 
 /**
  * Merge the .mcp.json `servers` map into one agent's config file.
@@ -47,9 +57,27 @@ export function installForAgent({ projectRoot, agent, servers }) {
   report.target = target;
   const absPath = join(projectRoot, target);
 
+  // claude-code ("the standard is its file"): a no-op. Its target IS the
+  // source .mcp.json, which is never rewritten. Every server already lives
+  // there (that is where `servers` came from), so report kept and write
+  // nothing. disabled:true has no effect here and must not delete the
+  // declaration — the user deletes it by hand to turn a server off.
+  if (row.format === "claude" && isSourcePath(absPath, projectRoot)) {
+    for (const [name, spec] of Object.entries(servers ?? {})) {
+      report.written.push({
+        name,
+        action: "kept",
+        detail: spec?.disabled
+          ? "no effect in claude — delete the entry from .mcp.json by hand"
+          : "already in .mcp.json (the standard is its file)",
+      });
+    }
+    return report;
+  }
+
   // The file's own format decides the writer: never JSON.parse a .toml.
-  if (target.endsWith(".toml")) mergeToml(absPath, row, servers, report);
-  else mergeJson(absPath, row, servers, report);
+  if (target.endsWith(".toml")) mergeToml(absPath, row, servers, report, projectRoot);
+  else mergeJson(absPath, row, servers, report, projectRoot);
 
   return report;
 }
@@ -93,7 +121,13 @@ function droppedDefaultsNote(spec, row) {
 }
 
 // ── JSON merge (claude-code, opencode, cursor) ────────────────────────
-function mergeJson(absPath, row, servers, report) {
+function mergeJson(absPath, row, servers, report, projectRoot) {
+  // Write-layer guard: never rewrite the source of truth, whatever row is
+  // driving us. Refuse and report rather than write.
+  if (isSourcePath(absPath, projectRoot)) {
+    report.errors.push(`${report.target}: is the source of truth (${MCP_SOURCE}); refusing to write`);
+    return;
+  }
   const exists = existsSync(absPath);
   let raw = "";
   if (exists) {
@@ -193,7 +227,13 @@ function mergeJson(absPath, row, servers, report) {
 // Rebuild only our `[mcp_servers.<name>]` fragments (a marker pair each),
 // leaving the rest of the file byte-for-byte. We never re-serialise the
 // whole file and never JSON.parse a .toml.
-function mergeToml(absPath, row, servers, report) {
+function mergeToml(absPath, row, servers, report, projectRoot) {
+  // Write-layer guard: never rewrite the source of truth, whatever row is
+  // driving us. Refuse and report rather than write.
+  if (isSourcePath(absPath, projectRoot)) {
+    report.errors.push(`${report.target}: is the source of truth (${MCP_SOURCE}); refusing to write`);
+    return;
+  }
   const exists = existsSync(absPath);
   const raw = exists ? readFileSync(absPath, "utf-8") : "";
   const decisions = new Map();
@@ -205,11 +245,25 @@ function mergeToml(absPath, row, servers, report) {
   const managed = new Set();
   for (const [name, c] of decisions) if (c.kind !== "refuse") managed.add(name);
 
-  const { foreign, blocks } = splitToml(raw.split("\n"), managed);
+  const { foreign, blocks, bare, malformed } = splitToml(raw.split("\n"), managed);
+
+  // A malformed marker pair (unterminated begin / orphan end) means the file
+  // is not safely ours to rewrite. Report and leave it untouched — data loss
+  // in a user's config is never acceptable.
+  if (malformed.length > 0) {
+    for (const m of malformed) report.errors.push(`${report.target}: ${m}; refusing to edit`);
+    return;
+  }
 
   let changed = false;
   const fresh = [];
   for (const [name, c] of decisions) {
+    // A bare {"enabled": <bool>} override is a user switch on a server defined
+    // elsewhere; replacing it would re-enable what they turned off. Keep it.
+    if (bare.has(name)) {
+      report.written.push({ name, action: "kept", detail: "existing off-switch override left untouched" });
+      continue;
+    }
     const prior = blocks.get(name);
     if (c.kind === "refuse") {
       report.written.push({ name, action: "refused", detail: c.reason });
@@ -250,21 +304,48 @@ function mergeToml(absPath, row, servers, report) {
   writeFileSync(absPath, newContent, "utf-8");
 }
 
-// Split TOML lines into foreign lines (kept verbatim) and the owned blocks
-// (marker-delimited or a bare `[mcp_servers.<owned>]` table), keyed by name.
+// Split TOML lines into foreign lines (kept verbatim) and the owned blocks to
+// regenerate/remove, keyed by name. The marker scan is bounded — it stops at
+// the next begin-mark or a table header — so an unterminated pair can never
+// swallow a user's remaining config; that is reported as malformed instead.
+// A bare off-switch override ("enabled = <bool>" alone) is a user switch and is
+// left untouched (returned via `bare`), never rebuilt into a full entry.
 function splitToml(lines, managed) {
   const foreign = [];
   const blocks = new Map();
+  const bare = new Set();
+  const malformed = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     const bn = beginMarkName(line);
-    if (bn !== null && managed.has(bn)) {
+    if (bn !== null) {
       const block = [line];
       let j = i + 1;
-      while (j < lines.length && endMarkName(lines[j]) !== bn) block.push(lines[j++]);
-      if (j < lines.length) block.push(lines[j++]); // include the end mark
-      blocks.set(bn, block.join("\n"));
+      let terminated = false;
+      while (j < lines.length) {
+        const l = lines[j];
+        if (endMarkName(l) === bn) { block.push(l); j++; terminated = true; break; }
+        if (beginMarkName(l) !== null) break; // next begin-mark bounds it
+        // A table header bounds it too — but not the block's own header.
+        if (TABLE_HEAD_RE.test(l) && tableName(l) !== bn) break;
+        block.push(l); j++;
+      }
+      if (!terminated) {
+        malformed.push(`unterminated marker block for "${bn}"`);
+        foreign.push(...block); // preserve what we scanned; nothing is lost
+        i = j;
+        continue;
+      }
+      const blockText = block.join("\n");
+      if (isBareTomlOffSwitch(blockText)) {
+        foreign.push(...block); // a bare off-switch override — keep untouched
+        bare.add(bn);
+      } else if (managed.has(bn)) {
+        blocks.set(bn, blockText); // ours to regenerate or remove
+      } else {
+        foreign.push(...block); // not managed — leave alone
+      }
       i = j;
       continue;
     }
@@ -272,17 +353,28 @@ function splitToml(lines, managed) {
     if (tn !== null && managed.has(tn)) {
       const block = [line];
       let j = i + 1;
-      while (j < lines.length && !/^\s*\[/.test(lines[j]) && beginMarkName(lines[j]) === null) {
+      while (j < lines.length
+             && !TABLE_HEAD_RE.test(lines[j])
+             && beginMarkName(lines[j]) === null
+             && endMarkName(lines[j]) === null) {
         block.push(lines[j++]);
       }
-      blocks.set(tn, block.join("\n"));
+      const blockText = block.join("\n");
+      if (isBareTomlOffSwitch(blockText)) {
+        foreign.push(...block); // a bare off-switch override — keep untouched
+        bare.add(tn);
+      } else {
+        blocks.set(tn, blockText); // ours to regenerate or remove
+      }
       i = j;
       continue;
     }
+    // An end-mark outside any block is an orphan half-pair — malformed.
+    if (endMarkName(line) !== null) malformed.push(`orphan end marker "${line.trim()}"`);
     foreign.push(line);
     i++;
   }
-  return { foreign: foreign.join("\n"), blocks };
+  return { foreign: foreign.join("\n"), blocks, bare, malformed };
 }
 
 function buildTomlBlock(name, entry) {
@@ -299,6 +391,7 @@ function normaliseToml(text) {
 const BEGIN_RE = /^#\s*adlc-mcp-begin\s+(.+?)\s*$/;
 const END_RE = /^#\s*adlc-mcp-end\s+(.+?)\s*$/;
 const TABLE_RE = /^\s*\[mcp_servers\.([^\]]+)\]\s*(?:#.*)?$/;
+const TABLE_HEAD_RE = /^\s*\[/; // any TOML table header (bounds a marker block)
 
 const beginMark = (name) => `# adlc-mcp-begin ${name}`;
 const endMark = (name) => `# adlc-mcp-end ${name}`;
@@ -307,6 +400,25 @@ const endMarkName = (line) => (END_RE.exec(line)?.[1] ?? null);
 function tableName(line) {
   const m = TABLE_RE.exec(line);
   return m ? unquoteKey(m[1].trim()) : null;
+}
+
+// Is this block a bare off-switch override — a table whose only content is
+// `enabled = <bool>`? That is a user switch on a server defined elsewhere, so
+// it is kept untouched rather than rebuilt into a full entry.
+function isBareTomlOffSwitch(blockText) {
+  const content = [];
+  for (const line of blockText.split("\n")) {
+    const t = line.trim();
+    if (t === "" || t.startsWith("#")) continue; // blank or comment (incl. markers)
+    if (TABLE_HEAD_RE.test(t)) continue;          // table header
+    content.push(t);
+  }
+  return content.length === 1 && /^enabled\s*=\s*(true|false)\s*$/.test(content[0]);
+}
+
+// Does the resolved target path land on the protected source .mcp.json?
+function isSourcePath(absPath, projectRoot) {
+  return resolve(absPath) === resolve(projectRoot, MCP_SOURCE);
 }
 
 function sameBlock(a, b) {
