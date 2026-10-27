@@ -19,9 +19,12 @@
 //                   ${NAME} in env under its own name becomes an inherited
 //                   name (env_vars = ["NAME"]); a header value may inherit
 //                   under any name, and an Authorization of exactly
-//                   "Bearer ${NAME}" becomes bearer_token_env_var; a var
-//                   anywhere else — or carrying a default — is
-//                   inexpressible and therefore refused.
+//                   "Bearer ${NAME}" becomes bearer_token_env_var. A
+//                   ${VAR:-default} is expressible wherever the bare
+//                   ${VAR} is — the default is dropped and reported
+//                   (expressibleVars().droppedDefaults; the variable
+//                   simply becomes required). A rename, a composed value,
+//                   or a var anywhere else is inexpressible and refused.
 //
 // Refusal contract: describeRefusal(spec, row) is the single source of
 // truth for "can this entry be fully expressed here"; translateEntry calls
@@ -64,10 +67,12 @@ function wholeVar(value) {
   return m ? { name: m[1], hadDefault: m[2] !== undefined, ref: m[0] } : null;
 }
 
-// The whole value is exactly "Bearer ${VAR}", or null.
+// The whole value is exactly "Bearer ${VAR}" / "Bearer ${VAR:-default}",
+// or null. A default is dropped and reported — the variable becomes
+// required, exactly as for env values.
 function bearerVar(value) {
-  const m = /^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value);
-  return m ? m[1] : null;
+  const m = /^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$/.exec(value);
+  return m ? { name: m[1], hadDefault: m[2] !== undefined } : null;
 }
 
 // Rewrites ${VAR} and ${VAR:-default} in one string, per the row's
@@ -152,16 +157,14 @@ export function describeRefusal(spec, row) {
         if (typeof value !== "string") continue;
         const vars = findVars(value);
         if (vars.length === 0) continue;
-        const defaulted = vars.find((v) => v.hadDefault);
-        if (defaulted) {
-          return `${key} in env carries ${defaulted.ref}: ${row.format} inherits names but has no default syntax`;
-        }
         const whole = wholeVar(value);
         if (!whole) {
           return `${key} in env is not one whole \${VAR}: ${row.format} inherits whole variable names only`;
         }
         // Inherited names keep their key: env_vars is a name list, so a
-        // rename would silently deliver the wrong variable.
+        // rename would silently deliver the wrong variable. A default is
+        // NOT a blocker — it is dropped and reported (expressibleVars);
+        // the variable simply becomes required.
         if (whole.name !== key) {
           return `${key} in env renames ${whole.ref}: ${row.format} inherits names unchanged and would set ${whole.name}, not ${key}`;
         }
@@ -175,13 +178,10 @@ export function describeRefusal(spec, row) {
         if (typeof value !== "string") continue;
         const vars = findVars(value);
         if (vars.length === 0) continue;
-        const defaulted = vars.find((v) => v.hadDefault);
-        if (defaulted) {
-          return `${name} in headers carries ${defaulted.ref}: ${row.format} inherits names but has no default syntax`;
-        }
         const whole = wholeVar(value);
         if (whole) {
-          // Header maps name -> variable, so any name may be inherited.
+          // Header maps name -> variable, so any name may be inherited. A
+          // default is dropped and reported, never a blocker.
           if (!SHAPES[row.format].inherit?.headers) {
             return `${name} in headers cannot be inherited: ${row.format} has no inherited-header field`;
           }
@@ -232,6 +232,12 @@ export function describeRefusal(spec, row) {
     }
     if (spec.type !== "http" && spec.type !== "sse") {
       return `type "${spec.type}" conflicts with url`;
+    }
+    // Codex's remote transport is StreamableHttp (its transports are
+    // Stdio | StreamableHttp). An SSE server speaks a different protocol
+    // and would start wrongly against it — refused, not half-written.
+    if (spec.type === "sse" && row.format === "codex") {
+      return `sse is not expressible in ${row.format} entries: its remote transport is StreamableHttp, not SSE`;
     }
   }
 
@@ -310,7 +316,7 @@ function buildCodex(spec, row) {
         const whole = v === "env-vars" ? wholeVar(value) : null;
         const bearer = v === "env-vars" ? bearerVar(value) : null;
         if (whole) (entry.env_http_headers ??= {})[name] = whole.name;
-        else if (bearer && name.toLowerCase() === "authorization") entry.bearer_token_env_var = bearer;
+        else if (bearer && name.toLowerCase() === "authorization") entry.bearer_token_env_var = bearer.name;
         else (entry.http_headers ??= {})[name] = translateValue(value, v);
       }
     }

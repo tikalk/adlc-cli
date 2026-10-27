@@ -84,6 +84,8 @@ it("describeRefusal agrees with translateEntry on every refusal and acceptance",
     { command: "x", env: { T: "prefix-${V}" } },
     { command: "x", env: { T: "${V}" } },
     { command: "x", env: { TOK: "${TOK}" } },
+    { command: "x", env: { TOK: "${TOK:-d}" } },
+    { command: "x", env: { T: "${TOK:-d}" } },
     { type: "http", url: "https://y", headers: { Authorization: "Bearer ${V}" } },
     { type: "http", url: "https://y", headers: { X: "${V:-d}" } },
     { command: "x", disabled: true },
@@ -131,13 +133,14 @@ it("codex url entry is just url plus the off switch field", () => {
     { url: "https://mcp.example", enabled: true });
 });
 
-it("codex remote entries map to url for http and sse alike", () => {
-  // The design's mapping table gives codex's remote entry no transport
-  // discriminator (url, bearer_token_env_var, http_headers,
-  // env_http_headers) — both transports land on url (fix round 1,
-  // finding 4).
-  assert.deepEqual(translateEntry({ type: "sse", url: "https://mcp.example" }, MCP_AGENTS.codex),
+it("codex maps http onto its StreamableHttp url and refuses sse", () => {
+  // codex transports are Stdio | StreamableHttp (fix round 2): an SSE
+  // server is a different protocol and would start wrongly against a
+  // StreamableHttp client — refused, not half-written.
+  assert.deepEqual(translateEntry({ type: "http", url: "https://mcp.example" }, MCP_AGENTS.codex),
     { url: "https://mcp.example", enabled: true });
+  assert.equal(translateEntry({ type: "sse", url: "https://mcp.example" }, MCP_AGENTS.codex), null);
+  assert.match(describeRefusal({ type: "sse", url: "https://mcp.example" }, MCP_AGENTS.codex), /sse/);
 });
 
 it("opencode url entry becomes a remote entry with env-braces vars", () => {
@@ -225,12 +228,15 @@ it("codex maps a bearer token header to bearer_token_env_var", () => {
     { url: "https://mcp.example", enabled: true, bearer_token_env_var: "DOCS_TOKEN" });
 });
 
-it("codex refuses header values it cannot compose or default", () => {
+it("codex refuses composed header values but drops defaults on whole vars", () => {
   const composed = { type: "http", url: "https://y", headers: { Authorization: "Basic ${V}" } };
-  const defaulted = { type: "http", url: "https://y", headers: { X: "${V:-d}" } };
   assert.equal(translateEntry(composed, MCP_AGENTS.codex), null);
-  assert.equal(translateEntry(defaulted, MCP_AGENTS.codex), null);
-  assert.match(describeRefusal(defaulted, MCP_AGENTS.codex), /no default syntax/);
+  assert.deepEqual(
+    translateEntry({ type: "http", url: "https://y", headers: { X: "${V:-d}" } }, MCP_AGENTS.codex),
+    { url: "https://y", enabled: true, env_http_headers: { X: "V" } });
+  assert.deepEqual(
+    expressibleVars({ type: "http", url: "https://y", headers: { X: "${V:-d}" } }),
+    { needed: ["V"], droppedDefaults: ["V"] });
 });
 
 // ── substitution follows var_syntax, shape follows format ────────────
@@ -295,10 +301,21 @@ it("codex refuses a renamed env var -- inheritance cannot rename", () => {
   assert.match(describeRefusal(spec, MCP_AGENTS.codex), /inherits names unchanged/);
 });
 
-it("codex refuses a defaulted env var -- inheritance has no default syntax", () => {
-  const spec = { command: "x", env: { TOK: "${TOK:-d}" } };
+it("codex drops a defaulted env var's fallback and reports it", () => {
+  // Design carve-out (fix round 2): `${VAR:-default}` has no codex (or
+  // opencode) equivalent — the variable simply becomes required and the
+  // dropped default is reported via expressibleVars().droppedDefaults.
+  assert.deepEqual(translateEntry({ command: "x", env: { TOK: "${TOK:-d}" } }, MCP_AGENTS.codex),
+    { command: "x", enabled: true, env_vars: ["TOK"] });
+  assert.deepEqual(
+    expressibleVars({ command: "x", env: { TOK: "${TOK:-d}" } }),
+    { needed: ["TOK"], droppedDefaults: ["TOK"] });
+});
+
+it("codex refuses a renamed env var even when it carries a default -- the rename is the blocker", () => {
+  const spec = { command: "x", env: { T: "${TOK:-d}" } };
   assert.equal(translateEntry(spec, MCP_AGENTS.codex), null);
-  assert.match(describeRefusal(spec, MCP_AGENTS.codex), /no default syntax/);
+  assert.match(describeRefusal(spec, MCP_AGENTS.codex), /inherits names unchanged/);
 });
 
 it("codex refuses variables in command and args", () => {
