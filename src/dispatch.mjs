@@ -19,6 +19,12 @@ import {
   printHelp,
 } from "./help.mjs";
 import { setColorMode, out, err, style, combine } from "./ui/index.mjs";
+import {
+  resolveProvider,
+  providerNames,
+  providerCommands,
+  providerRoutes,
+} from "./providers/registry.mjs";
 
 // Single source of truth: package.json (drifts when hard-coded — v2.1.0
 // shipped printing "2.0.0"). dispatch.mjs lives in src/, so ../package.json
@@ -77,7 +83,46 @@ function runLegacyTree({ command, args, flags }) {
   }
 }
 
-function runNewTree({ command, args, flags }, argv) {
+async function runNewTree({ command, args, flags }, argv) {
+  // `--provider` selects a remote transport. Resolve it from the registry:
+  // adding a provider must not require editing this generic dispatcher.
+  // An unknown value on a provider-capable command must be refused —
+  // silently running locally would hand the operator a local run they asked
+  // for remotely.
+  const providerCapableCommands = providerCommands();
+  const providerRequested = flags?.providerSpecified === true;
+  if (
+    providerRequested &&
+    providerCapableCommands.includes(command) &&
+    (typeof flags.provider !== "string" || flags.provider.trim() === "")
+  ) {
+    console.error("Error: --provider requires a provider name.");
+    return 1;
+  }
+  const provider = providerRequested ? resolveProvider(flags.provider) : null;
+  if (providerRequested && !provider && providerCapableCommands.includes(command)) {
+    console.error(
+      `Error: unknown --provider "${flags.provider}" ` +
+      `(known: ${providerNames().join(", ")}) for '${command}'.`
+    );
+    return 1;
+  }
+  if (provider) {
+    const route = provider.routes?.[command];
+    const sub = command === "run" ? "*" : (args[0] ?? "");
+    const handler = route?.[sub];
+    if (!handler) {
+      // A known provider on a command it cannot serve must not silently run
+      // locally — the operator asked for a remote workspace.
+      console.error(
+        `Error: --provider ${provider.name} is not supported for '${command}` +
+        `${args[0] ? ` ${args[0]}` : ""}' ` +
+        `(provider routes: ${providerRoutes(provider).join(", ")}).`
+      );
+      return 1;
+    }
+    return handler({ command, args, flags, argv });
+  }
   switch (command) {
     case "skills": {
       const sub = args[0] ?? "status";
@@ -240,7 +285,23 @@ function parseArgs(argv) {
     } else if (arg === "--skip-skills") {
       flags.skipSkills = true;
     } else if (arg === "--provider") {
+      flags.providerSpecified = true;
       flags.provider = rest[++i];
+    } else if (arg.startsWith("--provider=")) {
+      flags.providerSpecified = true;
+      flags.provider = arg.slice("--provider=".length);
+    } else if (arg === "--workspace" || arg === "-w") {
+      flags.workspaceSpecified = true;
+      flags.workspace = rest[++i];
+    } else if (arg.startsWith("--workspace=")) {
+      flags.workspaceSpecified = true;
+      flags.workspace = arg.slice("--workspace=".length);
+    } else if (arg === "--input" || arg === "-i") {
+      flags.inputs = flags.inputs ?? [];
+      flags.inputs.push(rest[++i]);
+    } else if (arg.startsWith("--input=")) {
+      flags.inputs = flags.inputs ?? [];
+      flags.inputs.push(arg.slice("--input=".length));
     } else if (arg === "--update-confidence") {
       flags.updateConfidence = true;
     } else if (arg === "--build-to-delete") {

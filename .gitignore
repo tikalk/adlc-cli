@@ -26,5 +26,12 @@ skills-lock.json
 # graphify knowledge graph (generated)
 graphify-out/
 
+# Provider transport runtime artifacts (handles, run state)
+.adlc/workspaces/
+.adlc/workflows/runs/
+
+# Secret material read by the provider transport (env-only convention)
+secrets.env
+
 # Local agent worktrees (machine-local by definition)
 .adlc/worktrees/

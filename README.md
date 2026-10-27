@@ -75,7 +75,44 @@ Workspace file resolution: explicit argument → `ADLC_WORKSPACE_FILE` env →
 `workspace.git[]` (repo/path/branch/ref), `workspace.dirs[]`, `workspace.init`,
 `workspace.link`, `skills.sources[]`, `commands[]`, `goal`. Deterministic
 steps (git, dirs) run directly; agent-led steps go through `agent run`.
-`--dry-run` prints the plan without executing.
+`--dry-run` prints the plan without executing on the local path. The remote
+provider path refuses `--dry-run` rather than provisioning a workspace just to
+preview it.
+
+### Provider transport (remote workspaces)
+
+`workspace setup`, `agent run`, `workflow run`, and `workflow resume` accept
+`--provider coder` to run the work on a remote workspace over the SSH-based
+provider transport.
+
+```bash
+# provision (or reuse) a remote workspace from an explicit workspace file.
+# The lane fixture tests/e2e/profiles/provider-lane-workspace.yml declares the per-run values it needs;
+# every ${VAR} it references must be supplied, or setup fails fast naming it:
+#   WORKSPACE_NAME  the workspace name  (e.g. repo-mission-42)
+#   BRANCH          the branch to clone
+WORKSPACE_NAME=repo-mission-42 BRANCH=main adlc-cli workspace setup tests/e2e/profiles/provider-lane-workspace.yml --provider coder
+
+# run a step on that workspace
+adlc-cli workflow run factory --input run_id=r-7 --provider coder --workspace repo-mission-42
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--provider coder` | Route through the provider transport (SSH) instead of running locally. An unknown value is **refused** (never silently run locally) |
+| `--workspace <name>` | Target workspace. `workspace setup` uses the workspace file's name (a conflicting `--workspace` is refused); `agent run` / `workflow run` reuse the handle persisted at `.adlc/workspaces/<name>.json`. Without `--workspace`, they use the workspace file's name and **refuse to provision a second machine** when no handle exists; an explicit `--workspace <name>` targets that workspace and provisions it if no handle exists |
+
+Contract:
+
+- **Location-free workspace files** — a `provider:` key (at any level) inside a workspace file is **rejected**, never ignored; the provider is selected only by the flag.
+- **`${VAR}` expansion, fail-fast** — a missing or empty variable fails with its name. Process-env values expand in place; values sourced from `secrets.env`/Docker secrets are never inlined into the config — they travel only in the transport's `vars` channel, referenced-only. A secret-sourced variable may not *name* a workspace (it would leak into the handle filename).
+- **Secrets env-only on the wire** — `secrets.env` (gitignored) → Docker secrets → process env. Referenced values are forwarded to the remote; the outbound stream is scrubbed (referenced secret values, `--input` values and the task text never reach the terminal verbatim). On the remote, `workspace setup` deliberately persists the referenced vars at `$HOME/.adlc/secrets.env` (mode 0600 before the write; the step fails closed if the mode cannot be enforced) so the developer's later session inherits them; that is at-rest storage on a developer-owned workspace, not an env-only-at-rest claim.
+- **Flag fidelity** — the provider route forwards `agent run` flags (`-a`, `--model`, `--format`, `--cwd`, `--timeout`, `--require-approval`), `workflow run` execution flags (`--format`, `--headless`), and `workflow resume`'s `--format`; `--input` values remain in their base64-safe channel. A remote `workspace setup` also receives the operator's `-a` selection.
+- **Recursion guard** — at most 2 hops (`ADLC_HOP_DEPTH`); a malformed, negative or whitespace depth fails closed.
+- **Transport timeout** — remote SSH transport has a default 15-minute cap (`ADLC_TRANSPORT_TIMEOUT_MS` in milliseconds); set a higher value for long-running workflows.
+- **Loud failure** — a remote non-zero exit (its code is propagated), a corrupt handle, a missing handle, an invalid workspace file, or a transport that returns no result exits non-zero with the remote's stderr. There is no silent fallback.
+
+The live SSH transport is the default: `--provider coder` provisions or reuses a real Coder workspace and runs the step over `coder ssh`. The mock transport is opt-in for offline contract tests via `ADLC_CODER_MOCK=1` (or an injected `globalThis.__ADLC_CODER_TRANSPORT__`); there is no `--live` flag and `ADLC_CODER_LIVE` is not read. The default is deliberate: a command that asks for a remote workspace must never silently get a mock.
 
 ### Agent execution
 

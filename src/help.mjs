@@ -4,6 +4,7 @@
 // the same layout the specify CLI uses for its help output.
 
 import { out, panel, style, tint, combine, wrapText, terminalWidth, ACCENT } from "./ui/index.mjs";
+import { providerHelp } from "./providers/registry.mjs";
 
 /**
  * Render a titled panel of body lines.
@@ -242,6 +243,11 @@ export function printAgentHelp() {
       ]),
     ]),
   );
+  out(
+    section("Provider Flags (remote transport)", [
+      ...pairs(providerHelp("agent")),
+    ]),
+  );
   out("");
 }
 
@@ -261,7 +267,7 @@ export function printWorkspaceHelp() {
     section("Setup Flags", [
       ...pairs([
         ["-a <agent>", "Agent key (default: workspace agent:, then init-options.json)"],
-        ["--dry-run", "Print planned actions without executing"],
+        ["--dry-run", "Print planned actions without executing (local path; the remote provider refuses it)"],
       ]),
     ]),
   );
@@ -289,11 +295,17 @@ export function printWorkspaceHelp() {
     ]),
   );
   out(
+    section("Provider Flags (remote transport)", [
+      ...pairs(providerHelp("workspace")),
+    ]),
+  );
+  out(
     section("Examples", [
       ...pairs([
         ["adlc-cli workspace setup", "use .adlc/workspace.yml"],
         ["adlc-cli workspace setup https://host/w.yml", "fetch workspace file over HTTP"],
         ["adlc-cli workspace setup -a opencode --dry-run", "preview planned actions"],
+        ...providerHelp("examples"),
       ]),
     ]),
   );
@@ -418,6 +430,11 @@ export function printWorkflowHelp() {
   out(
     section("Step Types", [
       tint("command | prompt | shell | gate | if | switch | while | do-while | fan-out (max_concurrency) | fan-in | slot", "gray"),
+    ]),
+  );
+  out(
+    section("Provider Flags (remote transport)", [
+      ...pairs(providerHelp("workflow")),
     ]),
   );
   out(
