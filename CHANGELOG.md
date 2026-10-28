@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent (before the agent session and the repair pass respectively); the
   chained run behaves exactly like the standalone command — gap report
   included — and an MCP failure aborts the team command with exit 1.
+  Note: an `init-options.json` that records no agent now fails `team update`
+  loudly at the chained install (previously such a hand-maintained file
+  completed); run `adlc-cli team setup` or pass `-a` to record the agent.
   This also fixes `team update` exiting 1 after a successful repair: the
   repair script's exit status is now honoured (`0` was coerced to `1`).
 

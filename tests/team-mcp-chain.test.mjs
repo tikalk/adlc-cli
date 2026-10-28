@@ -215,6 +215,8 @@ it("team update: chains mcp install before repair (success path)", async () => {
   const f = makeUpdateProject(withServers({ context7: CODEX_OK }));
   try {
     const r = await run(["team", "update", "-a", "codex"], { cwd: f.dir, env: f.env });
+    // `?? 0`: this run() helper reports no code properties on success —
+    // unlike tests 6/7's helper. Kept as the implementer wrote it.
     assert.equal(r.code ?? r.exitCode ?? 0, 0, r.stderr);
     // the agent's MCP config was written by the chained install
     const toml = f.read(".codex/config.toml");
