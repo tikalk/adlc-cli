@@ -7,7 +7,34 @@ import { readInitOptions, writeInitOptions, readAgent, readTeamAiDirectives } fr
 import { findInstalledSkills } from "../source.mjs";
 import { getAgent } from "../registry.mjs";
 import { cmdAdd, cmdUpdate } from "./skills.mjs";
+import { cmdMcpInstall } from "./mcp.mjs";
 import { error, failure, note } from "../ui/index.mjs";
+
+// ── mcp install chaining ────────────────────────────────────────────────
+// `team setup`/`team update` configure the agent's MCP servers before its
+// session starts — a named agent that would start without its servers is
+// never reported as success (PDR-138/139). CLI-to-CLI chaining only: the
+// skill prose never orchestrates this.
+
+/**
+ * Run `mcp install` for one agent as part of a team command, aborting the
+ * command when it fails (ruling 1a).
+ *
+ * Thin by design: every decision — the missing-source no-op, the copy-once
+ * gap report, refusals — already lives in (and is tested on) cmdMcpInstall.
+ * Do not pre-check for `.mcp.json` here; the chained run must behave exactly
+ * like the standalone command (ruling 3: the gap report runs chained too).
+ *
+ * @param {string} projectRoot project dir holding `.mcp.json`.
+ * @param {string} agentKey registry key of the committed agent.
+ * @param {string} label the aborting message names the team command.
+ * @returns {Promise<number>} 0 the agent is configured, 1 otherwise.
+ */
+export async function chainMcpInstall(projectRoot, agentKey, label) {
+  const code = await cmdMcpInstall([projectRoot], { agents: [agentKey] });
+  if (code !== 0) failure(`MCP install failed — aborting ${label}`);
+  return code;
+}
 
 // ── setup ──────────────────────────────────────────────────────────────
 export async function cmdTeamSetup(args, flags) {
@@ -42,6 +69,13 @@ export async function cmdTeamSetup(args, flags) {
       }
     }
   }
+
+  // Configure the agent's MCP servers before its session starts — an agent
+  // that would start without its servers is never reported as success
+  // (PDR-138/139). The chained run is the full mcp install behavior, gap
+  // report included (ruling 3); a failure aborts the command (ruling 1a).
+  const mcpCode = await chainMcpInstall(resolve(flags.cwd ?? process.cwd()), agentKey, "team setup");
+  if (mcpCode !== 0) return mcpCode;
 
   const { cmdAgentRun, runAgentInteractive } = await import("./agent.mjs");
   const prompt = "Run /team-setup to configure team-ai-directives for this project";
@@ -88,6 +122,13 @@ export async function cmdTeamUpdate(args, flags) {
     return updateCode || 1;
   }
 
+  // The agent's MCP servers are (re)configured from .mcp.json before the
+  // repair pass; an MCP failure aborts the update before repair runs
+  // (ruling 1a). The agent is the one team-setup recorded (`-a` wins).
+  const agentKey = flags.agents?.[0] || opts.agent;
+  const mcpCode = await chainMcpInstall(process.cwd(), agentKey, "team update");
+  if (mcpCode !== 0) return mcpCode;
+
   return cmdTeamRepair([], { updateConfidence: true });
 }
 
@@ -115,7 +156,10 @@ export async function cmdTeamRepair(args, flags) {
 
     const scriptArgs = flags.validateDrafts ? ["--validate-drafts"] : ["--update-confidence"];
     const result = spawnSync("bash", [scriptPath, ...scriptArgs], { stdio: "inherit" });
-    return result.status || 1;
+    // ?? not ||: a successful script (status 0) is success — `0 || 1` made
+    // every successful repair (and therefore every successful `team update`)
+    // exit 1.
+    return result.status ?? 1;
   }
 
   const agentKey = flags.agents[0] || readAgent();

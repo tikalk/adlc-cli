@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fully expressed is never half-written. A copy-once gap report prints drift
   against the team's `.mcp.json` as warnings on stderr, never changing the
   exit code. JSON targets are normalised to 2-space indent on first write.
+  `team setup` and `team update` now chain the install for the configured
+  agent (before the agent session and the repair pass respectively); the
+  chained run behaves exactly like the standalone command — gap report
+  included — and an MCP failure aborts the team command with exit 1.
+  This also fixes `team update` exiting 1 after a successful repair: the
+  repair script's exit status is now honoured (`0` was coerced to `1`).
 
 ## [2.5.0] - 2026-10-28
 
