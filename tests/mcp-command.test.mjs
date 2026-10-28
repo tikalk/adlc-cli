@@ -90,7 +90,8 @@ it("reports 'nothing to install' and exits 0 when .mcp.json is absent", async ()
     const { code, stdout, stderr } = await capture(() => cmdMcpInstall([p.dir], { agents: ["opencode"] }));
     assert.equal(code, 0);
     assert.match(stdout, /nothing to install/);
-    assert.equal(stderr, "");
+    // gap report warnings live on stderr now (no team source configured here)
+    assert.match(stderr, /team MCP source unavailable/);
   } finally {
     p.cleanup();
   }
@@ -120,7 +121,9 @@ it("exits 0 when every named agent is configured", async () => {
     const { code, stdout, stderr } = await capture(() =>
       cmdMcpInstall([p.dir], { agents: ["opencode", "cursor"] }));
     assert.equal(code, 0);
-    assert.equal(stderr, "");
+    // gap report warnings live on stderr now (no team source configured here)
+    assert.match(stderr, /team MCP source unavailable/);
+    assert.ok(!stdout.includes("MCP gap"));
 
     const oc = JSON.parse(p.read("opencode.json"));
     assert.deepEqual(oc.mcp.context7, {
@@ -211,7 +214,8 @@ it("claude-code is a no-op success and .mcp.json is never rewritten", async () =
     p.write(".mcp.json", source);
     const { code, stdout, stderr } = await capture(() => cmdMcpInstall([p.dir], { agents: ["claude"] }));
     assert.equal(code, 0);
-    assert.equal(stderr, "");
+    // gap report warnings live on stderr now (no team source configured here)
+    assert.match(stderr, /team MCP source unavailable/);
     assert.equal(p.read(".mcp.json"), source);
     assert.match(stdout, /kept/);
   } finally {
@@ -285,7 +289,8 @@ it("a .mcp.json that declares no servers reports 'nothing to install' and exits 
     const { code, stdout, stderr } = await capture(() => cmdMcpInstall([p.dir], { agents: ["opencode"] }));
     assert.equal(code, 0);
     assert.match(stdout, /nothing to install/);
-    assert.equal(stderr, "");
+    // gap report warnings live on stderr now (no team source configured here)
+    assert.match(stderr, /team MCP source unavailable/);
   } finally {
     p.cleanup();
   }

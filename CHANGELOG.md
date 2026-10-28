@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`adlc-cli mcp install [DIR] --agent NAME`** — materialise the project's
+  `.mcp.json` into each named agent's own MCP config (`claude-code`,
+  `opencode`, `codex`, `cursor`; `claude-code` is a no-op — the standard is
+  its file). A name in `.mcp.json` is tool-owned and regenerated on each run;
+  the off switch is `disabled: true` in `.mcp.json`, which the tool never
+  rewrites. Exit 0 only when every named agent is configured; refusals and
+  target-level errors fail the run with exit 1, and an entry that cannot be
+  fully expressed is never half-written. A copy-once gap report prints drift
+  against the team's `.mcp.json` as warnings on stderr, never changing the
+  exit code. JSON targets are normalised to 2-space indent on first write.
+
 ## [2.5.0] - 2026-10-28
 
 ### Added

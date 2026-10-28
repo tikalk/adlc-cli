@@ -205,6 +205,31 @@ later step or gate can read them, for example
 a rule, the file is ignored with a log line. Stdout is never parsed for
 results.
 
+### MCP
+
+| Command | Description |
+|---------|-------------|
+| `mcp install [DIR] --agent NAME` | Write each named agent's own MCP config from the project's `.mcp.json` |
+
+`mcp install` reads `.mcp.json` (the single standard declaration of MCP
+servers) and materialises its `mcpServers` into each named agent's own config
+shape: `opencode.json` (`mcp`), `.cursor/mcp.json` (`mcpServers`) and
+`.codex/config.toml` (`[mcp_servers.*]`); `claude-code` is a no-op — the
+standard is already its file. A name present in `.mcp.json` is tool-owned and
+regenerated on each run; the off switch is `disabled: true` in `.mcp.json`
+itself, which the tool never rewrites.
+
+Precondition: `team setup` has recorded an agent in `.adlc/init-options.json`,
+or pass `--agent`/`-a` (repeatable) explicitly. Supported agents:
+`claude-code`, `opencode`, `codex`, `cursor`.
+
+Exit contract: `0` only when every named agent is configured; `1` otherwise —
+target-level errors and per-server refusals both fail the run (an entry that
+cannot be fully expressed is never half-written). After the install, a
+copy-once gap report compares the team's `.mcp.json` against the project's and
+prints drift as warnings on stderr; it never changes the exit code. JSON
+targets are normalised to 2-space indent on first write.
+
 ### Top-level
 
 | Command | Description |

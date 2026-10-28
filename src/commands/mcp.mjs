@@ -46,6 +46,7 @@ import {
   section,
   item,
   sym,
+  warn,
 } from "../ui/index.mjs";
 
 const MCP_SOURCE = ".mcp.json";
@@ -190,10 +191,11 @@ function reportByHand(target, names) {
 }
 
 // ── The copy-once gap report (PDR-140) ─────────────────────────────────
-// Additive warning lines on stdout: they never change the exit code and
-// never write anything. Silence when there is nothing to say; a missing
-// team source is itself reported — a report that quietly reports nothing
-// is worse than no report.
+// Additive warning lines on stderr (the ui layer's warn() convention —
+// stdout stays the result channel scripts and CI read): they never change
+// the exit code and never write anything. Silence when there is nothing
+// to say; a missing team source is itself reported — a report that
+// quietly reports nothing is worse than no report.
 function printGapReport(projectRoot, servers, named) {
   const gap = reportGap({ projectRoot, servers });
   const lines = [];
@@ -208,8 +210,8 @@ function printGapReport(projectRoot, servers, named) {
   }
   appendDroppedDefaults(lines, servers, named);
   if (lines.length === 0) return;
-  section("MCP gap (warning only — nothing written, nothing blocked)");
-  for (const line of lines) item(line, { glyph: sym.warn, color: "yellow" });
+  warn("MCP gap (warning only — nothing written, nothing blocked)");
+  for (const line of lines) warn(line);
 }
 
 // ${VAR:-default} fallbacks are dropped by every variable syntax except

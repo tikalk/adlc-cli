@@ -74,7 +74,45 @@ it("a name in .mcp.json is tool-owned: a hand-edited body is overwritten and rep
   }
 });
 
-it("a bare {\"enabled\": false} override is kept, not replaced", () => {
+// ── Fix round 2 — Important 1: no bare off-switch exemption (ADR-455) ──
+// A name in .mcp.json is tool-owned and regenerated every run. The user's
+// off switch is `disabled: true` in .mcp.json itself; a bare
+// {"enabled": <bool>} override in the target is regenerated like any other
+// owned body and reported `updated` — keeping it would silently trap a
+// disabled→re-enabled server in the off state while .mcp.json says on.
+
+it("re-enabled in .mcp.json: the full entry is regenerated and the server would start (opencode, JSON)", () => {
+  // The traced scenario, end to end: disabled → run (off-switch written) →
+  // remove `disabled` from .mcp.json → re-run. The tool-owned name — whose
+  // current body is exactly the bare off-switch the first run wrote — is
+  // regenerated, not kept.
+  const p = project();
+  try {
+    const spec = {
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-gitlab"],
+      env: { GITLAB_TOKEN: "${GITLAB_TOKEN}" },
+    };
+    p.write("opencode.json", JSON.stringify({ mcp: {} }, null, 2));
+
+    // disabled: true → the off switch is written: {"enabled": false}
+    installForAgent({ projectRoot: p.dir, agent: "opencode", servers: { gitlab: { ...spec, disabled: true } } });
+    assert.deepEqual(JSON.parse(p.read("opencode.json")).mcp.gitlab, { enabled: false });
+
+    // the user removes `disabled` from .mcp.json — the source of truth says on
+    const r = installForAgent({ projectRoot: p.dir, agent: "opencode", servers: { gitlab: spec } });
+
+    assert.equal(r.written.find((w) => w.name === "gitlab").action, "updated");
+    const entry = JSON.parse(p.read("opencode.json")).mcp.gitlab;
+    assert.equal(entry.enabled, true); // the server would start
+    assert.deepEqual(entry.command, ["npx", "-y", "@modelcontextprotocol/server-gitlab"]);
+    assert.deepEqual(entry.environment, { GITLAB_TOKEN: "{env:GITLAB_TOKEN}" });
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("a hand-written bare {\"enabled\": false} override is regenerated, not kept", () => {
   const p = project();
   try {
     p.write("opencode.json", JSON.stringify({ mcp: { gitlab: { enabled: false } } }, null, 2));
@@ -91,9 +129,10 @@ it("a bare {\"enabled\": false} override is kept, not replaced", () => {
       },
     });
 
-    assert.equal(r.written.find((w) => w.name === "gitlab").action, "kept");
+    assert.equal(r.written.find((w) => w.name === "gitlab").action, "updated");
     const cfg = JSON.parse(p.read("opencode.json"));
-    assert.deepEqual(cfg.mcp.gitlab, { enabled: false }); // not replaced with a full entry
+    assert.equal(cfg.mcp.gitlab.enabled, true); // .mcp.json wins, not the stale override
+    assert.deepEqual(cfg.mcp.gitlab.command, ["npx", "-y", "@modelcontextprotocol/server-gitlab"]);
   } finally {
     p.cleanup();
   }
@@ -327,9 +366,36 @@ it("claude is a no-op: .mcp.json is never rewritten and every server reports kep
   }
 });
 
-// ── Fix round 1 — Important 2: a TOML bare off-switch override is kept ──
+// ── Fix round 2 — Important 1 (TOML path): a bare off-switch override is
+// regenerated, never kept (ADR-455) ────────────────────────────────────
 
-it("codex keeps a bare off-switch override instead of clobbering it", () => {
+it("re-enabled in .mcp.json: the full entry is regenerated and the server would start (codex, TOML)", () => {
+  // The traced scenario, end to end, on the TOML target: disabled → run
+  // (off-switch written) → remove `disabled` from .mcp.json → re-run.
+  const p = project();
+  try {
+    const spec = { command: "npx", args: ["-y", "x"] };
+
+    // disabled: true → the off switch is written: enabled = false, no command
+    installForAgent({ projectRoot: p.dir, agent: "codex", servers: { gitlab: { ...spec, disabled: true } } });
+    let text = p.read(".codex/config.toml");
+    assert.match(text, /enabled = false/);
+    assert.doesNotMatch(text, /command =/);
+
+    // the user removes `disabled` from .mcp.json — the source of truth says on
+    const r = installForAgent({ projectRoot: p.dir, agent: "codex", servers: { gitlab: spec } });
+
+    assert.equal(r.written.find((w) => w.name === "gitlab").action, "updated");
+    text = p.read(".codex/config.toml");
+    assert.match(text, /command = "npx"/);        // the full entry is back
+    assert.match(text, /enabled = true/);         // the server would start
+    assert.doesNotMatch(text, /enabled = false/); // the stale off switch is gone
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("codex regenerates a hand-written bare off-switch override into a full entry", () => {
   const p = project();
   try {
     p.write(".codex/config.toml", '[mcp_servers.gitlab]\nenabled = false\n');
@@ -341,9 +407,11 @@ it("codex keeps a bare off-switch override instead of clobbering it", () => {
     });
 
     const text = p.read(".codex/config.toml");
-    assert.match(text, /enabled = false/);          // the override is still there
-    assert.doesNotMatch(text, /command = "npx"/);   // not rebuilt into a full entry
-    assert.equal(r.written.find((w) => w.name === "gitlab").action, "kept");
+    assert.match(text, /command = "npx"/);        // rebuilt into a full entry
+    assert.match(text, /enabled = true/);         // .mcp.json wins, not the stale override
+    assert.match(text, /adlc-mcp-begin gitlab/);  // marker-paired like any owned block
+    assert.doesNotMatch(text, /enabled = false/);
+    assert.equal(r.written.find((w) => w.name === "gitlab").action, "updated");
   } finally {
     p.cleanup();
   }

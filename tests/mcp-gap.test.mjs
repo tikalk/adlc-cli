@@ -58,16 +58,19 @@ function wired({ teamDoc, projectServers } = {}) {
 
 // Capture the ui writers (process.stdout/stderr) while the command runs —
 // the assertions are on what a user sees and on which stream sees it.
+// `events` keeps one cross-stream timeline so ordering between the install
+// report (stdout) and the gap report (stderr) stays assertable.
 async function capture(fn) {
   const outChunks = [];
   const errChunks = [];
+  const events = [];
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (chunk) => { outChunks.push(String(chunk)); return true; };
-  process.stderr.write = (chunk) => { errChunks.push(String(chunk)); return true; };
+  process.stdout.write = (chunk) => { outChunks.push(String(chunk)); events.push(["out", String(chunk)]); return true; };
+  process.stderr.write = (chunk) => { errChunks.push(String(chunk)); events.push(["err", String(chunk)]); return true; };
   try {
     const code = await fn();
-    return { code, stdout: outChunks.join(""), stderr: errChunks.join("") };
+    return { code, stdout: outChunks.join(""), stderr: errChunks.join(""), events };
   } finally {
     process.stdout.write = origOut;
     process.stderr.write = origErr;
@@ -187,22 +190,25 @@ it("the gap report prints after the install report and never blocks (exit stays 
   try {
     const before = p.read(".mcp.json");
     const teamBefore = p.read("team/.mcp.json");
-    const { code, stdout, stderr } = await capture(() => cmdMcpInstall([p.dir], { agents: ["opencode"] }));
+    const { code, stdout, stderr, events } = await capture(() => cmdMcpInstall([p.dir], { agents: ["opencode"] }));
     assert.equal(code, 0); // the gap never blocks (PDR-140)
-    assert.equal(stderr, ""); // a warning, not a failure
     assert.ok(p.exists("opencode.json")); // the install itself happened
 
-    // additive lines AFTER the install report, not instead of it
-    const installAt = stdout.indexOf("opencode.json");
-    const gapAt = stdout.indexOf("MCP gap");
+    // the gap report is a warning on stderr — stdout stays the result channel
+    assert.ok(!stdout.includes("MCP gap"), "gap report not on stdout");
+
+    // additive lines AFTER the install report, not instead of it (the
+    // cross-stream timeline preserves the print order)
+    const installAt = events.findIndex(([, t]) => t.includes("opencode.json"));
+    const gapAt = events.findIndex(([, t]) => t.includes("MCP gap"));
     assert.ok(installAt !== -1, "install report printed");
     assert.ok(gapAt > installAt, "gap report comes after the install report");
 
-    assert.match(stdout, /warning only/); // the vocabulary of never-blocking
-    assert.match(stdout, /new-team-server/); // the missing name is listed
-    assert.match(stdout, /not carried to any target: tools/);
-    assert.match(stdout, /defaults dropped in translation to opencode/);
-    assert.match(stdout, /set explicitly: TOK/);
+    assert.match(stderr, /warning only/); // the vocabulary of never-blocking
+    assert.match(stderr, /new-team-server/); // the missing name is listed
+    assert.match(stderr, /not carried to any target: tools/);
+    assert.match(stderr, /defaults dropped in translation to opencode/);
+    assert.match(stderr, /set explicitly: TOK/);
 
     assert.equal(p.read(".mcp.json"), before); // the copy is never written
     assert.equal(p.read("team/.mcp.json"), teamBefore); // the upstream neither
@@ -217,8 +223,8 @@ it("the command reports a missing team source instead of staying silent", async 
     p.write(".mcp.json", JSON.stringify({ mcpServers: { context7: TEAM_SERVERS.context7 } }));
     const { code, stdout, stderr } = await capture(() => cmdMcpInstall([p.dir], { agents: ["opencode"] }));
     assert.equal(code, 0);
-    assert.match(stdout, /team MCP source unavailable/);
-    assert.equal(stderr, "");
+    assert.match(stderr, /team MCP source unavailable/); // a warning on stderr
+    assert.ok(!stdout.includes("team MCP source unavailable"));
   } finally {
     p.cleanup();
   }
@@ -235,11 +241,11 @@ it("a codex-only run does not duplicate the dropped-defaults note the install re
         context7: { command: "npx", args: ["-y", "@upstash/context7-mcp"], env: { TOK: "${TOK:-d}" } },
       },
     }));
-    const { code, stdout } = await capture(() => cmdMcpInstall([p.dir], { agents: ["codex"] }));
+    const { code, stdout, stderr } = await capture(() => cmdMcpInstall([p.dir], { agents: ["codex"] }));
     assert.equal(code, 0);
     assert.match(stdout, /dropped defaults \(set explicitly\): TOK/); // the install detail
-    assert.ok(stdout.includes("MCP gap")); // the gap section exists (no team source)…
-    const gapPart = stdout.slice(stdout.indexOf("MCP gap"));
+    assert.ok(stderr.includes("MCP gap")); // the gap section exists (no team source)…
+    const gapPart = stderr.slice(stderr.indexOf("MCP gap"));
     assert.doesNotMatch(gapPart, /dropped/); // …without repeating the note
   } finally {
     p.cleanup();
@@ -255,10 +261,9 @@ it("a project with no .mcp.json still hears the gap (nothing to install is not n
     p.write("team/.mcp.json", JSON.stringify({ mcpServers: TEAM_SERVERS, tools: TOOLS_BLOCK }));
     const { code, stdout, stderr } = await capture(() => cmdMcpInstall([p.dir], {}));
     assert.equal(code, 0); // never blocking
-    assert.match(stdout, /nothing to install/);
-    assert.match(stdout, /new-team-server/);
-    assert.match(stdout, /not carried to any target: tools/);
-    assert.equal(stderr, "");
+    assert.match(stdout, /nothing to install/); // the result channel stays stdout
+    assert.match(stderr, /new-team-server/);    // the warnings moved to stderr
+    assert.match(stderr, /not carried to any target: tools/);
   } finally {
     p.cleanup();
   }

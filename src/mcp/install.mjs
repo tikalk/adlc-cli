@@ -3,7 +3,11 @@
 //
 // ── Ownership is the name ─────────────────────────────────────────────
 // A name present in the .mcp.json `servers` map is tool-owned and
-// regenerated every run, even if hand-edited. A name absent from it is
+// regenerated every run, even if hand-edited — including a bare
+// {"enabled": <bool>} / `enabled = <bool>` override: overrides belong in
+// .mcp.json (`disabled`), not in the agent's file (ADR-455). Keeping a
+// bare off-switch here would silently trap a disabled→re-enabled server
+// in the off state while .mcp.json says on. A name absent from it is
 // never read, compared or written — everything else in the target is
 // foreign and preserved (byte-for-byte where the format allows).
 //
@@ -176,14 +180,6 @@ function mergeJson(absPath, row, servers, report, projectRoot) {
   for (const [name, spec] of Object.entries(servers ?? {})) {
     const existing = hasOwn(section, name) ? section[name] : undefined;
 
-    // A bare {"enabled": <bool>} override is the user's explicit switch on a
-    // globally-defined server. Replacing it would re-enable what they turned
-    // off — keep it untouched.
-    if (existing !== undefined && isBareOffSwitch(existing)) {
-      report.written.push({ name, action: "kept", detail: "existing off-switch override left untouched" });
-      continue;
-    }
-
     const c = classifySpec(spec, row);
     if (c.kind === "absent") {
       let detail = c.reason;
@@ -245,7 +241,7 @@ function mergeToml(absPath, row, servers, report, projectRoot) {
   const managed = new Set();
   for (const [name, c] of decisions) if (c.kind !== "refuse") managed.add(name);
 
-  const { foreign, blocks, bare, malformed } = splitToml(raw.split("\n"), managed);
+  const { foreign, blocks, malformed } = splitToml(raw.split("\n"), managed);
 
   // A malformed marker pair (unterminated begin / orphan end) means the file
   // is not safely ours to rewrite. Report and leave it untouched — data loss
@@ -258,12 +254,6 @@ function mergeToml(absPath, row, servers, report, projectRoot) {
   let changed = false;
   const fresh = [];
   for (const [name, c] of decisions) {
-    // A bare {"enabled": <bool>} override is a user switch on a server defined
-    // elsewhere; replacing it would re-enable what they turned off. Keep it.
-    if (bare.has(name)) {
-      report.written.push({ name, action: "kept", detail: "existing off-switch override left untouched" });
-      continue;
-    }
     const prior = blocks.get(name);
     if (c.kind === "refuse") {
       report.written.push({ name, action: "refused", detail: c.reason });
@@ -308,12 +298,9 @@ function mergeToml(absPath, row, servers, report, projectRoot) {
 // regenerate/remove, keyed by name. The marker scan is bounded — it stops at
 // the next begin-mark or a table header — so an unterminated pair can never
 // swallow a user's remaining config; that is reported as malformed instead.
-// A bare off-switch override ("enabled = <bool>" alone) is a user switch and is
-// left untouched (returned via `bare`), never rebuilt into a full entry.
 function splitToml(lines, managed) {
   const foreign = [];
   const blocks = new Map();
-  const bare = new Set();
   const malformed = [];
   let i = 0;
   while (i < lines.length) {
@@ -337,12 +324,11 @@ function splitToml(lines, managed) {
         i = j;
         continue;
       }
-      const blockText = block.join("\n");
-      if (isBareTomlOffSwitch(blockText)) {
-        foreign.push(...block); // a bare off-switch override — keep untouched
-        bare.add(bn);
-      } else if (managed.has(bn)) {
-        blocks.set(bn, blockText); // ours to regenerate or remove
+      // A bare `enabled = <bool>` block is still a tool-owned name (ADR-455):
+      // it is regenerated like any other owned body, never kept as an
+      // override — the off switch is `disabled` in .mcp.json.
+      if (managed.has(bn)) {
+        blocks.set(bn, block.join("\n")); // ours to regenerate or remove
       } else {
         foreign.push(...block); // not managed — leave alone
       }
@@ -359,13 +345,7 @@ function splitToml(lines, managed) {
              && endMarkName(lines[j]) === null) {
         block.push(lines[j++]);
       }
-      const blockText = block.join("\n");
-      if (isBareTomlOffSwitch(blockText)) {
-        foreign.push(...block); // a bare off-switch override — keep untouched
-        bare.add(tn);
-      } else {
-        blocks.set(tn, blockText); // ours to regenerate or remove
-      }
+      blocks.set(tn, block.join("\n")); // ours to regenerate or remove
       i = j;
       continue;
     }
@@ -374,7 +354,7 @@ function splitToml(lines, managed) {
     foreign.push(line);
     i++;
   }
-  return { foreign: foreign.join("\n"), blocks, bare, malformed };
+  return { foreign: foreign.join("\n"), blocks, malformed };
 }
 
 function buildTomlBlock(name, entry) {
@@ -400,20 +380,6 @@ const endMarkName = (line) => (END_RE.exec(line)?.[1] ?? null);
 function tableName(line) {
   const m = TABLE_RE.exec(line);
   return m ? unquoteKey(m[1].trim()) : null;
-}
-
-// Is this block a bare off-switch override — a table whose only content is
-// `enabled = <bool>`? That is a user switch on a server defined elsewhere, so
-// it is kept untouched rather than rebuilt into a full entry.
-function isBareTomlOffSwitch(blockText) {
-  const content = [];
-  for (const line of blockText.split("\n")) {
-    const t = line.trim();
-    if (t === "" || t.startsWith("#")) continue; // blank or comment (incl. markers)
-    if (TABLE_HEAD_RE.test(t)) continue;          // table header
-    content.push(t);
-  }
-  return content.length === 1 && /^enabled\s*=\s*(true|false)\s*$/.test(content[0]);
 }
 
 // Does the resolved target path land on the protected source .mcp.json?
@@ -461,11 +427,6 @@ function setOwn(obj, key, val) {
   // defineProperty sets an own key even for "__proto__" without triggering
   // the prototype setter.
   Object.defineProperty(obj, key, { value: val, enumerable: true, writable: true, configurable: true });
-}
-
-// A bare off-switch override: exactly {"enabled": <bool>} and nothing else.
-function isBareOffSwitch(v) {
-  return isPlainObject(v) && Object.keys(v).length === 1 && hasOwn(v, "enabled") && typeof v.enabled === "boolean";
 }
 
 // Order-insensitive structural equality (compares keys/values, not order).
