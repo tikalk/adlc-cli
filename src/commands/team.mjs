@@ -155,7 +155,11 @@ export async function cmdTeamRepair(args, flags) {
     }
 
     const scriptArgs = flags.validateDrafts ? ["--validate-drafts"] : ["--update-confidence"];
-    const result = spawnSync("bash", [scriptPath, ...scriptArgs], { stdio: "inherit" });
+    // Git Bash treats backslashes as escape characters, so hand it a
+    // forward-slash path on Windows (same convention as dispatcher.mjs's
+    // sh branch); POSIX paths pass through untouched.
+    const bashScript = process.platform === "win32" ? scriptPath.replace(/\\/g, "/") : scriptPath;
+    const result = spawnSync("bash", [bashScript, ...scriptArgs], { stdio: "inherit" });
     // ?? not ||: a successful script (status 0) is success — `0 || 1` made
     // every successful repair (and therefore every successful `team update`)
     // exit 1.

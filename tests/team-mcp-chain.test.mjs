@@ -157,6 +157,35 @@ it("chain: corrupt .mcp.json → exit 1 with 'aborting <label>'", async () => {
 
 // ── cmdTeamUpdate (integration: the full flow, offline) ──────────────────
 
+// Git for Windows' bash dir, for when bare `bash` is not on a Node-spawned
+// process's PATH (the windows-latest case e2e-windows-path.test.mjs
+// documents). The success path ends in cmdTeamRepair's spawnSync("bash",
+// setup-team.sh); without this injection the CLI child cannot resolve bash
+// there. Same lookup order as that test's resolveBash: bare `bash` first
+// (nothing to inject), then the well-known Git locations.
+function resolveGitBashDir() {
+  if (process.platform !== "win32") return null;
+  try {
+    execFileSync("bash", ["--version"], { stdio: "ignore" });
+    return null; // already resolvable — the child inherits the same PATH
+  } catch {
+    // not on PATH (or it is the WSL stub, which exits non-zero)
+  }
+  for (const base of [process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"]]) {
+    if (!base) continue;
+    const exe = join(base, "Git", "bin", "bash.exe");
+    if (existsSync(exe)) return dirname(exe);
+  }
+  return null;
+}
+const GIT_BASH_DIR = resolveGitBashDir();
+// Fail-open skip (the repo's own SKIP_NO_BASH convention): only when Windows
+// has no usable bash at all — the runners always do, so this is a loud
+// signal for exotic setups, not a way to avoid the work.
+const SKIP_NO_GIT_BASH = process.platform === "win32" && !GIT_BASH_DIR
+  ? { skip: "no bash on PATH and no Git for Windows under PROGRAMFILES — repair's bash boundary cannot run" }
+  : {};
+
 // A full `team update` sandbox: real local git repos (so `git pull` succeeds
 // offline), a PATH-stubbed `npx` (cmdUpdate's pull loop must not hit the
 // network), a stub setup-team.sh at the path cmdTeamRepair resolves (it
@@ -187,12 +216,19 @@ function makeUpdateProject(mcpJson) {
   }, null, 2), "utf-8");
 
   // PATH stub for the external installer boundary — everything the test
-  // asserts on (the MCP chain) runs for real underneath.
+  // asserts on (the MCP chain) runs for real underneath. Two twins of the
+  // same stub: `npx` (POSIX shebang script) and `npx.cmd` — on Windows
+  // spawnNpxSync goes through cmd.exe (shell: true), which resolves the
+  // command via PATHEXT and cannot execute an extensionless script, so a
+  // POSIX-only stub let the REAL npx run in CI (network install; Node 18
+  // util.styleText crash). CRLF endings: cmd.exe parses batch reliably
+  // only with them.
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
   const npx = join(bin, "npx");
   writeFileSync(npx, "#!/bin/sh\nexit 0\n", "utf-8");
   chmodSync(npx, 0o755);
+  writeFileSync(join(bin, "npx.cmd"), "@echo off\r\nexit /b 0\r\n", "utf-8");
 
   // The repair stub: cmdTeamRepair's second candidate path, resolved from
   // the CLI's cwd (the temp project). Touching .repair-ran is the signal.
@@ -202,16 +238,27 @@ function makeUpdateProject(mcpJson) {
 
   if (mcpJson !== undefined) writeFileSync(join(dir, ".mcp.json"), mcpJson, "utf-8");
 
+  // PATH for the spawned CLI: stub bin first, then (Windows only) Git's
+  // bash dir so cmdTeamRepair's bare spawnSync("bash") resolves. Both
+  // spellings on Windows: the plain-object spread keeps the original
+  // "Path" casing alongside our "PATH", and a case-variant duplicate in
+  // the child's env block is ambiguity — set both to the same value so
+  // whichever the child reads, it is ours.
+  const pathValue = [bin, GIT_BASH_DIR, process.env.PATH].filter(Boolean).join(delimiter);
+  const stubEnv = process.platform === "win32"
+    ? { PATH: pathValue, Path: pathValue }
+    : { PATH: pathValue };
+
   return {
     dir,
     read: (rel) => readFileSync(join(dir, rel), "utf-8"),
     marker: join(dir, ".repair-ran"),
-    env: { PATH: `${bin}${delimiter}${process.env.PATH}` },
+    env: stubEnv,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
 
-it("team update: chains mcp install before repair (success path)", async () => {
+it("team update: chains mcp install before repair (success path)", SKIP_NO_GIT_BASH, async () => {
   const f = makeUpdateProject(withServers({ context7: CODEX_OK }));
   try {
     const r = await run(["team", "update", "-a", "codex"], { cwd: f.dir, env: f.env });
