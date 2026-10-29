@@ -690,6 +690,64 @@ export const EVENT_AGENTS = {
   },
 };
 
+// ── MCP install ────────────────────────────────────────────────────────
+// Per-agent metadata for `adlc-cli mcp install`: .mcp.json is the single
+// standard declaration of MCP servers; each row describes how to materialise
+// those servers in the agent's own config shape.
+//   target_files   — candidate config paths, project-relative; first existing
+//                    wins (resolution lives in the install engine).
+//   section        — the key/section holding the server map in that file.
+//   format         — the entry shape to write: how the server block is
+//                    written for that target.
+//   var_syntax     — the string rewriting for ${VAR}: how ${VAR} is rendered.
+//                    Independent of format; the two can vary separately:
+//                      "passthrough" — unchanged (claude-code IS the standard)
+//                      "env-braces"  — {env:NAME} (opencode)
+//                      "env-vars"    — env_vars = ["NAME"], inherited from the
+//                                      parent process; no string substitution
+//                                      (codex)
+//                      "env-prefix"  — ${env:NAME} (cursor)
+//   has_off_switch — whether the target has a field that disables a server
+//                    (codex/opencode: enabled = false). claude-code has none:
+//                    `disabled` has no effect in .mcp.json and deleting the
+//                    entry is the only real off switch (design spec, settled
+//                    decision 3).
+export const MCP_AGENTS = {
+  "claude-code": {
+    target_files: [".mcp.json"],
+    section: "mcpServers",
+    format: "claude",
+    var_syntax: "passthrough",
+    has_off_switch: false,
+  },
+  opencode: {
+    target_files: ["opencode.json", ".opencode/opencode.json"],
+    section: "mcp",
+    format: "opencode",
+    var_syntax: "env-braces",
+    has_off_switch: true,
+  },
+  codex: {
+    target_files: [".codex/config.toml"],
+    section: "mcp_servers",
+    format: "codex",
+    var_syntax: "env-vars",
+    has_off_switch: true,
+  },
+  cursor: {
+    target_files: [".cursor/mcp.json"],
+    section: "mcpServers",
+    format: "cursor",
+    var_syntax: "env-prefix",
+    has_off_switch: false,
+  },
+};
+
+export function getMcpAgent(key) {
+  const normalized = key === "claude" ? "claude-code" : key;
+  return Object.hasOwn(MCP_AGENTS, normalized) ? MCP_AGENTS[normalized] : null;
+}
+
 export function getEventAgentConfig(agentKey) {
   return EVENT_AGENTS[agentKey] || null;
 }

@@ -80,6 +80,7 @@ export function printCliHelp() {
         ["workflow status [run_id]", "List runs / show one run's step states"],
         ["workflow validate <src>", "Validate a workflow definition (--headless checks gate verdicts)"],
         ["workflow state …", "LLM-executor helpers: start/advance/pause/fail/show"],
+        ["mcp install [DIR] --agent NAME", "Write each named agent's MCP config from .mcp.json"],
         ["version", "Print installed version"],
         ["help", "Show this help"],
       ]),
@@ -369,6 +370,34 @@ export function printHelp() {
       ]),
     ]),
   );
+  out("");
+}
+
+export function printMcpHelp() {
+  out("");
+  out(section("Usage", [tint("adlc-cli mcp install [DIR] --agent NAME", "bold")]));
+  out(
+    section("Commands", [
+      ...pairs([
+        ["install [DIR]", "Write each named agent's MCP config from the project's .mcp.json (DIR defaults to the current directory)"],
+        ["help", "Show this help"],
+      ]),
+    ]),
+  );
+  out(
+    section("Flags", [
+      ...pairs([
+        ["-a, --agent, --agents <name>", "Agent to configure (repeatable): claude-code | opencode | codex | cursor; default: the agent in .adlc/init-options.json"],
+      ]),
+    ]),
+  );
+  out(
+    section("Notes", [
+      tint(".mcp.json is the source of truth and is never rewritten; claude-code needs no file (the standard is its file).", "gray"),
+      tint("Exit 0 only when every named agent is configured; 1 otherwise. A named agent with no adapter gets its servers listed for hand-install.", "gray"),
+    ]),
+  );
+  out(section("More", [tint("Run 'adlc-cli help' for the full list.", "gray")]));
   out("");
 }
 

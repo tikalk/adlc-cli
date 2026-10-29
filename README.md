@@ -55,12 +55,19 @@ npx adlc-cli version
 
 | Command | Description |
 |----------|-------------|
-| `team setup <source> -a <agent>` | Install skills + write `.adlc/init-options.json` + run `/team-setup` (interactive UI on a TTY, headless in CI/pipes; `--skip-skills` to skip installation) |
-| `team update` | `git pull` the team-ai-directives repo + re-install skills from source + `team repair --update-confidence` |
+| `team setup <source> -a <agent>` | Install skills + write `.adlc/init-options.json` + run `mcp install` + run `/team-setup` (interactive UI on a TTY, headless in CI/pipes; `--skip-skills` to skip installation) |
+| `team update` | `git pull` the team-ai-directives repo + re-install skills from source + run `mcp install` + `team repair --update-confidence` |
 | `team repair [--update-confidence\|--validate-drafts\|--build-to-delete]` | Run `/team-repair` headlessly (agent-driven), or the deterministic `setup-team.sh` path for `--update-confidence` / `--validate-drafts` |
 
 The `team` tree reads its targets from `.adlc/init-options.json` (see below);
 `-a` defaults to the configured agent.
+
+Both `team setup` and `team update` chain `mcp install` for the configured
+agent before the agent session (`team setup`) or the repair pass
+(`team update`) — a named agent never starts without its MCP servers. If the
+chained install fails (a refused entry, a target-level error, a corrupt
+`.mcp.json`), the command aborts with exit 1; its copy-once gap report runs
+chained too (see [MCP](#mcp)).
 
 ### Workspace
 
@@ -204,6 +211,35 @@ later step or gate can read them, for example
 `context.link: "{{ steps.intent-product.output.mr_url }}"`. If any field breaks
 a rule, the file is ignored with a log line. Stdout is never parsed for
 results.
+
+### MCP
+
+| Command | Description |
+|---------|-------------|
+| `mcp install [DIR] --agent NAME` | Write each named agent's own MCP config from the project's `.mcp.json` |
+
+`mcp install` reads `.mcp.json` (the single standard declaration of MCP
+servers) and materialises its `mcpServers` into each named agent's own config
+shape: `opencode.json` (`mcp`), `.cursor/mcp.json` (`mcpServers`) and
+`.codex/config.toml` (`[mcp_servers.*]`); `claude-code` is a no-op — the
+standard is already its file. A name present in `.mcp.json` is tool-owned and
+regenerated on each run; the off switch is `disabled: true` in `.mcp.json`
+itself, which the tool never rewrites.
+
+Precondition: `team setup` has recorded an agent in `.adlc/init-options.json`,
+or pass `--agent`/`-a` (repeatable) explicitly. Supported agents:
+`claude-code`, `opencode`, `codex`, `cursor`.
+
+Exit contract: `0` only when every named agent is configured; `1` otherwise —
+target-level errors and per-server refusals both fail the run (an entry that
+cannot be fully expressed is never half-written). After the install, a
+copy-once gap report compares the team's `.mcp.json` against the project's and
+prints drift as warnings on stderr; it never changes the exit code. JSON
+targets are normalised to 2-space indent on first write.
+
+`team setup` and `team update` chain this command for the configured agent;
+the chained run has the same behavior — gap report included — and an MCP
+failure aborts the team command with exit 1.
 
 ### Top-level
 
