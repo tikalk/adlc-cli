@@ -143,6 +143,20 @@ it("codex maps http onto its StreamableHttp url and refuses sse", () => {
   assert.match(describeRefusal({ type: "sse", url: "https://mcp.example" }, MCP_AGENTS.codex), /sse/);
 });
 
+it("opencode refuses sse (its remote entry is streamable HTTP only); cursor keeps the native type", () => {
+  // The same silent-success class as codex, one branch over: opencode's
+  // documented remote schema has no sse type and its client has no SSE
+  // transport, so an sse entry would fail to connect at agent runtime
+  // AFTER this tool reported success. Cursor speaks SSE natively and
+  // keeps type:"sse" — the refusal is per-target, never global.
+  const sse = { type: "sse", url: "https://mcp.example" };
+  assert.equal(translateEntry(sse, MCP_AGENTS.opencode), null);
+  assert.match(describeRefusal(sse, MCP_AGENTS.opencode), /streamable HTTP, not SSE/);
+  assert.equal(translateEntry(sse, MCP_AGENTS.codex), null);
+  assert.match(describeRefusal(sse, MCP_AGENTS.codex), /StreamableHttp, not SSE/);
+  assert.deepEqual(translateEntry(sse, MCP_AGENTS.cursor), { type: "sse", url: "https://mcp.example" });
+});
+
 it("opencode url entry becomes a remote entry with env-braces vars", () => {
   assert.deepEqual(translateEntry({ type: "http", url: "https://mcp.example/${TENANT}" }, MCP_AGENTS.opencode),
     { type: "remote", enabled: true, url: "https://mcp.example/{env:TENANT}" });

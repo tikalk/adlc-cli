@@ -234,10 +234,16 @@ export function describeRefusal(spec, row) {
       return `type "${spec.type}" conflicts with url`;
     }
     // Codex's remote transport is StreamableHttp (its transports are
-    // Stdio | StreamableHttp). An SSE server speaks a different protocol
-    // and would start wrongly against it — refused, not half-written.
-    if (spec.type === "sse" && row.format === "codex") {
-      return `sse is not expressible in ${row.format} entries: its remote transport is StreamableHttp, not SSE`;
+    // Stdio | StreamableHttp) and OpenCode's remote entry is streamable
+    // HTTP the same way (its config schema knows local | remote only — no
+    // SSE transport exists): an SSE server would connect with the wrong
+    // protocol and fail at agent runtime AFTER this tool reported success
+    // — the silent-success class PDR-138 exists to eliminate. Refused,
+    // not half-written. Cursor is the exception: it speaks SSE natively
+    // and keeps type:"sse".
+    if (spec.type === "sse" && (row.format === "codex" || row.format === "opencode")) {
+      const remote = row.format === "codex" ? "StreamableHttp" : "streamable HTTP";
+      return `sse is not expressible in ${row.format} entries: its remote transport is ${remote}, not SSE`;
     }
   }
 

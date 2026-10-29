@@ -12,7 +12,8 @@
 // foreign and preserved (byte-for-byte where the format allows).
 //
 // ── Two failure channels (never mixed) ────────────────────────────────
-//   errors[]  — target-level: unparseable / JSONC / wrong shape. The file
+//   errors[]  — target-level: unparseable / JSONC / wrong shape /
+//               unreadable / unwritable / a write-guard refusal. The file
 //               is left untouched and no per-server write is attempted.
 //   written[] — per-server: added | updated | kept | refused |
 //               disabled-skipped (each with a detail). The rest of the
@@ -29,12 +30,15 @@
 // claude-code ("the standard is its file") is therefore a no-op: every
 // server reports kept and nothing is written — those servers came FROM
 // .mcp.json. disabled:true does not delete there either. A write-layer
-// guard additionally refuses to write the resolved source path for any row.
-// A malformed TOML marker pair is a target-level error: the file is left
-// untouched rather than risk losing a user's content.
+// guard additionally refuses to write the resolved source path for any
+// row: it judges every write by the target's REAL path (symlinks
+// followed), refusing the source itself and anything that resolves
+// outside the project tree. A malformed TOML marker pair is a
+// target-level error: the file is left untouched rather than risk losing
+// a user's content.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, realpathSync } from "node:fs";
+import { join, dirname, resolve, relative, isAbsolute, basename } from "node:path";
 import { getMcpAgent } from "../registry.mjs";
 import { translateEntry, describeRefusal, offSwitchEntry, expressibleVars } from "./translate.mjs";
 
@@ -127,11 +131,9 @@ function droppedDefaultsNote(spec, row) {
 // ── JSON merge (claude-code, opencode, cursor) ────────────────────────
 function mergeJson(absPath, row, servers, report, projectRoot) {
   // Write-layer guard: never rewrite the source of truth, whatever row is
-  // driving us. Refuse and report rather than write.
-  if (isSourcePath(absPath, projectRoot)) {
-    report.errors.push(`${report.target}: is the source of truth (${MCP_SOURCE}); refusing to write`);
-    return;
-  }
+  // driving us, and never write outside the project tree. Refuse and
+  // report rather than write.
+  if (!writeTargetGuard(absPath, projectRoot, report)) return;
   const exists = existsSync(absPath);
   let raw = "";
   if (exists) {
@@ -214,8 +216,7 @@ function mergeJson(absPath, row, servers, report, projectRoot) {
 
   if (changed) {
     setOwn(doc, sectionKey, section);
-    mkdirSync(dirname(absPath), { recursive: true });
-    writeFileSync(absPath, JSON.stringify(doc, null, 2) + "\n", "utf-8");
+    writeTargetFile(absPath, JSON.stringify(doc, null, 2) + "\n", report);
   }
 }
 
@@ -225,16 +226,25 @@ function mergeJson(absPath, row, servers, report, projectRoot) {
 // whole file and never JSON.parse a .toml.
 function mergeToml(absPath, row, servers, report, projectRoot) {
   // Write-layer guard: never rewrite the source of truth, whatever row is
-  // driving us. Refuse and report rather than write.
-  if (isSourcePath(absPath, projectRoot)) {
-    report.errors.push(`${report.target}: is the source of truth (${MCP_SOURCE}); refusing to write`);
+  // driving us, and never write outside the project tree. Refuse and
+  // report rather than write.
+  if (!writeTargetGuard(absPath, projectRoot, report)) return;
+  const exists = existsSync(absPath);
+  let raw;
+  try {
+    raw = exists ? readFileSync(absPath, "utf-8") : "";
+  } catch {
+    // Mirror the JSON path: an unreadable target is a target-level
+    // failure, reported — never a thrown stack trace that would abort
+    // every remaining named agent (PDR-139's report contract).
+    report.errors.push(`${report.target}: unreadable; refusing to edit`);
     return;
   }
-  const exists = existsSync(absPath);
-  const raw = exists ? readFileSync(absPath, "utf-8") : "";
   const decisions = new Map();
   for (const [name, spec] of Object.entries(servers ?? {})) {
-    decisions.set(name, classifySpec(spec, row));
+    // A name the marker machinery cannot key byte-exactly is refused here
+    // (never written, never removed) — see markerSafeName below.
+    decisions.set(name, markerSafeName(name) ? classifySpec(spec, row) : unsafeNameRefusal(name));
   }
   // Refused names keep whatever is there (never destroy user config we cannot
   // faithfully regenerate). Everything else is managed: written or removed.
@@ -290,8 +300,7 @@ function mergeToml(absPath, row, servers, report, projectRoot) {
   const newContent = cleaned
     ? (body ? `${cleaned}\n\n${body}\n` : `${cleaned}\n`)
     : (body ? `${body}\n` : "");
-  mkdirSync(dirname(absPath), { recursive: true });
-  writeFileSync(absPath, newContent, "utf-8");
+  writeTargetFile(absPath, newContent, report);
 }
 
 // Split TOML lines into foreign lines (kept verbatim) and the owned blocks to
@@ -373,6 +382,36 @@ const END_RE = /^#\s*adlc-mcp-end\s+(.+?)\s*$/;
 const TABLE_RE = /^\s*\[mcp_servers\.([^\]]+)\]\s*(?:#.*)?$/;
 const TABLE_HEAD_RE = /^\s*\[/; // any TOML table header (bounds a marker block)
 
+// ── Marker keys: one line, byte-exact ──────────────────────────────────
+// The marker comment is the ownership key read back on the next run, so a
+// name must round-trip byte-exactly through a single comment line:
+//   - a control character (notably a raw newline) would END the comment
+//     and turn the rest of the name into live TOML — an injection channel
+//     from a hostile .mcp.json straight into codex's project config;
+//   - leading/trailing whitespace is stripped by BEGIN_RE/END_RE when the
+//     marker is read back, which mis-keys the block: the next run cannot
+//     find its own entry and would emit a second table for the same name
+//     (invalid TOML).
+// Such a name cannot be owned in a TOML target: refused per-server,
+// never written, never removed. JSON targets key on the exact string and
+// have no marker surface — they keep such names (pinned by tests).
+function markerSafeName(name) {
+  if (name.length === 0 || name !== name.trim()) return false;
+  for (let i = 0; i < name.length; i++) {
+    const code = name.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return false; // C0 controls + DEL
+  }
+  return true;
+}
+function unsafeNameRefusal(name) {
+  return {
+    kind: "refuse",
+    reason: `name ${JSON.stringify(name)} cannot be owned in a TOML target: marker keys must be one line (no control characters, no leading/trailing whitespace)`,
+  };
+}
+
+// Names reaching these passed markerSafeName at classification time, so
+// the interpolation is byte-exact and can never inject into the comment.
 const beginMark = (name) => `# adlc-mcp-begin ${name}`;
 const endMark = (name) => `# adlc-mcp-end ${name}`;
 const beginMarkName = (line) => (BEGIN_RE.exec(line)?.[1] ?? null);
@@ -383,8 +422,101 @@ function tableName(line) {
 }
 
 // Does the resolved target path land on the protected source .mcp.json?
+// Lexical check — enough for the claude-code no-op dispatch above (its
+// target IS the source by construction). The write layer needs the
+// symlink-aware version below.
 function isSourcePath(absPath, projectRoot) {
   return resolve(absPath) === resolve(projectRoot, MCP_SOURCE);
+}
+
+// ── Write-layer guard: judge the write by where it LANDS ──────────────
+// Two invariants, checked on a realpath basis (symlinks followed) so a
+// link cannot redirect a write past them:
+//   - the real target is never the real .mcp.json — the source of truth
+//     is never rewritten, whatever row drives us (ADR-455/PDR-139);
+//   - the real target stays inside the project tree — a link out of the
+//     tree would make the tool write files the project does not own.
+// A dangling symlink is refused outright: its destination is unknowable,
+// and writing through it would create a file nobody declared. Same
+// refusal channel as every target-level failure: report, never throw.
+function writeTargetGuard(absPath, projectRoot, report) {
+  const refuse = (reason) => {
+    report.errors.push(`${report.target}: ${reason}`);
+    return false;
+  };
+  let real;
+  try {
+    real = realpathSync(absPath);
+  } catch {
+    // ENOENT covers both "not created yet" and "dangling symlink" —
+    // lstat tells them apart.
+    if (isDanglingSymlink(absPath)) {
+      return refuse("is a dangling symlink; refusing to write through it");
+    }
+    real = realPathOfCreation(absPath);
+  }
+  const root = realPathOfCreation(projectRoot);
+  const source = realSourcePath(projectRoot);
+  if (source !== null && real === source) {
+    return refuse(`is the source of truth (${MCP_SOURCE}); refusing to write`);
+  }
+  const rel = relative(root, real);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    return refuse("resolves outside the project (symlink redirect); refusing to write");
+  }
+  return true;
+}
+
+function isDanglingSymlink(p) {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false; // nothing there at all
+  }
+}
+
+// realpath of the path, or of its nearest existing ancestor with the
+// not-yet-created tail appended — a file about to be CREATED is judged
+// by where mkdir/write would land (a symlinked parent directory still
+// resolves; only an unresolvable gap falls back to the lexical path).
+function realPathOfCreation(absPath) {
+  const tail = [];
+  let current = absPath;
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...tail.reverse());
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return absPath; // filesystem root: give up, lexical
+      tail.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+// The real .mcp.json, or null when it does not exist — an absent source
+// cannot be equal to anything, so the guard skips that comparison.
+function realSourcePath(projectRoot) {
+  try {
+    return realpathSync(join(projectRoot, MCP_SOURCE));
+  } catch {
+    return null;
+  }
+}
+
+// Create the target's directory and write the content, converting I/O
+// failures into a target-level error — never a crash that would abort
+// every remaining named agent (PDR-139's report contract). On failure
+// nothing was written, so no per-server outcome is claimed either: the
+// report degrades to the documented errors[]-only refusal shape.
+function writeTargetFile(absPath, content, report) {
+  try {
+    mkdirSync(dirname(absPath), { recursive: true });
+    writeFileSync(absPath, content, "utf-8");
+  } catch (e) {
+    report.errors.push(`${report.target}: write failed (${e.code ?? e.message}); file left untouched`);
+    report.written.length = 0;
+  }
 }
 
 function sameBlock(a, b) {
@@ -395,8 +527,25 @@ function sameBlock(a, b) {
 function tomlKey(k) {
   return /^[A-Za-z0-9_-]+$/.test(k) ? k : tomlString(k);
 }
+// TOML basic strings escape backslash and quote, and every control
+// character must be escaped too (\n \r \t by name, the rest \uXXXX): a
+// raw control character makes the WHOLE file unparseable — bricking the
+// agent's config while the run reports success. describeRefusal
+// deliberately allows such values (multiline PEMs, JSON blobs in env),
+// so this renderer is the only place the written file can be kept valid.
 function tomlString(s) {
-  return `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  let out = "";
+  for (const ch of String(s)) {
+    const code = ch.codePointAt(0);
+    if (ch === "\\") out += "\\\\";
+    else if (ch === '"') out += '\\"';
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else if (code <= 0x1f || code === 0x7f) out += "\\u" + code.toString(16).padStart(4, "0");
+    else out += ch;
+  }
+  return `"${out}"`;
 }
 function tomlValue(v) {
   if (typeof v === "string") return tomlString(v);

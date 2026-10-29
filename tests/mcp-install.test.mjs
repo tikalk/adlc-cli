@@ -1,6 +1,6 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { installForAgent } from "../src/mcp/install.mjs";
@@ -456,6 +456,176 @@ it("an orphan end marker is reported and the file is left untouched", () => {
     assert.equal(p.read(".codex/config.toml"), original);
     assert.equal(r.written.length, 0);
   } finally {
+    p.cleanup();
+  }
+});
+
+// ── Self-heal round: marker keys, TOML escaping, unreadable targets ────
+// Four Important findings pinned together: a server name the marker
+// machinery cannot key byte-exactly (control characters — an injection
+// channel into the generated TOML — or edge whitespace that would
+// mis-key the block) is refused per-server; control characters in VALUES
+// are escaped so the written TOML stays parseable; an unreadable TOML
+// target is a reported error (never a crash that aborts the remaining
+// named agents); and a JSON target keeps an exact-string name safely —
+// it has no marker surface.
+
+it("a server name with a newline is refused for the TOML target: it cannot be a marker key", () => {
+  const p = project();
+  try {
+    const original = 'model = "gpt"\n';
+    p.write(".codex/config.toml", original);
+    const evil = "a\nb"; // a raw newline would END the marker comment and inject live TOML
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "codex", servers: { [evil]: CONTEXT7 } });
+
+    const w = r.written.find((x) => x.name === evil);
+    assert.equal(w.action, "refused");
+    assert.match(w.detail, /marker keys must be one line/);
+    assert.equal(p.read(".codex/config.toml"), original); // nothing written, nothing lost
+    assert.equal(r.errors.length, 0); // per-server refusal, not a target-level error
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("a server name with edge whitespace is refused for the TOML target: the marker would mis-key it", () => {
+  const p = project();
+  try {
+    const r = installForAgent({ projectRoot: p.dir, agent: "codex", servers: { " spaced ": CONTEXT7 } });
+    assert.equal(r.written.find((w) => w.name === " spaced ").action, "refused");
+    assert.ok(!p.exists(".codex/config.toml"));
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("control characters in values are escaped: the written TOML stays valid", () => {
+  const p = project();
+  try {
+    const r = installForAgent({
+      projectRoot: p.dir,
+      agent: "codex",
+      servers: {
+        multi: {
+          command: "npx",
+          args: ["-y", "x"],
+          env: { CERT: "line1\nline2\r\nend", TAB: "a\tb", DEL: "d\x7f", CTRL: "c\x01" },
+        },
+      },
+    });
+
+    assert.equal(r.written.find((w) => w.name === "multi").action, "added");
+    const toml = p.read(".codex/config.toml");
+    assert.match(toml, /CERT = "line1\\nline2\\r\\nend"/);
+    assert.match(toml, /TAB = "a\\tb"/);
+    assert.match(toml, /DEL = "d\\u007f"/);
+    assert.match(toml, /CTRL = "c\\u0001"/);
+    // the generated block carries no raw control character (only \n line separators)
+    const block = toml.slice(toml.indexOf("adlc-mcp-begin multi"));
+    assert.ok(!/[\x00-\x09\x0b-\x1f\x7f]/.test(block), "raw control character in generated block");
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("an unreadable TOML target is a reported error, never a crash", () => {
+  const p = project();
+  try {
+    mkdirSync(p.path(".codex"), { recursive: true });
+    mkdirSync(p.path(".codex/config.toml")); // a directory: readFileSync → EISDIR
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "codex", servers: { context7: CONTEXT7 } });
+
+    assert.ok(r.errors.some((e) => /unreadable; refusing to edit/.test(e)));
+    assert.equal(r.written.length, 0);
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("JSON targets key on the exact string: a newline name is written safely (no marker surface)", () => {
+  const p = project();
+  try {
+    const r = installForAgent({ projectRoot: p.dir, agent: "opencode", servers: { "a\nb": CONTEXT7 } });
+
+    assert.equal(r.written.find((w) => w.name === "a\nb").action, "added");
+    const cfg = JSON.parse(p.read("opencode.json")); // JSON.stringify escapes the key
+    assert.deepEqual(cfg.mcp["a\nb"].command, ["npx", "-y", "@upstash/context7-mcp"]);
+  } finally {
+    p.cleanup();
+  }
+});
+
+// ── Self-heal round: the write-layer guard judges real paths ──────────
+// The guard follows symlinks: a target that lands on .mcp.json (whatever
+// link chain brought it there) is refused — the source of truth is never
+// rewritten (ADR-455/PDR-139) — and so is a target that resolves outside
+// the project tree or dangles.
+
+it("a symlinked target that lands on .mcp.json is refused: the source is never rewritten", () => {
+  const p = project();
+  try {
+    const source = JSON.stringify({ mcpServers: { context7: CONTEXT7 } }, null, 2) + "\n";
+    p.write(".mcp.json", source);
+    mkdirSync(p.path(".cursor"), { recursive: true });
+    symlinkSync(p.path(".mcp.json"), p.path(".cursor/mcp.json")); // "let cursor read the standard directly"
+
+    const before = p.readBytes(".mcp.json");
+    const r = installForAgent({ projectRoot: p.dir, agent: "cursor", servers: { context7: CONTEXT7 } });
+
+    assert.ok(r.errors.some((e) => /source of truth/.test(e)));
+    assert.deepEqual(p.readBytes(".mcp.json"), before); // byte-identical
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("a symlinked target resolving outside the project is refused", () => {
+  const p = project();
+  const outside = project();
+  try {
+    outside.write("real-target.json", "{}");
+    mkdirSync(p.path(".cursor"), { recursive: true });
+    symlinkSync(outside.path("real-target.json"), p.path(".cursor/mcp.json"));
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "cursor", servers: { context7: CONTEXT7 } });
+
+    assert.ok(r.errors.some((e) => /outside the project/.test(e)));
+    assert.equal(outside.read("real-target.json"), "{}"); // untouched
+  } finally {
+    p.cleanup();
+    outside.cleanup();
+  }
+});
+
+it("a dangling symlink target is refused outright", () => {
+  const p = project();
+  try {
+    mkdirSync(p.path(".cursor"), { recursive: true });
+    symlinkSync(p.path(".cursor/missing.json"), p.path(".cursor/mcp.json"));
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "cursor", servers: { context7: CONTEXT7 } });
+
+    assert.ok(r.errors.some((e) => /dangling symlink/.test(e)));
+  } finally {
+    p.cleanup();
+  }
+});
+
+it("a write failure is a reported error, never a crash (readonly target)", () => {
+  if (process.getuid && process.getuid() === 0) return; // root ignores mode bits
+  const p = project();
+  try {
+    p.write("opencode.json", JSON.stringify({ mcp: {} }));
+    chmodSync(p.path("opencode.json"), 0o444);
+
+    const r = installForAgent({ projectRoot: p.dir, agent: "opencode", servers: { context7: CONTEXT7 } });
+
+    assert.ok(r.errors.some((e) => /write failed/.test(e)));
+    assert.equal(r.written.length, 0); // nothing was written, so nothing is claimed
+  } finally {
+    try { chmodSync(p.path("opencode.json"), 0o644); } catch { /* already gone */ }
     p.cleanup();
   }
 });
