@@ -128,6 +128,7 @@ export function printCliHelp() {
       ...pairs([
         ["adlc-cli skills add tikalk/adlc-team-skills -a opencode", ""],
         ["adlc-cli team setup tikalk/adlc-team-skills -a opencode", ""],
+        ["adlc-cli team setup tikalk/adlc-team-skills -a opencode --skip-skills --directives ./team-ai-directives", ""],
         ['adlc-cli agent run "Fix the failing auth test" -a opencode', ""],
         ["adlc-cli workspace setup -a opencode --dry-run", ""],
         ["cat brief.md | adlc-cli agent run - --format json", ""],
@@ -188,6 +189,7 @@ export function printTeamHelp() {
   out(
     section("Setup Flags", [
       ...pairs([
+        ["--directives <path>", "Wire a known team-ai-directives path (headless; no agent session)"],
         ["--skip-skills", "Skip skill installation (just configure directives)"],
         ["-a <agent>", "Agent key (default: from init-options.json)"],
       ]),

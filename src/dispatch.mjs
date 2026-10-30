@@ -301,6 +301,10 @@ function parseArgs(argv) {
       flags.yes = true;
     } else if (arg === "--skip-skills") {
       flags.skipSkills = true;
+    } else if (arg === "--directives") {
+      flags.directives = rest[++i];
+    } else if (arg.startsWith("--directives=")) {
+      flags.directives = arg.slice("--directives=".length);
     } else if (arg === "--provider") {
       flags.providerSpecified = true;
       flags.provider = rest[++i];
