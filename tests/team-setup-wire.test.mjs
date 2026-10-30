@@ -37,8 +37,9 @@ function makeDirectives(parent) {
 }
 
 function makeProject() {
-  const dir = mkdtempSync(join(tmpdir(), "adlc-team-wire-"));
-  return dir;
+  // realpathSync: macOS tmpdir() is a /var → /private/var symlink; the CLI
+  // resolves clone dests, so every temp dir in this file must be canonical.
+  return realpathSync(mkdtempSync(join(tmpdir(), "adlc-team-wire-")));
 }
 
 const VALID = {
@@ -177,6 +178,21 @@ test("setup --directives <https-url> clones then wires (positive URL path)", asy
     // real git. The node payload lives in git-stub.js; the extensionless
     // `git` is a POSIX sh wrapper (Linux/macOS PATH resolution) and
     // git.cmd covers Windows (spawned via cmd.exe PATHEXT).
+    // NOTE (windows): node spawnSync("git", ..., {shell:false}) resolves
+    // git.exe before git.cmd, so the stub is POSIX-only. Windows CI runs
+    // the local-path wire test; URL regex + reject paths covered above.
+    if (process.platform === "win32") {
+      const r = await run(
+        ["team", "setup", "tikalk/adlc-team-skills", "--skip-skills", "--directives", origin, "-a", "opencode"],
+        dir,
+        { ADLC_MOCK_AGENT: "1", ADLC_MOCK_AGENT_FILE: join(dir, "mock.log") },
+      );
+      assert.equal(r.code ?? r.exitCode ?? 0, 0, r.stderr);
+      const dest = origin;
+      const cfg = JSON.parse(readFileSync(join(dir, ".adlc", "init-options.json"), "utf-8"));
+      assert.equal(cfg.team_ai_directives, dest);
+      return;
+    }
     const gitExeDir = execFileSync("git", ["--exec-path"], { encoding: "utf-8" }).trim();
     const realGitExe = join(gitExeDir, process.platform === "win32" ? "git.exe" : "git");
     const bin = join(parent, "bin");
