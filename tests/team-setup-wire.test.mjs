@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, chmodSync, realpathSync } from "node:fs";
 import { join, resolve, dirname, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -150,7 +150,9 @@ test("setup --directives rejects non-https URLs", async () => {
 });
 
 test("setup --directives <https-url> clones then wires (positive URL path)", async () => {
-  const parent = mkdtempSync(join(tmpdir(), "adlc-team-wire-p-"));
+  // realpathSync: macOS tmpdir is a /var → /private/var symlink; the CLI
+  // resolves the clone dest, so compare against the canonical parent.
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "adlc-team-wire-p-")));
   const dir = makeProject();
   try {
     // A real local repo with the valid directives structure. The fake git
@@ -170,22 +172,34 @@ test("setup --directives <https-url> clones then wires (positive URL path)", asy
     execFileSync("git", ["add", "."], { cwd: origin });
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "seed"], { cwd: origin });
 
-    // Fake `git` on PATH: intercept only the clone of an http(s) URL by
-    // copying the seeded repo (simulates a successful clone without
-    // network); delegate everything else to the real git.
-    const realGit = execFileSync("which", ["git"]).toString().trim();
+    // git stub: intercept the clone by copying the seeded repo (simulates a
+    // successful clone with no network); delegate everything else to the
+    // real git. The node payload lives in git-stub.js; the extensionless
+    // `git` is a POSIX sh wrapper (Linux/macOS PATH resolution) and
+    // git.cmd covers Windows (spawned via cmd.exe PATHEXT).
+    const gitExeDir = execFileSync("git", ["--exec-path"], { encoding: "utf-8" }).trim();
+    const realGitExe = join(gitExeDir, process.platform === "win32" ? "git.exe" : "git");
     const bin = join(parent, "bin");
     mkdirSync(bin, { recursive: true });
-    const fakeGit = join(bin, "git");
-    writeFileSync(fakeGit, `#!/bin/sh
-if [ "$1" = "clone" ]; then
-  case "$2" in
-    http://127.0.0.1:*|https://*) cp -r "${origin}" "$3"; exit 0;;
-  esac
-fi
-exec "${realGit}" "$@"
+    const stubJs = join(bin, "git-stub.js");
+    writeFileSync(stubJs, `const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "clone" && /^https?:\\/\\//.test(args[1] || "")) {
+  fs.cpSync(${JSON.stringify(origin)}, args[2], { recursive: true });
+  process.exit(0);
+}
+const r = spawnSync(${JSON.stringify(realGitExe)}, args, { stdio: "inherit" });
+process.exit(r.status ?? 1);
 `, "utf-8");
-    chmodSync(fakeGit, 0o755);
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nexec "${process.execPath}" "${stubJs}" "$@"\n`, { mode: 0o755 });
+    if (process.platform === "win32") {
+      writeFileSync(
+        join(bin, "git.cmd"),
+        `@echo off\r\n"${process.execPath}" "${stubJs}" %*\r\n`,
+        "utf-8",
+      );
+    }
 
     const url = `https://example.com/team-ai-directives.git`;
     const r = await run(
