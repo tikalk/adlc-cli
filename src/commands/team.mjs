@@ -135,7 +135,27 @@ export async function cmdTeamSetup(args, flags) {
   // installed skill copy predates the Phase 2 --wire flag), then resolves
   // the absolute path and persists it exactly like the script does.
   if (flags.directives) {
-    const directivesArg = flags.directives;
+    let directivesArg = flags.directives;
+    // GitHub URL form (deterministic Mode 1): clone-then-wire. https://-only
+    // — file:// and ssh:// are rejected, same as the skill's Mode 1
+    // Input Validation contract; only trusted repos are cloned since agents
+    // read the content afterwards.
+    if (/^https?:\/\//.test(directivesArg)) {
+      const dest = resolve(projectRoot, "team-ai-directives");
+      if (!existsSync(dest)) {
+        const cloned = spawnSync("git", ["clone", directivesArg, dest], { stdio: "inherit" });
+        if (cloned.status !== 0) {
+          error(`git clone failed for ${directivesArg}`);
+          return cloned.status ?? 1;
+        }
+      } else {
+        note(`Reusing existing directives clone at ${dest}`);
+      }
+      directivesArg = dest;
+    } else if (/^(file|ssh):\/\//.test(directivesArg)) {
+      error("team setup --directives URL must start with https:// (file:// and ssh:// are rejected)");
+      return 1;
+    }
     if (!existsSync(directivesArg)) {
       error(`team-ai-directives directory not found: ${directivesArg}`);
       return 1;
@@ -175,8 +195,10 @@ export async function cmdTeamSetup(args, flags) {
   // No --directives and no TTY: the interactive skill below cannot ask its
   // mode-selection questions, and spawning it headlessly hangs until the
   // agent-run timeout. Fail loudly with the deterministic alternative.
-  if (!process.stdin.isTTY) {
-    error("team setup needs interactive mode selection, but stdin is not a TTY.");
+  // --format is also a refusal trigger: it disables the interactive handoff
+  // below (machine contract), so even on a TTY the skill could never ask.
+  if (!process.stdin.isTTY || flags.format) {
+    error(`team setup needs interactive mode selection, but this session cannot provide it (${!flags.format ? "stdin is not a TTY" : "--format json is a machine contract"}).`);
     error(`Re-run with an explicit path: adlc-cli team setup ${source} -a ${agentKey} --directives <path> [--skip-skills]`);
     return 1;
   }

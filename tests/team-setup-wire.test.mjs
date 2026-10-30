@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -110,6 +110,40 @@ test("setup without --directives and without TTY fails loudly instead of hanging
     );
     assert.equal(r.code ?? r.exitCode, 1);
     assert.match(String(r.stderr ?? r.stdout), /--directives/);
+    assert.equal(existsSync(join(dir, "mock-agent.log")), false, "the agent session must not start");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup with --format json and TTY claimed also refuses (machine contract cannot ask)", async () => {
+  const dir = makeProject();
+  try {
+    // --format disables the interactive handoff below, so even on a real TTY
+    // the headless agent run would hang on mode selection. Must refuse.
+    const r = await run(
+      ["team", "setup", "tikalk/adlc-team-skills", "--skip-skills", "-a", "opencode", "--format", "json"],
+      dir,
+      { ADLC_MOCK_AGENT: "1", ADLC_MOCK_AGENT_FILE: join(dir, "mock.log") },
+    );
+    assert.equal(r.code ?? r.exitCode, 1);
+    assert.match(String(r.stderr ?? r.stdout), /--directives/);
+    assert.equal(existsSync(join(dir, "mock-agent.log")), false, "the agent session must not start");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup --directives rejects non-https URLs", async () => {
+  const dir = makeProject();
+  try {
+    const r = await run(
+      ["team", "setup", "tikalk/adlc-team-skills", "--skip-skills", "--directives", "file:///tmp/evil", "-a", "opencode"],
+      dir,
+      { ADLC_MOCK_AGENT: "1", ADLC_MOCK_AGENT_FILE: join(dir, "mock.log") },
+    );
+    assert.equal(r.code ?? r.exitCode, 1);
+    assert.match(String(r.stderr ?? r.stdout), /https/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
