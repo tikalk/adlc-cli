@@ -9,10 +9,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, chmodSync } from "node:fs";
+import { join, resolve, dirname, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -145,6 +145,65 @@ test("setup --directives rejects non-https URLs", async () => {
     assert.equal(r.code ?? r.exitCode, 1);
     assert.match(String(r.stderr ?? r.stdout), /https/);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup --directives <https-url> clones then wires (positive URL path)", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "adlc-team-wire-p-"));
+  const dir = makeProject();
+  try {
+    // A real local repo with the valid directives structure. The fake git
+    // below intercepts the clone, so no network is touched; the URL is a
+    // plain https:// string, exercising the same regex + clone-then-wire
+    // code path as production input. (file:// and ssh:// are rejected —
+    // one test above.)
+    const origin = join(parent, "origin");
+    mkdirSync(origin, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: origin });
+    mkdirSync(join(origin, "context_modules", "rules"), { recursive: true });
+    mkdirSync(join(origin, "context_modules", "personas"), { recursive: true });
+    mkdirSync(join(origin, "context_modules", "examples"), { recursive: true });
+    writeFileSync(join(origin, "context_modules", "constitution.md"), "# C\n", "utf-8");
+    writeFileSync(join(origin, "CDR.md"), "# CDR\n", "utf-8");
+    writeFileSync(join(origin, ".skills.json"), JSON.stringify({ version: 1 }), "utf-8");
+    execFileSync("git", ["add", "."], { cwd: origin });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "seed"], { cwd: origin });
+
+    // Fake `git` on PATH: intercept only the clone of an http(s) URL by
+    // copying the seeded repo (simulates a successful clone without
+    // network); delegate everything else to the real git.
+    const realGit = execFileSync("which", ["git"]).toString().trim();
+    const bin = join(parent, "bin");
+    mkdirSync(bin, { recursive: true });
+    const fakeGit = join(bin, "git");
+    writeFileSync(fakeGit, `#!/bin/sh
+if [ "$1" = "clone" ]; then
+  case "$2" in
+    http://127.0.0.1:*|https://*) cp -r "${origin}" "$3"; exit 0;;
+  esac
+fi
+exec "${realGit}" "$@"
+`, "utf-8");
+    chmodSync(fakeGit, 0o755);
+
+    const url = `https://example.com/team-ai-directives.git`;
+    const r = await run(
+      ["team", "setup", "tikalk/adlc-team-skills", "--skip-skills", "--directives", url, "-a", "opencode"],
+      dir,
+      {
+        ADLC_MOCK_AGENT: "1",
+        ADLC_MOCK_AGENT_FILE: join(dir, "mock.log"),
+        PATH: `${bin}${delimiter}${process.env.PATH}`,
+      },
+    );
+    assert.equal(r.code ?? r.exitCode ?? 0, 0, r.stderr);
+    const dest = join(dir, "team-ai-directives");
+    assert.equal(existsSync(join(dest, ".skills.json")), true, "the URL must have been cloned into ./team-ai-directives");
+    const cfg = JSON.parse(readFileSync(join(dir, ".adlc", "init-options.json"), "utf-8"));
+    assert.equal(cfg.team_ai_directives, dest);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });
