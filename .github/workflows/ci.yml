@@ -26,5 +26,8 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run eval graders (Tier 1)
+        run: npm run test:evals
+
       - name: Verify CLI starts
         run: node bin/adlc-skills-cli.mjs agents

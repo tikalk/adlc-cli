@@ -9,6 +9,8 @@
   },
   "scripts": {
     "test": "node --test",
+    "test:evals": "node --test \"evals/opencode-session-end/tests/*.mjs\"",
+    "test:all": "npm test && npm run test:evals",
     "prepublishOnly": "npm test"
   },
   "engines": {
