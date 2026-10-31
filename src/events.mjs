@@ -543,30 +543,36 @@ function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
   }
 
   // Non-hook events (session.deleted AND file.edited share the `event`
-  // handler namespace — each block type-guards its own native type).
-  if (sessionDeletedRuns.length > 0) {
-    entries.push(`    "event": async ({ event }) => {
-      if (event.type !== "session.deleted") return
+  // handler namespace) — ONE entry: duplicate object keys would let the
+  // second overwrite the first at runtime. Both blocks type-guard on their
+  // own native type inside the single handler.
+  if (sessionDeletedRuns.length > 0 || fileEditedRuns.length > 0) {
+    const eventBlocks = [];
+    if (sessionDeletedRuns.length > 0) {
+      eventBlocks.push(`      if (event.type === "session.deleted") {
 ${sessionDeletedRuns.join("\n")}
+      }`);
+    }
+    if (fileEditedRuns.length > 0) {
+      eventBlocks.push(`      if (event.type === "file.edited") {
+${fileEditedRuns.join("\n")}
+      }`);
+    }
+    entries.push(`    "event": async ({ event }) => {
+${eventBlocks.join("\n")}
     }`);
   }
 
-  if (fileEditedRuns.length > 0) {
-    entries.push(`    "event": async ({ event }) => {
-      if (event.type !== "file.edited") return
-${fileEditedRuns.join("\n")}
-    }`);
-    if (!hasTransform) {
-      // No session_start handler declared — without a messages.transform
-      // entry nothing would ever drain the nudge. Emit a standalone drainer.
-      entries.push(`    "experimental.chat.messages.transform": async (_input, output) => {
+  if (fileEditedRuns.length > 0 && !hasTransform) {
+    // No session_start handler declared — without a messages.transform
+    // entry nothing would ever drain the nudge. Emit a standalone drainer.
+    entries.push(`    "experimental.chat.messages.transform": async (_input, output) => {
       try {
         _drainPendingNudge(output)
       } catch (e) {
         console.error("adlc messages.transform hook failed:", (e as Error).message)
       }
     }`);
-    }
   }
 
   return entries.join(",\n");
