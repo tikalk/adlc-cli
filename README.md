@@ -506,6 +506,13 @@ Both paths feed the **stdout → context injection** pipeline.
 | `session_end` | Session ends | no | yes |
 | `stop` | Agent stops | no | yes |
 
+#### `session_end` per-agent delivery
+
+| Agent | Native hook | Delivery |
+|-------|------------|----------|
+| opencode | `session.deleted` (generic `event` subscription / `ctx.event.subscribe()`) | fire-and-forget dispatcher side-effect — scripts only, no context injection (session is over) |
+| others | native `SessionEnd`/`sessionEnd` hook | per-agent script path (see envelope table) |
+
 #### `file_edited` per-agent delivery
 
 | Agent | Native hook | Delivery |

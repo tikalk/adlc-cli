@@ -221,7 +221,7 @@ describe("Events: opencode plugin generation", () => {
       // Generic event subscription (file.edited has no named hook key).
       const eventHandler = content.match(/"event": async \(\{ event \}\) => \{([\s\S]*?)\n    \}/);
       assert.ok(eventHandler, "generic event handler present");
-      assert.ok(eventHandler[1].includes('event.type !== "file.edited"'), "guards on file.edited type");
+      assert.ok(eventHandler[1].includes('event.type === "file.edited"'), "guards on file.edited type");
       assert.ok(eventHandler[1].includes('"file_edited"'), "dispatches canonical file_edited");
       assert.ok(eventHandler[1].includes("JSON.stringify(event)"), "payload passed to dispatcher");
 
@@ -525,6 +525,58 @@ describe("Events: opencode hybrid V1+V2 plugin", () => {
       assert.ok(content.includes("ctx.event.subscribe"), "V2 event subscription for file.edited");
       assert.ok(content.includes("file.edited"), "file.edited type guard preserved");
       assert.ok(content.includes("_pendingNudge"), "nudge stash shared across V1+V2");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("session_end resolves to the OpenCode session.deleted lifecycle event", () => {
+    const manifest = { events: { session_end: [{ skill: "team-levelup", timeout: 120 }] } };
+    const agentConfig = getEventAgentConfig("opencode");
+    const resolved = resolveEvents(manifest, agentConfig);
+    assert.ok(resolved.session_end, "session_end is not dropped for OpenCode");
+    assert.equal(resolved.session_end[0].nativeEvent, "session.deleted");
+    assert.equal(resolved.session_end[0].skill, "team-levelup");
+    assert.equal(resolved.session_end[0].timeout, 120);
+  });
+
+  it("session_end routes team-levelup through V1 + V2 session.deleted handlers", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = { events: { session_end: [{ skill: "team-levelup", timeout: 120 }] } };
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      assert.ok(content.includes('event.type === "session.deleted"'), "V1 guards on session.deleted type");
+      assert.ok(content.includes('"session_end"'), "V1 dispatches canonical session_end");
+      assert.ok(content.includes('"team-levelup"'), "V1 routes team-levelup");
+      assert.ok(content.includes("session.deleted"), "V2 subscribes to session.deleted");
+      assert.ok(content.includes("ctx.event.subscribe"), "V2 uses the event stream for session teardown");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("session_end and file_edited share ONE V1 `event` handler entry (duplicate keys would overwrite)", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = {
+        events: {
+          session_end: [{ skill: "team-levelup", timeout: 120 }],
+          file_edited: [{ skill: "team-boot", timeout: 10 }],
+        },
+      };
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      const guards = content.match(/"event": async \(\{ event \}\) => \{/g) || [];
+      assert.equal(guards.length, 1, "exactly ONE `event` entry — duplicate object keys would drop a handler at runtime");
+      assert.ok(content.includes('event.type === "session.deleted"'), "session.deleted guard preserved");
+      assert.ok(content.includes('event.type === "file.edited"'), "file.edited guard preserved");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

@@ -350,9 +350,12 @@ ${v1Entries}
 //   pre_tool_use       → ctx.tool.hook("execute.before")
 //   post_tool_use      → ctx.tool.hook("execute.after")
 //   file_edited        → ctx.event.subscribe() stash + drain in context hook
+//   session_end        → event.subscribe() session.deleted side-effect
+//                        (native session-end equivalent; dispatcher runs scripts only)
 function buildOpenCodeV2Setup(resolvedEvents, agentConfig) {
   const lines = [];
   const fileEditedRuns = [];
+  const sessionDeletedRuns = [];
   let hasContext = false;
 
   for (const [canonicalEvent, handlers] of Object.entries(resolvedEvents)) {
@@ -395,6 +398,15 @@ function buildOpenCodeV2Setup(resolvedEvents, agentConfig) {
           } catch (e) {
             console.error("adlc file.edited hook failed:", (e as Error).message)
           }`);
+      } else if (nativeEvent === "session.deleted") {
+        // session_end has no context-injection path — the session is over.
+        // Fire-and-forget dispatcher side-effect (scripts only; e.g. the
+        // team-levelup Phase 0 setup that resolves paths/NEXT_CDR).
+        sessionDeletedRuns.push(`          try {
+            runEvent(${JSON.stringify(h.skill)}, ${JSON.stringify(canonicalEvent)}, ${h.timeout}, JSON.stringify(event))
+          } catch (e) {
+            console.error("adlc session.deleted hook failed:", (e as Error).message)
+          }`);
       } else if (nativeEvent === "tool.execute.before" || nativeEvent === "tool.execute.after") {
         const v2Hook = nativeEvent === "tool.execute.before" ? "execute.before" : "execute.after";
         lines.push(`      await ctx.tool.hook(${JSON.stringify(v2Hook)}, (event: any) => {
@@ -406,6 +418,17 @@ function buildOpenCodeV2Setup(resolvedEvents, agentConfig) {
       })`);
       }
     }
+  }
+
+  if (sessionDeletedRuns.length > 0) {
+    // session.deleted fires once per session teardown — subscribe in a
+    // dedicated loop so session_end never merges into the file.edited stream.
+    lines.push(`      void (async () => {
+        for await (const event of ctx.event.subscribe()) {
+          if ((event as any).type !== "session.deleted") continue
+${sessionDeletedRuns.join("\n")}
+        }
+      })()`);
   }
 
   if (fileEditedRuns.length > 0) {
@@ -434,6 +457,7 @@ ${fileEditedRuns.join("\n")}
 function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
   const entries = [];
   const fileEditedRuns = [];
+  const sessionDeletedRuns = [];
   let hasTransform = false;
   for (const [canonicalEvent, handlers] of Object.entries(resolvedEvents)) {
     const nativeEvent = agentConfig.canonical_to_native[canonicalEvent];
@@ -499,6 +523,16 @@ function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
       } catch (e) {
         console.error("adlc file.edited hook failed:", (e as Error).message)
       }`);
+      } else if (nativeEvent === "session.deleted") {
+        // session_end has no context-injection target — the session is over.
+        // Fire-and-forget dispatcher side-effect through the generic event
+        // handler (scripts only; e.g. the team-levelup Phase 0 setup that
+        // resolves paths/NEXT_CDR). Output has nowhere to inject, so discard.
+        sessionDeletedRuns.push(`      try {
+        runEvent(${JSON.stringify(h.skill)}, ${JSON.stringify(canonicalEvent)}, ${h.timeout}, JSON.stringify(event))
+      } catch (e) {
+        console.error("adlc session.deleted hook failed:", (e as Error).message)
+      }`);
       } else {
         // Generic fallback for tool.execute.before/after etc.
         entries.push(`    "${nativeEvent}": async (_input, output) => {
@@ -513,22 +547,37 @@ function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
     }
   }
 
-  if (fileEditedRuns.length > 0) {
-    entries.push(`    "event": async ({ event }) => {
-      if (event.type !== "file.edited") return
+  // Non-hook events (session.deleted AND file.edited share the `event`
+  // handler namespace) — ONE entry: duplicate object keys would let the
+  // second overwrite the first at runtime. Both blocks type-guard on their
+  // own native type inside the single handler.
+  if (sessionDeletedRuns.length > 0 || fileEditedRuns.length > 0) {
+    const eventBlocks = [];
+    if (sessionDeletedRuns.length > 0) {
+      eventBlocks.push(`      if (event.type === "session.deleted") {
+${sessionDeletedRuns.join("\n")}
+      }`);
+    }
+    if (fileEditedRuns.length > 0) {
+      eventBlocks.push(`      if (event.type === "file.edited") {
 ${fileEditedRuns.join("\n")}
+      }`);
+    }
+    entries.push(`    "event": async ({ event }) => {
+${eventBlocks.join("\n")}
     }`);
-    if (!hasTransform) {
-      // No session_start handler declared — without a messages.transform
-      // entry nothing would ever drain the nudge. Emit a standalone drainer.
-      entries.push(`    "experimental.chat.messages.transform": async (_input, output) => {
+  }
+
+  if (fileEditedRuns.length > 0 && !hasTransform) {
+    // No session_start handler declared — without a messages.transform
+    // entry nothing would ever drain the nudge. Emit a standalone drainer.
+    entries.push(`    "experimental.chat.messages.transform": async (_input, output) => {
       try {
         _drainPendingNudge(output)
       } catch (e) {
         console.error("adlc messages.transform hook failed:", (e as Error).message)
       }
     }`);
-    }
   }
 
   return entries.join(",\n");

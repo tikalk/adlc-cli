@@ -484,13 +484,15 @@ export const EVENT_AGENTS = {
     //   user_prompt_submit  → V1 chat.message / V2 ctx.session.hook("prompt")
     //   pre_tool_use        → V1 tool.execute.before / V2 ctx.tool.hook("execute.before")
     //   post_tool_use       → V1 tool.execute.after / V2 ctx.tool.hook("execute.after")
-    //   session_end / stop  → (no equivalent; skip)
+    //   session_end / stop  → stop has no native session-end equivalent (skip);
+    //                        session_end → event.subscribe() session.deleted side-effect
+    //                        (scripts only; no context injection at teardown)
     canonical_to_native: {
       session_start: "experimental.chat.messages.transform",
       session_compact: null, // covered by the per-step messages.transform + live dedup (compaction self-heals)
       pre_tool_use: "tool.execute.before",
       post_tool_use: "tool.execute.after",
-      session_end: null,
+      session_end: "session.deleted",
       user_prompt_submit: "chat.message",
       stop: null,
       // file.edited has no named hook key in the plugin API (generic event
