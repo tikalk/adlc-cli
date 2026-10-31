@@ -55,7 +55,7 @@ OpenCode 1.x older than 1.18.29 cannot load the hybrid file; upgrade to use even
 | `user_prompt_submit` | User sends a prompt | `{ "prompt": "..." }` | yes |
 | `pre_tool_use` | Before a tool call | `{ "tool": "...", "args": {} }` | no (script only) |
 | `post_tool_use` | After a tool call | `{ "tool": "...", "result": {} }` | no (script only) |
-| `session_end` | Session ends | `{}` | no (script only) |
+| `session_end` | Session ends (OpenCode: `session.deleted` event subscription; scripts only, no context injection) | `{}` | no (script only) |
 | `stop` | Agent stops | `{}` | no (script only) |
 
 ## Example: adlc-team-skills

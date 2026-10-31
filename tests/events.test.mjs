@@ -529,6 +529,58 @@ describe("Events: opencode hybrid V1+V2 plugin", () => {
       rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  it("session_end resolves to the OpenCode session.deleted lifecycle event", () => {
+    const manifest = { events: { session_end: [{ skill: "team-levelup", timeout: 120 }] } };
+    const agentConfig = getEventAgentConfig("opencode");
+    const resolved = resolveEvents(manifest, agentConfig);
+    assert.ok(resolved.session_end, "session_end is not dropped for OpenCode");
+    assert.equal(resolved.session_end[0].nativeEvent, "session.deleted");
+    assert.equal(resolved.session_end[0].skill, "team-levelup");
+    assert.equal(resolved.session_end[0].timeout, 120);
+  });
+
+  it("session_end routes team-levelup through V1 + V2 session.deleted handlers", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = { events: { session_end: [{ skill: "team-levelup", timeout: 120 }] } };
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      assert.ok(content.includes('event.type !== "session.deleted"'), "V1 guards on session.deleted type");
+      assert.ok(content.includes('"session_end"'), "V1 dispatches canonical session_end");
+      assert.ok(content.includes('"team-levelup"'), "V1 routes team-levelup");
+      assert.ok(content.includes("session.deleted"), "V2 subscribes to session.deleted");
+      assert.ok(content.includes("ctx.event.subscribe"), "V2 uses the event stream for session teardown");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("session_end and file_edited share the V1 `event` handler namespace under separate type guards", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = {
+        events: {
+          session_end: [{ skill: "team-levelup", timeout: 120 }],
+          file_edited: [{ skill: "team-boot", timeout: 10 }],
+        },
+      };
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      const guards = content.match(/"event": async \(\{ event \}\) => \{/g) || [];
+      assert.equal(guards.length, 2, "one `event` entry per non-hook canonical event");
+      assert.ok(content.includes('event.type !== "session.deleted"'), "session.deleted guard preserved");
+      assert.ok(content.includes('event.type !== "file.edited"'), "file.edited guard preserved");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Events: Claude Code JSON merge", () => {
