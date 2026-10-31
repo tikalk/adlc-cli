@@ -241,7 +241,12 @@ process.exit(r.status ?? 1);
   }
 });
 
-test("setup --directives <https-url> with credentials never leaks them (argv/config/log)", async () => {
+// The fake `git` below is a #!/bin/sh script placed on PATH. On Windows,
+// spawnSync("git") resolves the real git.exe (and Node ≥18 refuses .cmd
+// fakes without shell: true), so the interception cannot work there — the
+// clone hits the network and fails with exit 128. Same precedent as
+// provider-transport.test.mjs (GIT_ASKPASS credential-stripping test).
+test("setup --directives <https-url> with credentials never leaks them (argv/config/log)", { skip: process.platform === "win32" }, async () => {
   // F4: credentialed URL must be stripped before argv; GIT_ASKPASS supplies
   // the secret. Assert the clone argv carries no secret, the cloned
   // .git/config + failure output contain no secret.
@@ -308,7 +313,10 @@ process.exit(r.status ?? 1);
   }
 });
 
-test("setup --directives reuses a matching clone but refuses a stale/mismatched dest", async () => {
+// Same POSIX-only git-stub interception as the test above: on Windows the
+// real git.exe reaches the network, so this clone-dependent test is skipped
+// there (precedent: provider-transport.test.mjs GIT_ASKPASS test).
+test("setup --directives reuses a matching clone but refuses a stale/mismatched dest", { skip: process.platform === "win32" }, async () => {
   // F5: an existing ./team-ai-directives must not silently swallow a new URL.
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "adlc-team-wire-p-")));
   const dir = makeProject();
