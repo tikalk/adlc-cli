@@ -291,7 +291,7 @@ it("team update: MCP failure aborts with exit 1 and repair is never reached", as
 // ── cmdTeamSetup (integration: failure path only — the success path ends
 //    in an agent session, which tests must not spawn for real) ────────────
 
-it("team setup: MCP failure aborts with exit 1 before the agent session starts", async () => {
+it("team setup: non-TTY without --directives refuses before MCP or agent (no hang)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-team-mcp-chain-"));
   // The ADLC_MOCK_AGENT seam (same as tests/workspace.test.mjs): cmdAgentRun
   // appends a line to the stub file iff it is entered. The file's absence is
@@ -306,7 +306,34 @@ it("team setup: MCP failure aborts with exit 1 before the agent session starts",
       { cwd: dir, env: { ADLC_MOCK_AGENT: "1", ADLC_MOCK_AGENT_FILE: stubFile } },
     );
     assert.equal(r.code ?? r.exitCode, 1);
+    assert.match(String(r.stderr ?? ""), /--directives/);
+    assert.equal(existsSync(stubFile), false, "the agent session must not start");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("team setup --directives: MCP failure aborts with exit 1 after wiring", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-team-mcp-chain-"));
+  const tad = join(dir, "tad");
+  mkdirSync(join(tad, "context_modules", "rules"), { recursive: true });
+  mkdirSync(join(tad, "context_modules", "personas"), { recursive: true });
+  mkdirSync(join(tad, "context_modules", "examples"), { recursive: true });
+  writeFileSync(join(tad, "context_modules", "constitution.md"), "# C\n", "utf-8");
+  writeFileSync(join(tad, "CDR.md"), "# CDR\n", "utf-8");
+  writeFileSync(join(tad, ".skills.json"), JSON.stringify({ version: 1 }), "utf-8");
+  const stubFile = join(dir, "mock-agent.log");
+  try {
+    writeFileSync(join(dir, ".mcp.json"), withServers({ broken: UNSTARTABLE }), "utf-8");
+    const r = await run(
+      ["team", "setup", "tikalk/adlc-team-skills", "-a", "opencode", "--skip-skills", "--directives", tad],
+      { cwd: dir, env: { ADLC_MOCK_AGENT: "1", ADLC_MOCK_AGENT_FILE: stubFile } },
+    );
+    assert.equal(r.code ?? r.exitCode, 1);
     assert.match(String(r.stderr ?? ""), /aborting team setup/);
+    // wiring happened first (the MCP gap report reads the wired directives)
+    const cfg = JSON.parse(readFileSync(join(dir, ".adlc", "init-options.json"), "utf-8"));
+    assert.equal(cfg.team_ai_directives, tad);
     assert.equal(existsSync(stubFile), false, "the agent session must not start");
   } finally {
     rmSync(dir, { recursive: true, force: true });

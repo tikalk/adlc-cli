@@ -112,7 +112,7 @@ export function splitGitCredentials(repo) {
   return { url: url.toString(), username, password };
 }
 
-function makeGitAskPass({ username, password }) {
+export function makeGitAskPass({ username, password }) {
   const dir = mkdtempSync(join(tmpdir(), "adlc-git-askpass-"));
   const script = join(dir, "askpass.sh");
   writeFileSync(
@@ -537,12 +537,19 @@ async function runWorkspaceCommand(command, agent, cmdAgentRun, cmdAdd, cmdTeamS
     if (dryRun) return 0;
     return await cmdAdd([match[1]], { agents: [agent], yes: true });
   }
-  // team setup <source>
-  match = trimmed.match(/^team setup (\S+)$/);
+  // team setup <source> [--directives <path>]
+  match = trimmed.match(/^team setup (\S+)(?:\s+([\s\S]+))?$/);
   if (match) {
     item(`team setup ${match[1]}`, { glyph: sym.arrow, color: "gray" });
     if (dryRun) return 0;
-    return await cmdTeamSetup([match[1]], { agents: [agent], yes: true });
+    const extra = match[2] ? match[2].trim().split(/\s+/) : [];
+    const directivesIdx = extra.indexOf("--directives");
+    const directives = directivesIdx !== -1 ? extra[directivesIdx + 1] : undefined;
+    if (directivesIdx !== -1 && !directives) {
+      failure(`team setup: --directives requires a path`);
+      return 1;
+    }
+    return await cmdTeamSetup([match[1]], { agents: [agent], yes: true, ...(directives ? { directives } : {}) });
   }
 
   failure(`unknown command: "${trimmed}" (supported: skills add, team setup, agent run)`);

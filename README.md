@@ -23,8 +23,13 @@ npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
 
 # Install skills AND configure team-ai-directives
 # (opens the agent's interactive UI on /team-setup when run in a terminal;
-#  piped/CI runs fall back to a headless one-shot run)
+#  non-TTY runs refuse unless given --directives, instead of hanging a
+#  headless agent on the skill's interactive mode selection)
 npx adlc-cli team setup tikalk/adlc-team-skills -a opencode
+
+# Headless/deterministic: wire a known team-ai-directives path — no agent
+# session, validates structure then writes .adlc/init-options.json
+npx adlc-cli team setup tikalk/adlc-team-skills -a opencode --skip-skills --directives ./team-ai-directives
 
 # Works with any skills repo — events auto-skip if no .events.json
 npx adlc-cli skills add mattpocock/skills -a claude-code --no-events
@@ -55,7 +60,7 @@ npx adlc-cli version
 
 | Command | Description |
 |----------|-------------|
-| `team setup <source> -a <agent>` | Install skills + write `.adlc/init-options.json` + run `mcp install` + run `/team-setup` (interactive UI on a TTY, headless in CI/pipes; `--skip-skills` to skip installation) |
+| `team setup <source> -a <agent> [--directives <path>]` | Install skills + write `.adlc/init-options.json` + run `mcp install` + run `/team-setup` (interactive UI on a TTY; non-TTY refuses unless `--directives` wires a known path deterministically; `--skip-skills` to skip installation) |
 | `team update` | `git pull` the team-ai-directives repo + re-install skills from source + run `mcp install` + `team repair --update-confidence` |
 | `team repair [--update-confidence\|--validate-drafts\|--build-to-delete]` | Run `/team-repair` headlessly (agent-driven), or the deterministic `setup-team.sh` path for `--update-confidence` / `--validate-drafts` |
 
@@ -63,8 +68,10 @@ The `team` tree reads its targets from `.adlc/init-options.json` (see below);
 `-a` defaults to the configured agent.
 
 Both `team setup` and `team update` chain `mcp install` for the configured
-agent before the agent session (`team setup`) or the repair pass
-(`team update`) — a named agent never starts without its MCP servers. If the
+agent before the agent session (`team setup` without `--directives`) or the
+repair pass (`team update`); `--directives` wiring runs the chain after the
+wire, since the gap report reads the wired directives — a named agent never
+starts without its MCP servers. If the
 chained install fails (a refused entry, a target-level error, a corrupt
 `.mcp.json`), the command aborts with exit 1; its copy-once gap report runs
 chained too (see [MCP](#mcp)).
