@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-10-31
+
+### Added
+
+- **`team setup --directives <url> / --format` + deterministic wire** (#65) —
+  `--directives` accepts https URLs (clone-then-wire), `--format` is parsed
+  with a non-TTY fail-loud guard, credentialed-clone hygiene, stale-dest
+  guard, and POSIX/Windows/macOS tmpdir handling. `team setup`/`team update`
+  chain the MCP install for the configured agent.
+
+### Fixed
+
+- **OpenCode `session_end` delivery via `session.deleted`** (#66) —
+  `resolveEvents()` no longer drops the canonical `session_end` for OpenCode;
+  it maps to the native `session.deleted` lifecycle event with fire-and-forget
+  dispatcher side-effect runners in both plugin entrypoints (V1 generic
+  `event` handler + V2 `ctx.event.subscribe()` loop). `session.deleted` and
+  `file.edited` type-guard their own native types so the streams never mix.
+  Teardown output is scripts-only (no context-injection target post-session).
+
 ## [2.6.0] - 2026-10-29
 
 ### Added
