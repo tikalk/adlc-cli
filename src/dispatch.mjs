@@ -271,7 +271,7 @@ async function runNewTree({ command, args, flags }, argv) {
   }
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const command = argv[0] || "help";
   const rest = argv.slice(1);
 
@@ -337,6 +337,10 @@ function parseArgs(argv) {
       flags.link = true;
     } else if (arg === "--ignore-only") {
       flags.ignoreOnly = true;
+    } else if (arg === "--format") {
+      flags.format = rest[++i];
+    } else if (arg.startsWith("--format=")) {
+      flags.format = arg.slice("--format=".length);
     } else if (arg === "--no-color") {
       flags.noColor = true;
     } else if (arg === "--color") {

@@ -112,7 +112,7 @@ export function splitGitCredentials(repo) {
   return { url: url.toString(), username, password };
 }
 
-function makeGitAskPass({ username, password }) {
+export function makeGitAskPass({ username, password }) {
   const dir = mkdtempSync(join(tmpdir(), "adlc-git-askpass-"));
   const script = join(dir, "askpass.sh");
   writeFileSync(

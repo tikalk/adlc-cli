@@ -1,7 +1,7 @@
 // Team commands: setup, update, repair for team-ai-directives lifecycle.
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { readInitOptions, writeInitOptions, readAgent, readTeamAiDirectives } from "../utils/init-options.mjs";
 import { findInstalledSkills, expandTilde } from "../source.mjs";
@@ -137,23 +137,57 @@ export async function cmdTeamSetup(args, flags) {
   if (flags.directives) {
     let directivesArg = flags.directives;
     // GitHub URL form (deterministic Mode 1): clone-then-wire. https://-only
-    // — file:// and ssh:// are rejected, same as the skill's Mode 1
+    // — http://, file:// and ssh:// are rejected, same as the skill's Mode 1
     // Input Validation contract; only trusted repos are cloned since agents
     // read the content afterwards.
-    if (/^https?:\/\//.test(directivesArg)) {
+    if (/^https:\/\//.test(directivesArg)) {
       const dest = resolve(projectRoot, "team-ai-directives");
-      if (!existsSync(dest)) {
-        const cloned = spawnSync("git", ["clone", directivesArg, dest], { stdio: "inherit" });
+      // Credentials must never reach argv (process table), .git/config, or
+      // logs: split them out and supply them via GIT_ASKPASS instead
+      // (workspace.mjs splitGitCredentials/makeGitAskPass machinery).
+      const { splitGitCredentials, makeGitAskPass } = await import("./workspace.mjs");
+      const credentials = splitGitCredentials(directivesArg);
+      const safeUrl = credentials ? credentials.url : directivesArg;
+      const maskUrl = (url) => url.replace(/([a-z+]+:\/\/)[^/@\s]+@/, "$1[REDACTED]@");
+      const normUrl = (url) => String(url).replace(/\/+$/, "");
+      if (existsSync(dest)) {
+        // Never silently reuse: verify the existing dir is a git worktree
+        // whose origin matches the requested URL, else fail loudly.
+        const gitDir = spawnSync("git", ["-C", dest, "rev-parse", "--git-dir"], { encoding: "utf-8" });
+        const originRes = gitDir.status === 0
+          ? spawnSync("git", ["-C", dest, "config", "--get", "remote.origin.url"], { encoding: "utf-8" })
+          : null;
+        const originUrl = originRes && originRes.status === 0 ? String(originRes.stdout ?? "").trim() : null;
+        const matches = originUrl !== null &&
+          (normUrl(originUrl) === normUrl(safeUrl) || normUrl(originUrl) === normUrl(directivesArg));
+        if (!matches) {
+          if (originUrl === null) {
+            error(`existing ${dest} is not a git worktree for ${maskUrl(safeUrl)} (no matching remote.origin.url) — remove it and re-run to re-clone`);
+          } else {
+            error(`existing directives clone at ${dest} has origin ${maskUrl(originUrl)}, expected ${maskUrl(safeUrl)} — remove ${dest} to re-clone or pass a matching URL`);
+          }
+          return 1;
+        }
+        note(`Reusing existing directives clone at ${dest}`);
+      } else {
+        const askpass = credentials ? makeGitAskPass(credentials) : null;
+        let cloned;
+        try {
+          cloned = spawnSync("git", ["clone", safeUrl, dest], {
+            stdio: "inherit",
+            env: askpass ? { ...process.env, ...askpass.env } : process.env,
+          });
+        } finally {
+          if (askpass) rmSync(askpass.dir, { recursive: true, force: true });
+        }
         if (cloned.status !== 0) {
-          error(`git clone failed for ${directivesArg}`);
+          error(`git clone failed for ${maskUrl(safeUrl)}`);
           return cloned.status ?? 1;
         }
-      } else {
-        note(`Reusing existing directives clone at ${dest}`);
       }
       directivesArg = dest;
-    } else if (/^(file|ssh):\/\//.test(directivesArg)) {
-      error("team setup --directives URL must start with https:// (file:// and ssh:// are rejected)");
+    } else if (/^(http|file|ssh):\/\//.test(directivesArg)) {
+      error("team setup --directives URL must start with https:// (http://, file:// and ssh:// are rejected)");
       return 1;
     }
     if (!existsSync(directivesArg)) {
