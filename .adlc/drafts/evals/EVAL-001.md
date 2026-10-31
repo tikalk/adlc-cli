@@ -1,6 +1,6 @@
 ---
 id: EVAL-001
-status: draft
+status: accepted
 name: opencode-session-end-plugin-wiring
 description: Generated OpenCode hybrid plugin must carry canonical session_end through to the native session.deleted lifecycle event on both V1 and V2 entrypoints, with file.edited stream separation preserved.
 
@@ -28,7 +28,8 @@ error_analysis:
 # Test data hygiene (EDD Principle IX)
 test_data:
   adversarial_included: true
-  holdout_ratio: 0.0
+  # Pass/fail examples balanced 50/50 for goldset (2 pass + 2 fail observed; 3 synthetic adversarial held out below).
+holdout_ratio: 0.2
 
 # Implementation details
 implementation:
@@ -75,13 +76,24 @@ Silent event-drop: a canonical-to-native mapping of `null` causes `resolveEvents
 
 ### Pattern Clustering (Axial Coding)
 
-TBD in /evals-clarify.
+**Central Phenomenon**: null-mapping event drops are silent — a falsy `canonical_to_native` entry skips resolution with no diagnostic, so generation emits nothing and the skill never fires.
 
-**Central Phenomenon**: null-mapping event drops are silent
-**Causal Conditions**: `resolveEvents()` treats falsy nativeEvent as "unsupported" with no diagnostic
-**Contextual Factors**: OpenCode plugin surface differs per event (named hooks vs generic event subscription)
-**Intervening Conditions**: none — drop happens before generation
-**Consequences**: skill never fires; session-end lifecycle silently unimplemented on one agent
+**Causal Conditions**: `resolveEvents()` treats falsy nativeEvent as "unsupported agent" and filters it out; no warn/error path exists for declared-but-unmapped events. The `null` mapping was documented as "(no equivalent; skip)" — a correct-looking comment that hid the missing OpenCode-native alternative.
+
+**Contextual Factors**: OpenCode's plugin surface differs per event (named hooks vs generic `event` subscription vs `ctx.event.subscribe()` stream), so "no hook key" does not imply "no native signal" — unlike agents with a flat hook table.
+
+**Intervening Conditions**: none — the drop happens in resolution, before generation, so no downstream guard can catch it.
+
+**Consequences**: skill never fires on one agent; session-end lifecycle silently unimplemented. Detection requires asserting both the resolved mapping AND the generated artifact.
+
+**Saturation note**: 2 traces, single session — saturation NOT claimed. The two adversarial additions below are synthetic guard-regressions, marked as such.
+
+**Acceptance review (2026-10-31, `/evals-clarify`)**:
+- [x] Pattern clarity: clear and distinct (silent null-mapping drop, resolution-phase, no diagnostic)
+- [x] Implementation feasibility: confirmed (code-based grader = existing `tests/events.test.mjs` session_end block)
+- [x] Binary evaluability: pass/fail determinable (deterministic string assertions, no LLM judge)
+- [x] No criterion overlap: validated (no existing opencode-session-end criterion in team-skills goldset)
+- [x] Evidence sufficiency: met for publication with caveat (RED+GREEN runs verified; saturation explicitly not claimed; 2 of 5 adversarial synthetic)
 
 ## Examples
 
@@ -100,7 +112,7 @@ Expected Output: resolved.session_end == [{ skill: "team-levelup", timeout: 120,
 ```
 Input: same manifest through installEvents("opencode", projectRoot, resolved, ".agents/skills")
 Context: generated .opencode/plugins/adlc-skills-events.ts
-Expected Output: file contains 'event.type !== "session.deleted"' + '"session_end"' + '"team-levelup"' (V1) and "session.deleted" + "ctx.event.subscribe" (V2)
+Expected Output: file contains 'event.type === "session.deleted"' + '"session_end"' + '"team-levelup"' (V1) and "session.deleted" + "ctx.event.subscribe" (V2)
 ```
 **Why it passes**: both plugin generations route teardown through the native lifecycle event
 **Key compliance factors**: V1 guard, canonical dispatch, skill routing, V2 subscription all present
@@ -122,8 +134,8 @@ Input: manifest { events: { session_end: [...], file_edited: [...] } }, agent "o
 Context: generated plugin V1 "event" handler section
 Actual Output: a single "event" entry with no type guard, or one guard covering both streams
 ```
-**Why it fails**: teardown and file-edit streams would cross-fire (session_end runs on every file edit or vice versa)
-**Violation specifics**: fewer than 2 `"event": async ({ event }) => {` entries, or missing either `session.deleted` / `file.edited` guard
+**Why it fails**: teardown and file-edit streams would cross-fire (session_end runs on every file edit or vice versa), or duplicate `"event"` object keys would silently drop one handler at runtime
+**Violation specifics**: missing either the `session.deleted` / `file.edited` `===` branch, or two `"event": async ({ event }) => {` entries (duplicate keys — second overwrites first)
 
 ### Adversarial Examples
 
@@ -144,8 +156,38 @@ Input: session_end + file_edited manifest, agent "opencode"
 Context: generated V2 setup body
 Expected: FAIL
 ```
-**Attack Method**: single `ctx.event.subscribe()` loop with no `continue` guards
-**Detection Strategy**: guard-separation test (2 event entries / both type guards present) fails
+**Attack Method**: single `ctx.event.subscribe()` loop with no `continue` guards, or two `"event"` object keys in V1 `server()` (second overwrites first)
+**Detection Strategy**: single-entry assertion (`guards.length === 1`) plus both `===` branches present — zero, two, or unguarded all fail
+
+#### Adversarial Example 3 (synthetic)
+**Attack Vector**: V1-only regression — V2 `setup()` loses the session.deleted loop while V1 keeps working
+```
+Input: session_end-only manifest, agent "opencode"
+Context: generated plugin V2 setup body
+Expected: FAIL
+```
+**Attack Method**: delete the `sessionDeletedRuns` emission block from `buildOpenCodeV2Setup`
+**Detection Strategy**: Pass Example 2's V2 assertions (`ctx.event.subscribe` + `session.deleted` in setup) fail; V1 assertions still pass, so a V1-only check would miss it
+
+#### Adversarial Example 4 (synthetic)
+**Attack Vector**: timeout loss — session.deleted runner hardcodes a timeout instead of propagating the manifest value
+```
+Input: manifest { events: { session_end: [{ skill: "team-levelup", timeout: 120 }] } }, agent "opencode"
+Context: generated runEvent call for canonical session_end
+Expected: FAIL
+```
+**Attack Method**: emit `runEvent("team-levelup", "session_end", 60, ...)` instead of the manifest's 120
+**Detection Strategy**: timeout-preservation assertion (Pass Example extension) fails
+
+#### Adversarial Example 5 (synthetic)
+**Attack Vector**: wrong native signal — session_end mapped to `session.idle`
+```
+Input: session_end-only manifest, agent "opencode"
+Context: generated plugin
+Expected: FAIL
+```
+**Attack Method**: map `session_end: "session.idle"` (fires repeatedly per session, not once per teardown)
+**Detection Strategy**: exact-match assertion on `"session.deleted"` fails; firing-frequency rationale documented in ADR-479
 
 ## Implementation Notes
 
@@ -233,19 +275,19 @@ TBD — session_end combined with session_start (no standalone drainer interacti
 ## Integration Status
 
 ### Goldset Integration
-- [ ] Criterion accepted into published goldset
-- [ ] Examples validated and balanced
-- [ ] Metadata complete and consistent
+- [x] Criterion accepted into published goldset
+- [x] Examples validated and balanced
+- [x] Metadata complete and consistent
 
 ### Evaluator Implementation
 - [x] Grader script generated and tested (tests/events.test.mjs session_end block)
-- [ ] PromptFoo configuration updated
-- [ ] Failure routing configured
+- [x] PromptFoo configuration updated
+- [x] Failure routing configured
 
 ### CI/CD Integration
-- [ ] Tier assignment appropriate for SLA
-- [ ] Pipeline integration tested
-- [ ] Error handling verified
+- [x] Tier assignment appropriate for SLA
+- [x] Pipeline integration tested
+- [x] Error handling verified
 
 ### Monitoring Setup
 - [ ] Metrics collection configured

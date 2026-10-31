@@ -1,0 +1,25 @@
+{
+  "id": "opencode-session-end-holdout",
+  "criterion_id": "EVAL-001",
+  "ratio": 0.2,
+  "isolated_at": "2026-10-31",
+  "note": "Reserved test set for unbiased evaluation validation. Never use in implementation or training.",
+  "cases": [
+    {
+      "id": "EVAL-001-CASE-ADV-4-HOLDOUT",
+      "criterion_id": "EVAL-001",
+      "type": "fail",
+      "scenario": "timeout loss — session.deleted runner hardcodes a timeout instead of propagating the manifest value",
+      "input_context": "manifest { events: { session_end: [{ skill: \"team-levelup\", timeout: 120 }] } }, agent \"opencode\"",
+      "expected_output": "FAIL: runEvent(\"team-levelup\", \"session_end\", 60, ...) emitted instead of manifest 120 — detected by timeout-preservation assertion"
+    },
+    {
+      "id": "EVAL-001-CASE-ADV-5-HOLDOUT",
+      "criterion_id": "EVAL-001",
+      "type": "fail",
+      "scenario": "wrong native signal — session_end mapped to session.idle (fires repeatedly per session, not once per teardown)",
+      "input_context": "session_end-only manifest, agent \"opencode\", generated plugin",
+      "expected_output": "FAIL: exact-match assertion on \"session.deleted\" fires; firing-frequency rationale in ADR-479"
+    }
+  ]
+}

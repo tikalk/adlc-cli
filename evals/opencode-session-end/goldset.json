@@ -1,0 +1,63 @@
+{
+  "id": "opencode-session-end-goldset",
+  "title": "opencode-session-end Evaluation Goldset",
+  "description": "Published evaluation criterion for the OpenCode session_end → session.deleted fallback (ADR-479). Code-based grader on generator output.",
+  "cases": [
+    {
+      "id": "EVAL-001-CASE-PASS-1",
+      "criterion_id": "EVAL-001",
+      "type": "pass",
+      "scenario": "session_end-only manifest resolves with native fallback",
+      "input_context": "manifest { events: { session_end: [{ skill: \"team-levelup\", timeout: 120 }] } }, agent \"opencode\" via resolveEvents",
+      "expected_output": "resolved.session_end == [{ skill: \"team-levelup\", timeout: 120, nativeEvent: \"session.deleted\" }]"
+    },
+    {
+      "id": "EVAL-001-CASE-PASS-2",
+      "criterion_id": "EVAL-001",
+      "type": "pass",
+      "scenario": "generated plugin carries both V1 and V2 session.deleted paths",
+      "input_context": "same manifest through installEvents(\"opencode\", projectRoot, resolved, \".agents/skills\")",
+      "expected_output": "generated .opencode/plugins/adlc-skills-events.ts contains event.type === \"session.deleted\" + \"session_end\" + \"team-levelup\" (V1) and \"session.deleted\" + \"ctx.event.subscribe\" (V2)"
+    },
+    {
+      "id": "EVAL-001-CASE-FAIL-1",
+      "criterion_id": "EVAL-001",
+      "type": "fail",
+      "scenario": "declared event vanishes with no error (the shipped bug)",
+      "input_context": "manifest from pass case 1 through resolveEvents with session_end: null mapping (pre-fix registry)",
+      "expected_output": "resolved == {} (session_end dropped) — FAIL: declared event must survive resolution"
+    },
+    {
+      "id": "EVAL-001-CASE-FAIL-2",
+      "criterion_id": "EVAL-001",
+      "type": "fail",
+      "scenario": "teardown and file-edit streams cross-fire",
+      "input_context": "manifest { events: { session_end: [...], file_edited: [...] } }, agent \"opencode\"",
+      "expected_output": "FAIL: exactly ONE \"event\" entry required (duplicate object keys drop a handler); both === branches (session.deleted + file.edited) must be present in that entry"
+    },
+    {
+      "id": "EVAL-001-CASE-ADV-1",
+      "criterion_id": "EVAL-001",
+      "type": "fail",
+      "scenario": "mapping regression — future edit reverts session_end to null",
+      "input_context": "session_end-only manifest, agent \"opencode\", post-refactor registry",
+      "expected_output": "FAIL detected by pass case 1 assertion firing on undefined resolved.session_end"
+    },
+    {
+      "id": "EVAL-001-CASE-ADV-2",
+      "criterion_id": "EVAL-001",
+      "type": "fail",
+      "scenario": "guard collapse — subscriptions merged into one unguarded branch, or two \"event\" keys (duplicate-key drop)",
+      "input_context": "session_end + file_edited manifest, agent \"opencode\", generated V2 setup body",
+      "expected_output": "FAIL detected by single-entry + both-branch assertions (zero/two/unguarded entries all fail)"
+    },
+    {
+      "id": "EVAL-001-CASE-ADV-3",
+      "criterion_id": "EVAL-001",
+      "type": "fail",
+      "scenario": "V1-only regression — V2 setup loses session.deleted loop while V1 keeps working",
+      "input_context": "session_end-only manifest, agent \"opencode\", generated plugin V2 setup body",
+      "expected_output": "FAIL detected by V2 assertions (ctx.event.subscribe + session.deleted in setup); V1-only check would miss it"
+    }
+  ]
+}

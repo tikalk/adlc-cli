@@ -1,0 +1,9 @@
+{
+  "workflow": {
+    "clarify_completed": true,
+    "clarify_completed_at": "2026-10-31T22:30:00Z",
+    "adrs_approved_count": 1,
+    "implement_started": false,
+    "implement_started_at": null
+  }
+}
