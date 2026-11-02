@@ -24,6 +24,7 @@
 // of scope for unit tests.
 
 import { test } from "node:test";
+import { installNoopFactoryHelpers } from "./fixtures/factory-helpers.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -634,6 +635,9 @@ test("builtin factory: stage gates declare context.records and neutral messages"
 
 test("builtin factory: gate-product pauses with the PDR manifest from the run's git repo", async () => {
   const { dir, baseSha } = standardRepo();
+  // The run-branch/publish steps need their helpers; they are untracked, and
+  // the manifest only diffs committed records, so it is unchanged.
+  installNoopFactoryHelpers(dir);
   const engine = new WorkflowEngine(dir);
   const def = engine.loadWorkflow("factory");
   const stubDef = new WorkflowDefinition({
@@ -653,4 +657,41 @@ test("builtin factory: gate-product pauses with the PDR manifest from the run's 
   const gp = events.find((e) => e.type === "gate_paused");
   assert.equal(gp.step_id, "gate-product");
   assert.equal(gp.message, out.message);
+});
+
+// ── since: run_start (ADR-435) ───────────────────────────────────────────
+// One factory-intent step writes PDRs and ADRs before gate-product; the
+// architecture gate must still list the ADRs after gate-product's approval.
+
+test("since run_start: validation accepts it, unknown modes are still rejected", async () => {
+  const { validateGateContext } = await import("../src/workflow/gate-context.mjs");
+  assert.deepEqual(validateGateContext({ context: { records: [".adlc/drafts/adr/*.md"], since: "run_start" } }, "g"), []);
+  const errors = validateGateContext({ context: { records: [".adlc/drafts/adr/*.md"], since: "yesterday" } }, "g");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /must be one of last_approved, run_start/);
+});
+
+test("since run_start: lists changes since the run start, ignoring a later approval", async () => {
+  const { buildGateManifest } = await import("../src/workflow/gate-context.mjs");
+  const { dir, baseSha, headSha } = standardRepo();
+  const records = [".adlc/drafts/pdr/*.md"];
+  // last_approved at HEAD: nothing new since that approval.
+  const approved = buildGateManifest({ records, projectRoot: dir, lastApprovedSha: headSha, runStartSha: baseSha });
+  assert.equal(approved.since_sha, headSha);
+  assert.equal(approved.decisions.length, 0);
+  // run_start: the same approval is ignored; the run's records are listed.
+  const fromStart = buildGateManifest({ records, projectRoot: dir, lastApprovedSha: headSha, runStartSha: baseSha, since: "run_start" });
+  assert.equal(fromStart.since_sha, baseSha);
+  assert.equal(fromStart.since_basis, "run-start");
+  assert.deepEqual(byId(fromStart.decisions).map((d) => [d.id, d.change]), [["PDR-125", "changed"], ["PDR-127", "new"]]);
+});
+
+test("since run_start: a run start that is not an ancestor of HEAD falls back to the merge-base", async () => {
+  const { buildGateManifest } = await import("../src/workflow/gate-context.mjs");
+  const { dir, baseSha, headSha } = standardRepo();
+  const mainHead = git(dir, "rev-parse", "main");
+  const m = buildGateManifest({ records: [".adlc/drafts/pdr/*.md"], projectRoot: dir, lastApprovedSha: headSha, runStartSha: mainHead, since: "run_start" });
+  assert.equal(m.since_basis, "merge-base");
+  assert.equal(m.since_sha, baseSha, "never main's own later changes");
+  assert.deepEqual(byId(m.decisions).map((d) => d.id), ["PDR-125", "PDR-127"]);
 });

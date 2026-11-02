@@ -125,6 +125,7 @@ export class GateStep extends StepBase {
           projectRoot: context.projectRoot,
           lastApprovedSha: context.gateRun?.lastApprovedSha ?? null,
           runStartSha: context.gateRun?.runStartSha ?? null,
+          since: config.context.since ?? "last_approved",
         });
         unavailableReason = built.unavailable;
         unavailableKind = built.unavailable ? built.unavailable_kind : null;

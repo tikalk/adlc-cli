@@ -3,27 +3,33 @@
 // composed of `command` steps invoking orchestrator skills plus `gate`
 // checkpoints; consumed via `adlc-cli workflow run factory`).
 
-// Shell command for an engine step that runs factory-mission helper scripts
-// in order. Each helper is checked on its own: a missing one (factory-mission
-// skill not installed) or a bash that cannot start is skipped and reported as
-// `skipped` in the step output (ADLC_STEP_OUTPUT) and on stdout/stderr, so a
-// gate without a link is explained; a present helper's non-zero exit fails
-// the step (fail-closed: open-mr still refuses a non-intent branch).
-const HELPER_DIR = ".agents/skills/factory-mission/scripts/bash";
+// Shell command for an engine step that runs the factory publish helpers in
+// order. The helpers live in the factory-runbook skill (adlc-team-skills
+// #121); older installs carry them in factory-mission, so each helper is
+// looked up there second. A helper that is missing from both, or a bash that
+// cannot start, FAILS the step: this used to be "skipped" while the step
+// still completed, so a whole factory run could push nothing, open no MR and
+// report success. The reason goes to stderr, which the
+// engine puts in the step's error. A helper's own non-zero exit fails the
+// step too (open-mr still refuses a non-intent branch).
+export const HELPER_DIRS = Object.freeze([
+  ".agents/skills/factory-runbook/scripts/bash",
+  ".agents/skills/factory-mission/scripts/bash",
+]);
 function helperRun(label, names) {
-  const files = JSON.stringify(names.map((n) => `${HELPER_DIR}/${n}`)).replaceAll('"', "'");
-  return `node -e "const fs=require('fs'),cp=require('child_process');const fl=${files};const miss=[];` +
-    `for(const f of fl){const n=f.split('/').pop();if(!fs.existsSync(f)){miss.push(n);continue}` +
-    `const r=cp.spawnSync('bash',[f],{stdio:'inherit'});if(r.error){miss.push(n+' ('+r.error.message+')');continue}` +
-    `if(r.status!==0)process.exit(r.status===null?1:r.status)}` +
-    `if(miss.length){const m='${label}: skipped '+miss.join(', ')+' (factory-mission helpers not installed)';` +
-    `console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;` +
-    `if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"`;
+  const dirs = JSON.stringify(HELPER_DIRS).replaceAll('"', "'");
+  const files = JSON.stringify(names).replaceAll('"', "'");
+  return `node -e "const fs=require('fs'),cp=require('child_process');const ds=${dirs};const fl=${files};` +
+    `const fail=(m)=>{console.error(m);process.exit(1)};` +
+    `for(const n of fl){const f=ds.map((d)=>d+'/'+n).find((p)=>fs.existsSync(p));` +
+    `if(!f)fail('${label}: '+n+' not found in '+ds.join(' or ')+' (factory-runbook skill not installed)');` +
+    `const r=cp.spawnSync('bash',[f],{stdio:'inherit'});if(r.error)fail('${label}: '+n+' could not start: '+r.error.message);` +
+    `if(r.status!==0)process.exit(r.status===null?1:r.status)}"`;
 }
 
 export const BUILTIN_WORKFLOWS = {
   factory: {
-    description: "Factory outer loop — product → architecture → execution → sweep, with stage gates",
+    description: "Factory outer loop — intent (product + architecture) → execution → sweep, with stage gates",
     yaml: `schema_version: "1.0"
 workflow:
   id: factory
@@ -54,17 +60,19 @@ steps:
     # orchestrator's own run-branch call; skipped without the helper.
     run: |-
       ${helperRun("run-branch", ["run-branch.sh"])}
-  - id: intent-product
+  # Intent (ADR-435): factory-intent runs both lanes, product and
+  # architecture, in one step; factory-product and factory-architect no
+  # longer exist. One publish, then the two scope-pinned gates in order.
+  - id: intent
     type: command
-    command: factory-product
-  - id: publish-product
+    command: factory-intent
+  - id: publish-intent
     type: shell
     # The engine pushes the run branch and opens/reuses the draft MR itself
     # (ADR-431-amendment §3a), so the gate link never depends on the agent.
     # run-branch first: an intent step that changed nothing may never have
     # left the base branch, and open-mr refuses anything but factory/intent/*.
-    # open-mr is idempotent and opens nothing for an empty run; a missing
-    # helper (factory-mission skill not installed) is skipped and reported.
+    # open-mr is idempotent and opens nothing for an empty run.
     run: |-
       ${helperRun("publish", ["run-branch.sh", "open-mr.sh"])}
   - id: gate-product
@@ -74,37 +82,19 @@ steps:
       records: [".adlc/drafts/pdr/*.md"]
       since: last_approved
       # The draft MR the publish step opened (ADR-444 §5, ADR-431-amendment §3a).
-      link: "{{ steps.publish-product.output.mr_url }}"
+      link: "{{ steps.publish-intent.output.mr_url }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
-  - id: run-branch-architecture
-    type: shell
-    # Again after the product gate: a parked run resumes after it, possibly
-    # restored into a fresh clone on the base branch, and resume never re-runs
-    # the first run-branch step.
-    run: |-
-      ${helperRun("run-branch", ["run-branch.sh"])}
-  - id: intent-architecture
-    type: command
-    command: factory-architect
-  - id: publish-architecture
-    type: shell
-    # The engine pushes the run branch and opens/reuses the draft MR itself
-    # (ADR-431-amendment §3a), so the gate link never depends on the agent.
-    # run-branch first: an intent step that changed nothing may never have
-    # left the base branch, and open-mr refuses anything but factory/intent/*.
-    # open-mr is idempotent and opens nothing for an empty run; a missing
-    # helper (factory-mission skill not installed) is skipped and reported.
-    run: |-
-      ${helperRun("publish", ["run-branch.sh", "open-mr.sh"])}
   - id: gate-architecture
     type: gate
     message: "Approve ADRs before execution?"
     context:
       records: [".adlc/drafts/adr/*.md"]
-      since: last_approved
-      link: "{{ steps.publish-architecture.output.mr_url }}"
+      # run_start, not last_approved: the intent step wrote the ADRs before
+      # gate-product was approved, so "since that approval" would list none.
+      since: run_start
+      link: "{{ steps.publish-intent.output.mr_url }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict

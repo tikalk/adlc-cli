@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Built-in `factory` workflow matches today's team skills.**
+  It still ran `factory-product` / `factory-architect`, which ADR-435
+  replaced with `factory-intent`, and looked for the publish helpers under
+  `factory-mission/scripts/bash`, from where adlc-team-skills #121 moved
+  them to `factory-runbook`. Every helper step was "skipped" while the step
+  still completed, so real factory runs pushed nothing, opened no MR and
+  reported success. Now: one `intent` step (`factory-intent`, both lanes),
+  one `publish-intent`, then `gate-product` and `gate-architecture` as
+  before. Helpers are found in `factory-runbook` first, `factory-mission`
+  second, and a helper missing from both **fails** its step.
+
+### Added
+
+- **Gate `context.since: run_start`** — lists the records changed since
+  the run started, whatever was approved since. The factory's
+  `gate-architecture` uses it: the intent step writes the ADRs before
+  `gate-product` is approved, and `last_approved` would hide them. Falls
+  back to the merge-base when the run start is no longer an ancestor of
+  HEAD.
+
 ## [2.7.0] - 2026-10-31
 
 ### Added

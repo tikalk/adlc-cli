@@ -21,7 +21,12 @@ import { basename, dirname } from "node:path";
 export const CONTROL_CHARS = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/g;
 
 export const CONTEXT_KEYS = Object.freeze(["records", "since", "link"]);
-export const SINCE_MODES = Object.freeze(["last_approved"]);
+// `last_approved` (default): changes since the run's most recent approval.
+// `run_start`: changes since the run started, whatever was approved since. A
+// gate scoped to records another gate's step wrote earlier needs it: under
+// `last_approved` that earlier gate's approval would hide them (the factory's
+// architecture gate after one factory-intent step writes PDRs and ADRs).
+export const SINCE_MODES = Object.freeze(["last_approved", "run_start"]);
 
 // At most this many decisions are listed; the rest collapse into "…and N more".
 export const MAX_DECISIONS = 10;
@@ -157,7 +162,7 @@ export function hasContextGate(steps) {
 // `unavailable_kind` classifies it (T2): PERMANENT_UNAVAILABLE kinds are
 // structural facts of the project, `error` is anything transient (git
 // missing/spawn error, timeout, maxBuffer, a failing rev-parse/diff/show).
-export function buildGateManifest({ records, projectRoot, lastApprovedSha = null, runStartSha = null }) {
+export function buildGateManifest({ records, projectRoot, lastApprovedSha = null, runStartSha = null, since: sinceMode = "last_approved" }) {
   const kind = recordKind(records);
   const empty = (reason, unavailableKind = "error") => ({
     decisions: [],
@@ -192,7 +197,7 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
     if (headProbe.status === 1 || headProbe.stdout === "") return empty("no git history in the project root", "not-a-git-repo");
     const head = headProbe.stdout;
 
-    const resolved = resolveSince(cwd, git, head, lastApprovedSha, runStartSha);
+    const resolved = resolveSince(cwd, git, head, lastApprovedSha, runStartSha, sinceMode);
     if (resolved.unavailable_kind === "no-target-branch") {
       return empty(`no target branch (${TARGET_BRANCHES.join(", ")}) to compare against`, "no-target-branch");
     }
@@ -321,11 +326,21 @@ function runGit(cwd, args) {
 //      HEAD recorded at run start (I3).
 // Returns { sha, basis } or { unavailable_kind }: `no-target-branch` only when
 // git answered that none of the candidates exists, else `error` (T2).
-function resolveSince(cwd, git, head, lastApprovedSha, runStartSha) {
+function resolveSince(cwd, git, head, lastApprovedSha, runStartSha, sinceMode = "last_approved") {
   const verify = (sha) =>
     typeof sha === "string" && /^[0-9a-f]{7,64}$/i.test(sha)
       ? git(["rev-parse", "--verify", "--quiet", `${sha}^{commit}`])
       : null;
+
+  // run_start: the run's starting HEAD while it is still an ancestor of HEAD;
+  // approvals are ignored. Otherwise the merge-base resolution below.
+  if (sinceMode === "run_start") {
+    const start = verify(runStartSha);
+    if (start !== null && git(["merge-base", "--is-ancestor", start, head]) !== null) {
+      return { sha: start, basis: "run-start" };
+    }
+    lastApprovedSha = null;
+  }
 
   // An approval sha that is no longer an ancestor of HEAD (rebase /
   // force-push since) would list the target branch's changes as this
