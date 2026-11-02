@@ -193,7 +193,7 @@ async function cmdWorkflowRun(rest, rawArgv) {
 
   let definition;
   try {
-    definition = engine.loadWorkflow(source);
+    definition = await engine.loadWorkflow(source);
   } catch (exc) {
     error(exc.message);
     return 1;
@@ -465,7 +465,7 @@ async function cmdWorkflowValidate(rest, rawArgv) {
   const engine = new WorkflowEngine(projectRoot);
   let definition;
   try {
-    definition = engine.loadWorkflow(source);
+    definition = await engine.loadWorkflow(source);
   } catch (exc) {
     error(exc.message);
     return 1;
