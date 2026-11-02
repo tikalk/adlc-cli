@@ -27,7 +27,6 @@ import { evaluateCondition } from "./expressions.mjs";
 import { readAgent } from "../utils/init-options.mjs";
 import { Lease } from "./lease.mjs";
 import { pushRunRef } from "./refs.mjs";
-import { getBuiltinWorkflow } from "./builtins.mjs";
 import { currentHeadSha, hasContextGate } from "./gate-context.mjs";
 import {
   loadBundledCatalog,
@@ -107,16 +106,6 @@ export class WorkflowDefinition {
       throw new Error(`Workflow YAML must be a mapping, got ${Array.isArray(data) ? "list" : typeof data}.`);
     }
     return new WorkflowDefinition(data, sourcePath, yamlString);
-  }
-
-  // Built-in (bundled) definition: parsed from the curated YAML string; the
-  // string is retained so run copies stay verbatim.
-  static fromBuiltin(id, yamlString) {
-    const def = WorkflowDefinition.fromString(yamlString);
-    if (def.id !== id) {
-      throw new Error(`Built-in workflow id mismatch: expected '${id}', definition declares '${def.id}'.`);
-    }
-    return new WorkflowDefinition(def.data, null, yamlString);
   }
 }
 
@@ -704,12 +693,6 @@ export class WorkflowEngine {
     const directBundled = join(getBundledWorkflowsDir(), strSource, "workflow.yml");
     if (existsSync(directBundled)) {
       return WorkflowDefinition.fromYamlFile(directBundled);
-    }
-
-    // 5. Builtin legacy fallback
-    const builtin = getBuiltinWorkflow(strSource);
-    if (builtin !== null) {
-      return WorkflowDefinition.fromBuiltin(strSource, builtin.yaml);
     }
 
     throw new Error(`Workflow not found: ${source}`);

@@ -16,7 +16,13 @@ import {
   RunStatus,
 } from "../src/workflow/engine.mjs";
 import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
-import { BUILTIN_WORKFLOWS } from "../src/workflow/builtins.mjs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const FACTORY_YAML = readFileSync(
+  join(dirname(dirname(fileURLToPath(import.meta.url))), "workflows", "factory", "workflow.yml"),
+  "utf-8"
+);
 
 function makeProject({ git = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "wf-events-"));
@@ -162,13 +168,13 @@ steps:
 
 // ── built-ins ────────────────────────────────────────────────────────────
 
-test("built-in factory: loads, validates, headless-valid", () => {
+test("built-in factory: loads, validates, headless-valid", async () => {
   const { dir, cleanup } = makeProject();
   try {
     const engine = new WorkflowEngine(dir);
-    const def = engine.loadWorkflow("factory");
+    const def = await engine.loadWorkflow("factory");
     assert.equal(def.id, "factory");
-    assert.equal(def.sourceYaml, BUILTIN_WORKFLOWS.factory.yaml);
+    assert.equal(def.sourceYaml, FACTORY_YAML);
     assert.deepEqual(validateWorkflow(def, STEP_REGISTRY), []);
     assert.deepEqual(headlessGateErrors(def), []);
     // Every gate declares verdict_input; stages are command steps, plus the
@@ -191,7 +197,7 @@ test("built-in factory: run copies sourceYaml verbatim into the run dir", async 
   const { dir, cleanup } = makeProject();
   try {
     const engine = new WorkflowEngine(dir);
-    const def = engine.loadWorkflow("factory");
+    const def = await engine.loadWorkflow("factory");
     // Execute with a stub registry so command steps don't spawn agents:
     // replace command steps with a no-op shell to reach the first gate.
     const stubDef = new WorkflowDefinition({
@@ -210,7 +216,7 @@ test("built-in factory: run copies sourceYaml verbatim into the run dir", async 
     assert.equal(state.currentStepId, "gate-product");
 
     const runCopy = join(dir, ".adlc", "workflows", "runs", "ee000003", "workflow.yml");
-    assert.equal(readFileSync(runCopy, "utf-8"), BUILTIN_WORKFLOWS.factory.yaml);
+    assert.equal(readFileSync(runCopy, "utf-8"), FACTORY_YAML);
 
     // gate_paused fired for the factory stage gate.
     const gate = events.find((e) => e.type === "gate_paused");
