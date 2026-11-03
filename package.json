@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test && node tests/e2e-node-gate.mjs --skip-agent",
-    "test:evals": "node --test \"evals/opencode-session-end/tests/*.mjs\"",
+    "test:evals": "node --test evals/opencode-session-end/tests/test_check_session_end.mjs",
     "test:all": "npm test && npm run test:evals",
     "prepublishOnly": "npm test"
   },
