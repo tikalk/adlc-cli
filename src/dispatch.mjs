@@ -233,6 +233,9 @@ async function runNewTree({ command, args, flags }, argv) {
         case "state":
         case "park":
         case "restore":
+        case "search":
+        case "add":
+        case "list":
           return cmdWorkflow([sub, ...rest], flags, workflowArgv);
         case "help":
           printWorkflowHelp();
