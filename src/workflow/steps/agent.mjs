@@ -24,15 +24,37 @@ const rid = (config) => `'${config.id ?? "?"}'`;
 // step with "no agent/integration configured", even though .adlc/init-
 // options.json had `agent` set to exactly what the error suggested setting.
 function resolveAgent(config, context) {
-  return config.integration ?? context.defaultIntegration ?? readAgent(context.projectRoot) ?? null;
+  return (
+    config.integration ??
+    context.defaultIntegration ??
+    (process.env.ADLC_AGENT ? process.env.ADLC_AGENT.trim() : null) ??
+    readAgent(context.projectRoot) ??
+    null
+  );
 }
 
-async function runAgentStep({ agentKey, model, prompt, context, config, timeoutSec }) {
+// Resolve agent setting (model or mode): step value > workflow default > CLI flag/env > null.
+// Either level can specify a single string (applies to all agents) OR a mapping
+// keyed by agent/integration name (e.g. { opencode: "plan", "claude-code": "plan" }).
+export function resolveAgentSetting(stepValue, workflowDefault, agentKey, envOverride) {
+  const pick = (val) => {
+    if (val === null || val === undefined) return null;
+    if (typeof val === "string") return val;
+    if (typeof val === "object" && !Array.isArray(val)) {
+      if (agentKey && agentKey in val) return val[agentKey];
+      if ("default" in val) return val.default;
+    }
+    return null;
+  };
+  return envOverride?.trim() || pick(stepValue) || pick(workflowDefault) || null;
+}
+
+async function runAgentStep({ agentKey, model, mode, prompt, context, config, timeoutSec }) {
   if (!agentKey) {
     return new StepResult({
       status: StepStatus.FAILED,
       error: `Step ${rid(config)}: no agent/integration configured. Set step 'integration:', workflow 'workflow.integration:', or .adlc/init-options.json agent.`,
-      output: { integration: null, model: model ?? null, input: prompt, stdout: "", stderr: "", exit_code: -1 },
+      output: { integration: null, model: model ?? null, mode: mode ?? null, input: prompt, stdout: "", stderr: "", exit_code: -1 },
     });
   }
   let profile;
@@ -42,7 +64,7 @@ async function runAgentStep({ agentKey, model, prompt, context, config, timeoutS
     return new StepResult({
       status: StepStatus.FAILED,
       error: `Step ${rid(config)}: unknown agent/integration ${JSON.stringify(agentKey)}. Run 'adlc-cli agent list' for supported keys.`,
-      output: { integration: agentKey, model: model ?? null, input: prompt, stdout: "", stderr: "", exit_code: -1 },
+      output: { integration: agentKey, model: model ?? null, mode: mode ?? null, input: prompt, stdout: "", stderr: "", exit_code: -1 },
     });
   }
 
@@ -58,16 +80,27 @@ async function runAgentStep({ agentKey, model, prompt, context, config, timeoutS
   let timedOut = false;
   let timer = null;
 
-  const { promise, kill } = runTask({
-    profile,
-    prompt,
-    model,
-    cwd: context.projectRoot || process.cwd(),
-    env: runEnv,
-    onLine: (line) => {
-      stdout += line + "\n";
-    },
-  });
+  let taskHandle;
+  try {
+    taskHandle = runTask({
+      profile,
+      prompt,
+      model,
+      mode,
+      cwd: context.projectRoot || process.cwd(),
+      env: runEnv,
+      onLine: (line) => {
+        stdout += line + "\n";
+      },
+    });
+  } catch (err) {
+    return new StepResult({
+      status: StepStatus.FAILED,
+      error: `Agent step ${rid(config)} failed to start: ${err.message}`,
+      output: { integration: agentKey, model: model ?? null, mode: mode ?? null, input: prompt, stdout: "", stderr: err.message, exit_code: -1 },
+    });
+  }
+  const { promise, kill } = taskHandle;
 
   if (timeoutSec && Number.isFinite(timeoutSec) && timeoutSec > 0) {
     timer = setTimeout(() => {
@@ -93,6 +126,7 @@ async function runAgentStep({ agentKey, model, prompt, context, config, timeoutS
   const output = {
     integration: agentKey,
     model: model ?? null,
+    mode: mode ?? null,
     input: prompt,
     stdout,
     stderr: "",
@@ -199,10 +233,11 @@ export class PromptStep extends StepBase {
     prompt = String(prompt);
 
     const agentKey = resolveAgent(config, context);
-    const model = config.model ?? context.defaultModel ?? null;
+    const model = resolveAgentSetting(config.model, context.defaultModel, agentKey, process.env.ADLC_MODEL);
+    const mode = resolveAgentSetting(config.mode, context.defaultMode, agentKey, process.env.ADLC_MODE);
     const timeout = config.timeout ?? 3600;
 
-    return runAgentStep({ agentKey, model, prompt, context, config, timeoutSec: timeout });
+    return runAgentStep({ agentKey, model, mode, prompt, context, config, timeoutSec: timeout });
   }
 
   validate(config) {
@@ -211,6 +246,14 @@ export class PromptStep extends StepBase {
       errors.push(`Prompt step ${rid(config)} is missing 'prompt' field.`);
     } else if (typeof config.prompt !== "string") {
       errors.push(`Prompt step ${rid(config)}: 'prompt' must be a string, got ${typeName(config.prompt)}.`);
+    }
+    if ("model" in config && config.model !== null && typeof config.model !== "string" &&
+        (typeof config.model !== "object" || Array.isArray(config.model))) {
+      errors.push(`Prompt step ${rid(config)}: 'model' must be a string, mapping, or null, got ${typeName(config.model)}.`);
+    }
+    if ("mode" in config && config.mode !== null && typeof config.mode !== "string" &&
+        (typeof config.mode !== "object" || Array.isArray(config.mode))) {
+      errors.push(`Prompt step ${rid(config)}: 'mode' must be a string, mapping, or null, got ${typeName(config.mode)}.`);
     }
     if ("timeout" in config) {
       const t = config.timeout;
@@ -254,7 +297,8 @@ export class CommandStep extends StepBase {
     }
 
     const agentKey = resolveAgent(config, context);
-    const model = config.model ?? context.defaultModel ?? null;
+    const model = resolveAgentSetting(config.model, context.defaultModel, agentKey, process.env.ADLC_MODEL);
+    const mode = resolveAgentSetting(config.mode, context.defaultMode, agentKey, process.env.ADLC_MODE);
     const options = config.options ?? {};
     const timeout = config.timeout ?? 3600;
 
@@ -266,7 +310,7 @@ export class CommandStep extends StepBase {
       .join(" ");
     const prompt = [`/${command}`, extraOptions, args].filter((s) => s !== "").join(" ");
 
-    return runAgentStep({ agentKey, model, prompt, context, config, timeoutSec: timeout });
+    return runAgentStep({ agentKey, model, mode, prompt, context, config, timeoutSec: timeout });
   }
 
   validate(config) {
@@ -280,6 +324,14 @@ export class CommandStep extends StepBase {
     if (input !== null && input !== undefined &&
         (typeof input !== "object" || Array.isArray(input))) {
       errors.push(`Command step ${rid(config)}: 'input' must be a mapping, got ${typeName(input)}.`);
+    }
+    if ("model" in config && config.model !== null && typeof config.model !== "string" &&
+        (typeof config.model !== "object" || Array.isArray(config.model))) {
+      errors.push(`Command step ${rid(config)}: 'model' must be a string, mapping, or null, got ${typeName(config.model)}.`);
+    }
+    if ("mode" in config && config.mode !== null && typeof config.mode !== "string" &&
+        (typeof config.mode !== "object" || Array.isArray(config.mode))) {
+      errors.push(`Command step ${rid(config)}: 'mode' must be a string, mapping, or null, got ${typeName(config.mode)}.`);
     }
     if ("timeout" in config) {
       const t = config.timeout;

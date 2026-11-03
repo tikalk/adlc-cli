@@ -231,6 +231,19 @@ async function cmdWorkflowRun(rest, rawArgv) {
     return 1;
   }
 
+  const agentFlag = extractFlagValue(rawArgv, "agent") ?? extractFlagValue(rawArgv, "a");
+  if (agentFlag) {
+    process.env.ADLC_AGENT = agentFlag;
+  }
+  const modelFlag = extractFlagValue(rawArgv, "model") ?? extractFlagValue(rawArgv, "m");
+  if (modelFlag) {
+    process.env.ADLC_MODEL = modelFlag;
+  }
+  const modeFlag = extractFlagValue(rawArgv, "mode");
+  if (modeFlag) {
+    process.env.ADLC_MODE = modeFlag;
+  }
+
   const removeHandlers = installInterruptHandler(engine);
   try {
     const state = await engine.execute(definition, inputs, null, STEP_REGISTRY);
@@ -270,6 +283,19 @@ async function cmdWorkflowResume(rest, rawArgv) {
   } catch (exc) {
     error(exc.message);
     return 1;
+  }
+
+  const agentFlag = extractFlagValue(rawArgv, "agent") ?? extractFlagValue(rawArgv, "a");
+  if (agentFlag) {
+    process.env.ADLC_AGENT = agentFlag;
+  }
+  const modelFlag = extractFlagValue(rawArgv, "model") ?? extractFlagValue(rawArgv, "m");
+  if (modelFlag) {
+    process.env.ADLC_MODEL = modelFlag;
+  }
+  const modeFlag = extractFlagValue(rawArgv, "mode");
+  if (modeFlag) {
+    process.env.ADLC_MODE = modeFlag;
   }
 
   const removeHandlers = installInterruptHandler(engine);

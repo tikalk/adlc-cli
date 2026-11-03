@@ -1,0 +1,34 @@
+schema_version: "1.0"
+workflow:
+  id: factory-supervised
+  name: Factory Supervised
+  version: "1.0.0"
+inputs:
+  verdict:
+    type: string
+    enum: ["", approve, reject]
+  issue_ref:
+    type: string
+    default: ""
+steps:
+  # Phase 1: Run factory-mission in plan mode (generates spec & plan, no code yet)
+  - id: plan
+    type: command
+    command: factory-mission
+    input:
+      args: "--issue {{ inputs.issue_ref }} --plan"
+
+  # Spec Approval Gate (HITL)
+  - id: gate-spec
+    type: gate
+    message: "Approve specification and plan before implementation?"
+    options: [approve, reject]
+    on_reject: abort
+    verdict_input: verdict
+
+  # Phase 2: Run factory-mission execution mode after approval
+  - id: execute
+    type: command
+    command: factory-mission
+    input:
+      args: "--issue {{ inputs.issue_ref }}"

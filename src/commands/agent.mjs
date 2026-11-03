@@ -23,7 +23,7 @@ export async function cmdAgentRun(runArgs) {
     return 0;
   }
 
-  const { agent, model, format, requireApproval, prompt: rawPrompt, cwd, timeout } = parseRunArgs(runArgs);
+  const { agent, model, mode, format, requireApproval, prompt: rawPrompt, cwd, timeout } = parseRunArgs(runArgs);
 
   let prompt = rawPrompt;
   if (prompt === "__STDIN__") {
@@ -52,6 +52,7 @@ export async function cmdAgentRun(runArgs) {
     profile,
     prompt,
     model,
+    mode,
     requireApproval,
     cwd: cwd ?? process.cwd(),
     onLine: async (line) => {
@@ -120,6 +121,7 @@ export async function runAgentInteractive(agentKey, prompt, { cwd } = {}) {
 function parseRunArgs(argv) {
   let agent = "opencode";
   let model = null;
+  let mode = null;
   let format = "text";
   let requireApproval = null;
   let prompt = null;
@@ -132,6 +134,8 @@ function parseRunArgs(argv) {
       agent = argv[++i];
     } else if (arg === "--model") {
       model = argv[++i];
+    } else if (arg === "--mode") {
+      mode = argv[++i];
     } else if (arg === "--format") {
       format = argv[++i];
     } else if (arg === "--require-approval") {
@@ -147,7 +151,7 @@ function parseRunArgs(argv) {
     }
   }
 
-  return { agent, model, format, requireApproval, prompt, cwd, timeout };
+  return { agent, model, mode, format, requireApproval, prompt, cwd, timeout };
 }
 
 // ── list ───────────────────────────────────────────────────────────────

@@ -36,6 +36,8 @@ export class StepContext {
     this.defaultIntegration = fields.defaultIntegration ?? null;
     // Workflow-level default model.
     this.defaultModel = fields.defaultModel ?? null;
+    // Workflow-level default execution mode (e.g. plan vs build, string or per-agent mapping).
+    this.defaultMode = fields.defaultMode ?? null;
     // Workflow-level default options.
     this.defaultOptions = fields.defaultOptions ?? {};
     // Project root path.

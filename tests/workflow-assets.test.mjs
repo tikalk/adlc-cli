@@ -13,11 +13,36 @@ test("workflows/catalog.json exists and conforms to spec-kit catalog schema", ()
   assert.equal(catalog.schema_version, "1.0");
   assert.ok(catalog.workflows && typeof catalog.workflows === "object");
   assert.ok("factory" in catalog.workflows, "catalog must contain 'factory'");
-  const factory = catalog.workflows.factory;
-  assert.equal(factory.id, "factory");
-  assert.equal(factory.name, "Factory Outer Loop");
-  assert.ok(factory.path, "factory must specify path");
-  assert.ok(existsSync(join(ROOT, factory.path)), `file at ${factory.path} must exist`);
+  assert.ok("factory-autonomous" in catalog.workflows, "catalog must contain 'factory-autonomous'");
+  assert.ok("factory-supervised" in catalog.workflows, "catalog must contain 'factory-supervised'");
+
+  for (const [id, item] of Object.entries(catalog.workflows)) {
+    assert.equal(item.id, id);
+    assert.ok(item.name);
+    assert.ok(item.path);
+    assert.ok(existsSync(join(ROOT, item.path)), `file at ${item.path} must exist`);
+  }
+});
+
+test("workflows/factory/autonomous/workflow.yml exists and declares direct execution", () => {
+  const wfPath = join(ROOT, "workflows", "factory", "autonomous", "workflow.yml");
+  assert.ok(existsSync(wfPath), "workflows/factory/autonomous/workflow.yml must exist");
+  const content = readFileSync(wfPath, "utf-8");
+  assert.match(content, /id:\s*factory-autonomous/);
+  assert.match(content, /command:\s*factory-mission/);
+  assert.ok(!content.includes("type: gate"), "autonomous workflow must not contain gate steps");
+});
+
+test("workflows/factory/supervised/workflow.yml exists and declares plan, spec-gate, and execute", () => {
+  const wfPath = join(ROOT, "workflows", "factory", "supervised", "workflow.yml");
+  assert.ok(existsSync(wfPath), "workflows/factory/supervised/workflow.yml must exist");
+  const content = readFileSync(wfPath, "utf-8");
+  assert.match(content, /id:\s*factory-supervised/);
+  assert.match(content, /id:\s*plan/);
+  assert.match(content, /--plan/);
+  assert.match(content, /id:\s*gate-spec/);
+  assert.match(content, /type:\s*gate/);
+  assert.match(content, /id:\s*execute/);
 });
 
 test("workflows/factory/workflow.yml exists and declares all required factory steps", () => {
