@@ -49,16 +49,53 @@ export function searchCatalog(query = "", options = {}) {
   });
 }
 
+export const MAX_WORKFLOW_REDIRECTS = 5;
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+// Fetched workflows carry `run:` shell steps, so the transport must be
+// tamper-proof: https only, with plain http allowed for loopback (local dev
+// and tests). Applied to the initial URL and to every redirect hop.
+export function assertSafeWorkflowUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid workflow URL: ${url}`);
+  }
+  if (parsed.protocol === "https:") return parsed;
+  if (parsed.protocol === "http:" && LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) return parsed;
+  throw new Error(`Refusing to fetch workflow from ${url}: only https:// URLs are allowed (http:// only for localhost)`);
+}
+
 export async function fetchWorkflowFromUrl(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 30000;
+  // One deadline for the whole redirect chain, not per hop.
+  const signal = AbortSignal.timeout(timeoutMs);
+  let current = assertSafeWorkflowUrl(url).href;
   let response;
-  try {
-    response = await fetch(url, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { Accept: "text/yaml, text/plain, */*" },
-    });
-  } catch (exc) {
-    throw new Error(`Failed to connect to ${url}: ${exc.message}`);
+  for (let hops = 0; ; hops++) {
+    try {
+      response = await fetch(current, {
+        signal,
+        redirect: "manual",
+        headers: { Accept: "text/yaml, text/plain, */*" },
+      });
+    } catch (exc) {
+      throw new Error(`Failed to connect to ${current}: ${exc.message}`);
+    }
+    if (response.status < 300 || response.status >= 400) break;
+    const location = response.headers.get("location");
+    if (!location) break;
+    try {
+      await response.body?.cancel();
+    } catch {}
+    if (hops >= MAX_WORKFLOW_REDIRECTS) {
+      throw new Error(`Workflow fetch from ${url} exceeded ${MAX_WORKFLOW_REDIRECTS} redirects`);
+    }
+    // Resolve relative Locations against the current hop, then re-validate
+    // so an https URL cannot downgrade to http on a non-loopback host.
+    current = assertSafeWorkflowUrl(new URL(location, current).href).href;
   }
 
   if (!response.ok) {
