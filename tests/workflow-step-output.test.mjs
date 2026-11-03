@@ -455,10 +455,10 @@ test("O8: a missing run-branch helper fails the run before any agent step", { sk
   assert.equal(state.stepResults.intent, undefined);
 });
 
-test("O8: a run resumed after gate-product goes straight to gate-architecture, without re-running intent", { skip: !POSIX }, async () => {
-  // One intent step (ADR-435): nothing runs between the two intent gates, so a
-  // resume after gate-product pauses at gate-architecture. The code changes
-  // happen in execute, whose factory-mission runs the runbook's run-branch.
+test("O8: a resumed run checks out the run branch again before gate-architecture, without re-running intent", { skip: !POSIX }, async () => {
+  // A parked run restored into a fresh clone starts on the base branch; resume
+  // continues after gate-product and never re-runs the first run-branch step.
+  // gate-architecture diffs the working tree, so the run branch must be back.
   let base;
   const { state, resumed, dir } = await runFactory({
     helper: STRICT_OPEN_MR,
@@ -469,9 +469,10 @@ test("O8: a run resumed after gate-product goes straight to gate-architecture, w
   });
   assert.equal(state.status, RunStatus.PAUSED);
   assert.ok(base);
-  void dir;
   assert.equal(resumed.status, RunStatus.PAUSED);
   assert.equal(resumed.currentStepId, "gate-architecture");
+  assert.equal(resumed.stepResults["run-branch-architecture"].status, "completed");
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir }).toString().trim(), "factory/intent/p-12");
   assert.equal(resumed.stepResults.intent.status, "completed");
   assert.equal(resumed.stepResults.execute, undefined);
 });

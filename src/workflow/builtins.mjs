@@ -57,7 +57,7 @@ steps:
     # The engine checks out the intent run branch before any agent step
     # (ADR-431-amendment §1, §3a), so agent commits land on it and a
     # re-dispatch continues the issue's branch and MR. Idempotent with the
-    # orchestrator's own run-branch call; skipped without the helper.
+    # orchestrator's own run-branch call; a missing helper fails the step.
     run: |-
       ${helperRun("run-branch", ["run-branch.sh"])}
   # Intent (ADR-435): factory-intent runs both lanes, product and
@@ -86,6 +86,14 @@ steps:
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
+  - id: run-branch-architecture
+    type: shell
+    # Again after gate-product: a run parked there resumes after it, possibly
+    # restored into a fresh clone on the base branch, and resume never re-runs
+    # the first run-branch step. gate-architecture diffs the working tree, so
+    # without the run branch checked out it would list no ADRs.
+    run: |-
+      ${helperRun("run-branch", ["run-branch.sh"])}
   - id: gate-architecture
     type: gate
     message: "Approve ADRs before execution?"

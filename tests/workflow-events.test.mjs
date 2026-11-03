@@ -182,7 +182,7 @@ test("built-in factory: loads, validates, headless-valid", () => {
     assert.equal(gates.length, 3);
     assert.ok(gates.every((g) => g.verdict_input === "verdict"));
     assert.ok(commands.every((c) => c.type === "command" && typeof c.command === "string"));
-    assert.deepEqual(shells.map((s) => s.id), ["run-branch", "publish-intent"]);
+    assert.deepEqual(shells.map((s) => s.id), ["run-branch", "publish-intent", "run-branch-architecture"]);
     assert.deepEqual(commands.map((c) => c.command), ["factory-intent", "factory-mission", "factory-init"]);
     assert.equal(def.steps[0].id, "run-branch");
   } finally {
