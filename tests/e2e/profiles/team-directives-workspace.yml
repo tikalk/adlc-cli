@@ -25,6 +25,12 @@ skills:
     - tikalk/adlc-team-skills
 
 commands:
-  - team setup tikalk/adlc-team-skills
+  - team setup tikalk/adlc-team-skills --directives agentic-sdlc-team-ai-directives
+
+# Deterministic wiring: the workspace git section above clones the directives
+# repo, then `team setup --directives <path>` wires the local clone without
+# any agent session — the interactive /team-setup skill cannot answer mode
+# selection headlessly (ADR-386-amendment follow-up). Goal still fires
+# first-boot-only (runs on first assembly, skipped on re-run).
 
 goal: "Reply with exactly: E2E-GOAL-OK and nothing else."

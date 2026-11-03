@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "updated_at": "2026-11-03T00:00:00Z",
+  "workflows": {
+    "factory": {
+      "id": "factory",
+      "name": "Factory Outer Loop",
+      "description": "Factory outer loop — product → architecture → execution → sweep, with stage gates",
+      "version": "1.0.0",
+      "path": "workflows/factory/workflow.yml",
+      "tags": ["factory", "outer-loop", "adlc"]
+    },
+    "factory-autonomous": {
+      "id": "factory-autonomous",
+      "name": "Factory Autonomous",
+      "description": "Autonomous issue-to-PR workflow via factory-mission with zero inline gates",
+      "version": "1.0.0",
+      "path": "workflows/factory/autonomous/workflow.yml",
+      "tags": ["factory", "autonomous", "issue-to-pr", "adlc"]
+    },
+    "factory-supervised": {
+      "id": "factory-supervised",
+      "name": "Factory Supervised",
+      "description": "Supervised issue-to-PR workflow via factory-mission pausing at the Spec Approval Gate",
+      "version": "1.0.0",
+      "path": "workflows/factory/supervised/workflow.yml",
+      "tags": ["factory", "supervised", "spec-gate", "issue-to-pr", "adlc"]
+    }
+  }
+}

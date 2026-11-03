@@ -46,10 +46,27 @@ test("gemini run profile", () => {
 test("unknown agent throws with supported list", () => {
   assert.throws(
     () => getRunProfile("unknown-agent"),
-    /Unsupported agent.*opencode.*claude-code.*goose.*gemini/s,
+    /Unsupported agent.*Supported:/s,
   );
 });
 
-test("RUN_PROFILES exports all four agents", () => {
-  assert.deepEqual(Object.keys(RUN_PROFILES).sort(), ["claude-code", "gemini", "goose", "opencode"]);
+test("RUN_PROFILES exports all five agents", () => {
+  assert.deepEqual(Object.keys(RUN_PROFILES).sort(), ["claude-code", "codex", "gemini", "goose", "opencode"]);
+});
+
+test("interactive handoff specs: opencode opens resident TUI with seeded prompt", () => {
+  const p = getRunProfile("opencode");
+  // `run -i` is a no-op on opencode 1.17+ (exits when the prompt turn ends);
+  // top-level --prompt auto-sends into the TUI and keeps it open.
+  assert.deepEqual(p.interactive, { args: ["--prompt"] });
+});
+
+test("interactive handoff specs: claude REPL takes prompt as positional", () => {
+  const p = getRunProfile("claude-code");
+  assert.deepEqual(p.interactive, { args: [] });
+});
+
+test("interactive handoff specs: goose and gemini fall back to headless", () => {
+  assert.equal(getRunProfile("goose").interactive, null);
+  assert.equal(getRunProfile("gemini").interactive, null);
 });

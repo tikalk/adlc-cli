@@ -353,6 +353,15 @@ export function resolveNpxAgent(agent) {
 // Only agents with a run profile can be used with `adlc-cli run`.
 // v1: the 4 agents supported by the Agentic Container.
 
+// Run profiles are per-agent: the same abstract run setting maps to a
+// different CLI flag (or no flag at all) on each agent.
+//   - `modelFlag`  — `--model`-style flag the model id is passed with.
+//   - `modeFlag`   — flag selecting the agent's execution mode (plan vs build
+//                    work). opencode picks its agent (`--agent plan`), claude
+//                    picks its permission mode (`--permission-mode plan`),
+//                    gemini its approval mode (`--approval-mode ...`). A null
+//                    modeFlag means the agent has no such switch: requesting a
+//                    mode for it fails the run instead of being dropped.
 export const RUN_PROFILES = {
   opencode: {
     binary: "opencode",
@@ -361,6 +370,13 @@ export const RUN_PROFILES = {
     outputFormat: "json",
     permissionMode: "auto",
     modelFlag: "-m",
+    modeFlag: "--agent",
+    // Interactive handoff form (TTY): full TUI with the prompt auto-sent, which
+    // stays resident so the user can answer follow-up questions. NOT
+    // `run -i` — on opencode 1.17+ that flag is a no-op (the handler only
+    // reads the hidden `--mini`: "run --interactive exits as soon as the
+    // prompt's turn completes", anomalyco/opencode#41513).
+    interactive: { args: ["--prompt"] },
   },
   "claude-code": {
     binary: "claude",
@@ -370,6 +386,9 @@ export const RUN_PROFILES = {
     permissionMode: "allowed-tools",
     allowedTools: ["Read", "Edit", "Write", "Bash", "WebFetch"],
     modelFlag: "--model",
+    modeFlag: "--permission-mode",
+    // claude's interactive REPL takes the initial prompt as a positional arg.
+    interactive: { args: [] },
   },
   goose: {
     binary: "goose",
@@ -379,6 +398,8 @@ export const RUN_PROFILES = {
     permissionMode: "auto",
     envVars: { GOOSE_MODE: "auto" },
     modelFlag: null,
+    modeFlag: null,
+    interactive: null,
   },
   gemini: {
     binary: "gemini",
@@ -387,6 +408,18 @@ export const RUN_PROFILES = {
     outputFormat: "text",
     permissionMode: "sandbox",
     modelFlag: "-m",
+    modeFlag: "--approval-mode",
+    interactive: null,
+  },
+  codex: {
+    binary: "codex",
+    args: ["exec", "--json"],
+    promptPosition: "arg",
+    outputFormat: "json",
+    permissionMode: "sandbox",
+    modelFlag: "--model",
+    modeFlag: "--sandbox",
+    interactive: null,
   },
 };
 
@@ -681,6 +714,64 @@ export const EVENT_AGENTS = {
     },
   },
 };
+
+// ── MCP install ────────────────────────────────────────────────────────
+// Per-agent metadata for `adlc-cli mcp install`: .mcp.json is the single
+// standard declaration of MCP servers; each row describes how to materialise
+// those servers in the agent's own config shape.
+//   target_files   — candidate config paths, project-relative; first existing
+//                    wins (resolution lives in the install engine).
+//   section        — the key/section holding the server map in that file.
+//   format         — the entry shape to write: how the server block is
+//                    written for that target.
+//   var_syntax     — the string rewriting for ${VAR}: how ${VAR} is rendered.
+//                    Independent of format; the two can vary separately:
+//                      "passthrough" — unchanged (claude-code IS the standard)
+//                      "env-braces"  — {env:NAME} (opencode)
+//                      "env-vars"    — env_vars = ["NAME"], inherited from the
+//                                      parent process; no string substitution
+//                                      (codex)
+//                      "env-prefix"  — ${env:NAME} (cursor)
+//   has_off_switch — whether the target has a field that disables a server
+//                    (codex/opencode: enabled = false). claude-code has none:
+//                    `disabled` has no effect in .mcp.json and deleting the
+//                    entry is the only real off switch (design spec, settled
+//                    decision 3).
+export const MCP_AGENTS = {
+  "claude-code": {
+    target_files: [".mcp.json"],
+    section: "mcpServers",
+    format: "claude",
+    var_syntax: "passthrough",
+    has_off_switch: false,
+  },
+  opencode: {
+    target_files: ["opencode.json", ".opencode/opencode.json"],
+    section: "mcp",
+    format: "opencode",
+    var_syntax: "env-braces",
+    has_off_switch: true,
+  },
+  codex: {
+    target_files: [".codex/config.toml"],
+    section: "mcp_servers",
+    format: "codex",
+    var_syntax: "env-vars",
+    has_off_switch: true,
+  },
+  cursor: {
+    target_files: [".cursor/mcp.json"],
+    section: "mcpServers",
+    format: "cursor",
+    var_syntax: "env-prefix",
+    has_off_switch: false,
+  },
+};
+
+export function getMcpAgent(key) {
+  const normalized = key === "claude" ? "claude-code" : key;
+  return Object.hasOwn(MCP_AGENTS, normalized) ? MCP_AGENTS[normalized] : null;
+}
 
 export function getEventAgentConfig(agentKey) {
   return EVENT_AGENTS[agentKey] || null;

@@ -27,7 +27,12 @@ import { evaluateCondition } from "./expressions.mjs";
 import { readAgent } from "../utils/init-options.mjs";
 import { Lease } from "./lease.mjs";
 import { pushRunRef } from "./refs.mjs";
-import { getBuiltinWorkflow } from "./builtins.mjs";
+import { currentHeadSha, hasContextGate } from "./gate-context.mjs";
+import {
+  loadBundledCatalog,
+  getBundledWorkflowsDir,
+  fetchWorkflowFromUrl,
+} from "./catalog.mjs";
 
 export { RunStatus, StepStatus };
 export { Lease, LeaseHeldError } from "./lease.mjs";
@@ -61,6 +66,7 @@ export class WorkflowDefinition {
     // Defaults (keep malformed values intact until validateWorkflow reports them).
     this.defaultIntegration = "integration" in workflow ? workflow.integration : undefined;
     this.defaultModel = "model" in workflow ? workflow.model : undefined;
+    this.defaultMode = "mode" in workflow ? workflow.mode : undefined;
     const rawDefaultOptions = "options" in workflow ? workflow.options : undefined;
     this.defaultOptions = rawDefaultOptions === null || rawDefaultOptions === undefined ? {} : rawDefaultOptions;
 
@@ -72,34 +78,35 @@ export class WorkflowDefinition {
   }
 
   static fromYamlFile(path) {
+    let raw;
+    try {
+      raw = readFileSync(path, "utf-8");
+    } catch (exc) {
+      throw new Error(`Failed to read workflow file at ${path}: ${exc.message}`);
+    }
     let data;
     try {
-      data = parseYaml(readFileSync(path, "utf-8"));
+      data = parseYaml(raw);
     } catch (exc) {
       throw new Error(`Invalid YAML in ${path}: ${exc.message}`);
     }
     if (data === null || typeof data !== "object" || Array.isArray(data)) {
       throw new Error(`Workflow YAML must be a mapping, got ${Array.isArray(data) ? "list" : typeof data}.`);
     }
-    return new WorkflowDefinition(data, path);
+    return new WorkflowDefinition(data, path, raw);
   }
 
-  static fromString(content) {
-    const data = parseYaml(content);
+  static fromString(yamlString, sourcePath = null) {
+    let data;
+    try {
+      data = parseYaml(yamlString);
+    } catch (exc) {
+      throw new Error(`Invalid YAML: ${exc.message}`);
+    }
     if (data === null || typeof data !== "object" || Array.isArray(data)) {
       throw new Error(`Workflow YAML must be a mapping, got ${Array.isArray(data) ? "list" : typeof data}.`);
     }
-    return new WorkflowDefinition(data);
-  }
-
-  // Built-in (bundled) definition: parsed from the curated YAML string; the
-  // string is retained so run copies stay verbatim.
-  static fromBuiltin(id, yamlString) {
-    const def = WorkflowDefinition.fromString(yamlString);
-    if (def.id !== id) {
-      throw new Error(`Built-in workflow id mismatch: expected '${id}', definition declares '${def.id}'.`);
-    }
-    return new WorkflowDefinition(def.data, null, yamlString);
+    return new WorkflowDefinition(data, sourcePath, yamlString);
   }
 }
 
@@ -123,10 +130,19 @@ function dispatchDefaultErrors(definition) {
     );
   }
   if (definition.defaultModel !== undefined && definition.defaultModel !== null &&
-      typeof definition.defaultModel !== "string") {
+      typeof definition.defaultModel !== "string" &&
+      (typeof definition.defaultModel !== "object" || Array.isArray(definition.defaultModel))) {
     errors.push(
-      `'workflow.model' must be a string or null, got ${typeName(definition.defaultModel)} ` +
+      `'workflow.model' must be a string, mapping, or null, got ${typeName(definition.defaultModel)} ` +
       `(${repr(definition.defaultModel)}).`,
+    );
+  }
+  if (definition.defaultMode !== undefined && definition.defaultMode !== null &&
+      typeof definition.defaultMode !== "string" &&
+      (typeof definition.defaultMode !== "object" || Array.isArray(definition.defaultMode))) {
+    errors.push(
+      `'workflow.mode' must be a string, mapping, or null, got ${typeName(definition.defaultMode)} ` +
+      `(${repr(definition.defaultMode)}).`,
     );
   }
   if (typeof definition.defaultOptions !== "object" || definition.defaultOptions === null ||
@@ -440,6 +456,11 @@ export class RunState {
     this.updatedAt = now;
     this.logEntries = [];
     this.error = null;
+    // Run-level shas for context gates (ADR-391-amendment-gate-decision-
+    // context): HEAD at run start, and the most recent gate approval in time.
+    // Persisted only when set, so runs without context gates are unchanged.
+    this.runStartSha = null;
+    this.lastApprovedSha = null;
     // Async mutex serializing save()/appendLog file writes — the JS analogue
     // of upstream's _lock/_log_lock pair (single-threaded JS needs it only
     // across await points during concurrent fan-out).
@@ -487,6 +508,8 @@ export class RunState {
         updated_at: this.updatedAt,
         error: this.error,
       };
+      if (this.runStartSha !== null) stateData.run_start_sha = this.runStartSha;
+      if (this.lastApprovedSha !== null) stateData.last_approved_sha = this.lastApprovedSha;
       atomicWriteJson(join(this.runsDir, "state.json"), stateData);
       atomicWriteJson(join(this.runsDir, "inputs.json"), { inputs: this.inputs });
     });
@@ -580,6 +603,9 @@ export class RunState {
     state.createdAt = stateData.created_at ?? "";
     state.updatedAt = stateData.updated_at ?? "";
     state.error = stateData.error ?? null;
+    // Optional (absent in state files written before context gates existed).
+    state.runStartSha = typeof stateData.run_start_sha === "string" ? stateData.run_start_sha : null;
+    state.lastApprovedSha = typeof stateData.last_approved_sha === "string" ? stateData.last_approved_sha : null;
 
     const inputsPath = join(runsDir, "inputs.json");
     if (existsSync(inputsPath)) {
@@ -617,6 +643,10 @@ export class WorkflowEngine {
   constructor(projectRoot = null) {
     this.projectRoot = projectRoot ?? ".";
     this.onStepStart = null; // (stepId, label) => void
+    // Fired once a step reaches a terminal-ish state: (stepId, label, status,
+    // error). The CLI installs a step-tracker renderer here; the JSONL sink
+    // stays on onEvent.
+    this.onStepComplete = null; // (stepId, label, status, error) => void
     // Structured event sink (stepId-agnostic lifecycle telemetry): the CLI
     // installs a JSONL emitter under --format json; library default silent.
     this.onEvent = null; // (type, payload) => void
@@ -639,20 +669,42 @@ export class WorkflowEngine {
   }
 
   loadWorkflow(source) {
-    // Load from an installed ID (`.adlc/workflows/<id>/workflow.yml`), a
-    // bundled built-in (e.g. `factory`), or a local YAML path.
-    const path = resolve(source);
+    const strSource = String(source).trim();
+
+    // 1. HTTP/HTTPS URL
+    if (/^https?:\/\//i.test(strSource)) {
+      return (async () => {
+        const { yaml } = await fetchWorkflowFromUrl(strSource);
+        return WorkflowDefinition.fromString(yaml, strSource);
+      })();
+    }
+
+    // 2. Local YAML file path
+    const path = resolve(strSource);
     if (/\.(yml|yaml)$/i.test(path) && existsSync(path)) {
       return WorkflowDefinition.fromYamlFile(path);
     }
-    const installedPath = join(this.projectRoot, ".adlc", "workflows", String(source), "workflow.yml");
+
+    // 3. Workspace installed workflow (.adlc/workflows/<id>/workflow.yml)
+    const installedPath = join(this.projectRoot, ".adlc", "workflows", strSource, "workflow.yml");
     if (existsSync(installedPath)) {
       return WorkflowDefinition.fromYamlFile(installedPath);
     }
-    const builtin = getBuiltinWorkflow(String(source));
-    if (builtin !== null) {
-      return WorkflowDefinition.fromBuiltin(String(source), builtin.yaml);
+
+    // 4. Bundled catalog workflow
+    const catalog = loadBundledCatalog();
+    if (catalog.workflows && catalog.workflows[strSource]) {
+      const entry = catalog.workflows[strSource];
+      const bundledPath = join(getBundledWorkflowsDir(), entry.path.replace(/^workflows\//, ""));
+      if (existsSync(bundledPath)) {
+        return WorkflowDefinition.fromYamlFile(bundledPath);
+      }
     }
+    const directBundled = join(getBundledWorkflowsDir(), strSource, "workflow.yml");
+    if (existsSync(directBundled)) {
+      return WorkflowDefinition.fromYamlFile(directBundled);
+    }
+
     throw new Error(`Workflow not found: ${source}`);
   }
 
@@ -661,6 +713,9 @@ export class WorkflowEngine {
   }
 
   async execute(definition, inputs = null, runId = null, registry) {
+    if (definition && typeof definition.then === "function") {
+      definition = await definition;
+    }
     let effectiveRunId = runId;
     if (effectiveRunId === null || effectiveRunId === undefined) {
       const envRunId = (process.env.ADLC_WORKFLOW_RUN_ID || "").trim();
@@ -691,6 +746,9 @@ export class WorkflowEngine {
     const workflowDir = definition.sourcePath ? dirname(resolve(definition.sourcePath)) : null;
     state.workflowDir = workflowDir;
     state.status = RunStatus.RUNNING;
+    if (hasContextGate(definition.steps)) {
+      state.runStartSha = currentHeadSha(String(this.projectRoot));
+    }
     await state.save();
     this.emit("run_started", { run_id: state.runId, workflow_id: definition.id });
 
@@ -698,11 +756,13 @@ export class WorkflowEngine {
       inputs: resolvedInputs,
       defaultIntegration: definition.defaultIntegration ?? null,
       defaultModel: definition.defaultModel ?? null,
+      defaultMode: definition.defaultMode ?? null,
       defaultOptions: definition.defaultOptions,
       projectRoot: String(this.projectRoot),
       runId: state.runId,
       workflowDir,
     });
+    context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };
 
     try {
       await this.executeSteps(definition.steps, context, state, registry, 0, lease);
@@ -774,7 +834,7 @@ export class WorkflowEngine {
         definition = new WorkflowDefinition(raw);
       }
     } else {
-      definition = this.loadWorkflow(state.workflowId);
+      definition = await this.loadWorkflow(state.workflowId);
     }
 
     const dispatchErrors = dispatchDefaultErrors(definition);
@@ -792,12 +852,14 @@ export class WorkflowEngine {
       steps: state.stepResults,
       defaultIntegration: definition.defaultIntegration ?? null,
       defaultModel: definition.defaultModel ?? null,
+      defaultMode: definition.defaultMode ?? null,
       defaultOptions: definition.defaultOptions,
       projectRoot: String(this.projectRoot),
       runId: state.runId,
       workflowDir: state.workflowDir,
     });
     context.isResume = true;
+    context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };
 
     if (state.currentStepIndex >= definition.steps.length) {
       throw new Error(
@@ -884,6 +946,7 @@ export class WorkflowEngine {
         type: stepType,
         integration: result.output.integration ?? stepConfig.integration ?? context.defaultIntegration ?? null,
         model: result.output.model ?? stepConfig.model ?? context.defaultModel ?? null,
+        mode: result.output.mode ?? stepConfig.mode ?? context.defaultMode ?? null,
         options: result.output.options ?? stepConfig.options ?? {},
         input: result.output.input ?? stepConfig.input ?? {},
         output: result.output,
@@ -893,7 +956,37 @@ export class WorkflowEngine {
       this.recordResult(context, state, stepId, stepData);
 
       await state.appendLog({ event: "step_completed", step_id: stepId, status: result.status });
+      if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.approved_sha) {
+        // The most recent approval in time is the next context gate's `since`.
+        state.lastApprovedSha = result.output.approved_sha;
+        if (context.gateRun) context.gateRun.lastApprovedSha = result.output.approved_sha;
+        // Audit copy of the manifest the approver saw (ADR-391-amendment-
+        // gate-decision-context); approved_sha itself lives in step_results.
+        await state.appendLog({
+          event: "gate_approved",
+          step_id: stepId,
+          approved_sha: result.output.approved_sha,
+          since_sha: result.output.since_sha,
+          no_changes: result.output.no_changes,
+          truncated_count: result.output.truncated_count,
+          decisions: result.output.decisions,
+        });
+      } else if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.without_list === true) {
+        // Approved while the decision list was unavailable (S1): audited, but
+        // no sha is pinned, so last_approved_sha stays as it was.
+        await state.appendLog({
+          event: "gate_approved",
+          step_id: stepId,
+          without_list: true,
+          unavailable_reason: result.output.unavailable_reason ?? null,
+          unavailable_kind: result.output.unavailable_kind ?? null,
+          decisions: [],
+        });
+      }
       this.emit("step_completed", { run_id: state.runId, step_id: stepId, step_type: stepType, status: result.status });
+      if (this.onStepComplete !== null) {
+        this.onStepComplete(stepId, label, result.status, result.error);
+      }
 
       if (result.status === StepStatus.PAUSED) {
         state.status = RunStatus.PAUSED;
@@ -901,7 +994,23 @@ export class WorkflowEngine {
         if (stepType === "gate") {
           // Container gate identification (ADR-390-amendment): the gate
           // payload plus its normalized permission_request shape, reusing
-          // the agentic container's existing HITL pipeline verbatim.
+          // the agentic container's existing HITL pipeline verbatim. A
+          // context gate also carries its decision manifest; `message`
+          // already holds the rendered text, so relays need no change.
+          const manifest = "decisions" in result.output
+            ? {
+                decisions: result.output.decisions,
+                since_sha: result.output.since_sha,
+                no_changes: result.output.no_changes,
+                truncated_count: result.output.truncated_count,
+                // The head the shown list was built at. A reply resumes only
+                // while HEAD still equals it; if HEAD moved, the gate halts
+                // instead of silently re-pausing with a fresh view
+                // (ADR-391-amendment-3 §4).
+                head_sha: result.output.head_sha,
+                ...("mr_link" in result.output ? { mr_link: result.output.mr_link } : {}),
+              }
+            : {};
           this.emit("gate_paused", {
             run_id: state.runId,
             step_id: stepId,
@@ -909,6 +1018,7 @@ export class WorkflowEngine {
             options: result.output.options,
             on_reject: result.output.on_reject,
             verdict_input: stepConfig.verdict_input ?? null,
+            ...manifest,
           });
           this.emit("permission_request", {
             tool: "workflow-gate",
@@ -918,6 +1028,7 @@ export class WorkflowEngine {
             message: result.output.message,
             options: result.output.options,
             verdict_input: stepConfig.verdict_input ?? null,
+            ...manifest,
           });
         }
         return;
@@ -950,6 +1061,9 @@ export class WorkflowEngine {
         state.error = result.error;
         await state.appendLog({ event: "step_failed", step_id: stepId, error: result.error });
         await state.save();
+        if (this.onStepComplete !== null) {
+          this.onStepComplete(stepId, label, result.status, result.error);
+        }
         return;
       }
 

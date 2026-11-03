@@ -15,7 +15,7 @@ import { pushRunRef } from "./refs.mjs";
 // Returns the run state. Does NOT execute steps — the LLM executor drives.
 export async function stateStart({ projectRoot = process.cwd(), workflowSource, runId = null, inputs = {} } = {}) {
   const engine = new WorkflowEngine(projectRoot);
-  const definition = engine.loadWorkflow(workflowSource);
+  const definition = await engine.loadWorkflow(workflowSource);
   const errors = engine.validate(definition, STEP_REGISTRY);
   if (errors.length > 0) {
     throw new Error(`Workflow validation failed:\n  ${errors.join("\n  ")}`);
@@ -50,14 +50,14 @@ export async function stateStart({ projectRoot = process.cwd(), workflowSource, 
 }
 
 // Load a run + its workflow definition (frozen copy first) for helper ops.
-function loadForHelper(runId, projectRoot) {
+async function loadForHelper(runId, projectRoot) {
   const state = RunState.load(runId, projectRoot);
   const runCopy = join(state.runsDir, "workflow.yml");
   let definition;
   if (existsSync(runCopy)) {
     definition = WorkflowDefinition.fromYamlFile(runCopy);
   } else {
-    definition = new WorkflowEngine(projectRoot).loadWorkflow(state.workflowId);
+    definition = await new WorkflowEngine(projectRoot).loadWorkflow(state.workflowId);
   }
   return { state, definition, lease: new Lease(state.runsDir, { runId }) };
 }
@@ -81,7 +81,7 @@ export async function stateAdvance({
   output = null,
   error = null,
 } = {}) {
-  const { state, definition, lease } = loadForHelper(runId, projectRoot);
+  const { state, definition, lease } = await loadForHelper(runId, projectRoot);
   lease.renew();
 
   if (![RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.FAILED].includes(state.status)) {
@@ -126,7 +126,7 @@ export async function stateAdvance({
 // pause: park the run at a step (gate hit / human checkpoint). Releases the
 // lease — exit-and-resume semantics; any executor may pick the run up.
 export async function statePause({ projectRoot = process.cwd(), runId, stepId } = {}) {
-  const { state, definition, lease } = loadForHelper(runId, projectRoot);
+  const { state, definition, lease } = await loadForHelper(runId, projectRoot);
   lease.renew();
   const idx = stepIndex(definition, stepId);
   state.status = RunStatus.PAUSED;
@@ -140,7 +140,7 @@ export async function statePause({ projectRoot = process.cwd(), runId, stepId } 
 
 // fail: terminal failure with an error message. Releases the lease.
 export async function stateFail({ projectRoot = process.cwd(), runId, error } = {}) {
-  const { state, lease } = loadForHelper(runId, projectRoot);
+  const { state, lease } = await loadForHelper(runId, projectRoot);
   lease.renew();
   state.status = RunStatus.FAILED;
   state.error = error ?? "failed";

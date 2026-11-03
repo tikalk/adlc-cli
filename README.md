@@ -21,8 +21,15 @@ Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-te
 # Install skills + generate commands + wire events
 npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
 
-# Install skills AND configure team-ai-directives (runs /team-setup headlessly)
+# Install skills AND configure team-ai-directives
+# (opens the agent's interactive UI on /team-setup when run in a terminal;
+#  non-TTY runs refuse unless given --directives, instead of hanging a
+#  headless agent on the skill's interactive mode selection)
 npx adlc-cli team setup tikalk/adlc-team-skills -a opencode
+
+# Headless/deterministic: wire a known team-ai-directives path — no agent
+# session, validates structure then writes .adlc/init-options.json
+npx adlc-cli team setup tikalk/adlc-team-skills -a opencode --skip-skills --directives ./team-ai-directives
 
 # Works with any skills repo — events auto-skip if no .events.json
 npx adlc-cli skills add mattpocock/skills -a claude-code --no-events
@@ -53,12 +60,21 @@ npx adlc-cli version
 
 | Command | Description |
 |----------|-------------|
-| `team setup <source> -a <agent>` | Install skills + write `.adlc/init-options.json` + run `/team-setup` headlessly (`--skip-skills` to skip installation) |
-| `team update` | `git pull` the team-ai-directives repo + re-install skills from source + `team repair --update-confidence` |
+| `team setup <source> -a <agent> [--directives <path>]` | Install skills + write `.adlc/init-options.json` + run `mcp install` + run `/team-setup` (interactive UI on a TTY; non-TTY refuses unless `--directives` wires a known path deterministically; `--skip-skills` to skip installation) |
+| `team update` | `git pull` the team-ai-directives repo + re-install skills from source + run `mcp install` + `team repair --update-confidence` |
 | `team repair [--update-confidence\|--validate-drafts\|--build-to-delete]` | Run `/team-repair` headlessly (agent-driven), or the deterministic `setup-team.sh` path for `--update-confidence` / `--validate-drafts` |
 
 The `team` tree reads its targets from `.adlc/init-options.json` (see below);
 `-a` defaults to the configured agent.
+
+Both `team setup` and `team update` chain `mcp install` for the configured
+agent before the agent session (`team setup` without `--directives`) or the
+repair pass (`team update`); `--directives` wiring runs the chain after the
+wire, since the gap report reads the wired directives — a named agent never
+starts without its MCP servers. If the
+chained install fails (a refused entry, a target-level error, a corrupt
+`.mcp.json`), the command aborts with exit 1; its copy-once gap report runs
+chained too (see [MCP](#mcp)).
 
 ### Workspace
 
@@ -73,7 +89,44 @@ Workspace file resolution: explicit argument → `ADLC_WORKSPACE_FILE` env →
 `workspace.git[]` (repo/path/branch/ref), `workspace.dirs[]`, `workspace.init`,
 `workspace.link`, `skills.sources[]`, `commands[]`, `goal`. Deterministic
 steps (git, dirs) run directly; agent-led steps go through `agent run`.
-`--dry-run` prints the plan without executing.
+`--dry-run` prints the plan without executing on the local path. The remote
+provider path refuses `--dry-run` rather than provisioning a workspace just to
+preview it.
+
+### Provider transport (remote workspaces)
+
+`workspace setup`, `agent run`, `workflow run`, and `workflow resume` accept
+`--provider coder` to run the work on a remote workspace over the SSH-based
+provider transport.
+
+```bash
+# provision (or reuse) a remote workspace from an explicit workspace file.
+# The lane fixture tests/e2e/profiles/provider-lane-workspace.yml declares the per-run values it needs;
+# every ${VAR} it references must be supplied, or setup fails fast naming it:
+#   WORKSPACE_NAME  the workspace name  (e.g. repo-mission-42)
+#   BRANCH          the branch to clone
+WORKSPACE_NAME=repo-mission-42 BRANCH=main adlc-cli workspace setup tests/e2e/profiles/provider-lane-workspace.yml --provider coder
+
+# run a step on that workspace
+adlc-cli workflow run factory --input run_id=r-7 --provider coder --workspace repo-mission-42
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--provider coder` | Route through the provider transport (SSH) instead of running locally. An unknown value is **refused** (never silently run locally) |
+| `--workspace <name>` | Target workspace. `workspace setup` uses the workspace file's name (a conflicting `--workspace` is refused); `agent run` / `workflow run` reuse the handle persisted at `.adlc/workspaces/<name>.json`. Without `--workspace`, they use the workspace file's name and **refuse to provision a second machine** when no handle exists; an explicit `--workspace <name>` targets that workspace and provisions it if no handle exists |
+
+Contract:
+
+- **Location-free workspace files** — a `provider:` key (at any level) inside a workspace file is **rejected**, never ignored; the provider is selected only by the flag.
+- **`${VAR}` expansion, fail-fast** — a missing or empty variable fails with its name. Process-env values expand in place; values sourced from `secrets.env`/Docker secrets are never inlined into the config — they travel only in the transport's `vars` channel, referenced-only. A secret-sourced variable may not *name* a workspace (it would leak into the handle filename).
+- **Secrets env-only on the wire** — `secrets.env` (gitignored) → Docker secrets → process env. Referenced values are forwarded to the remote; the outbound stream is scrubbed (referenced secret values, `--input` values and the task text never reach the terminal verbatim). On the remote, `workspace setup` deliberately persists the referenced vars at `$HOME/.adlc/secrets.env` (mode 0600 before the write; the step fails closed if the mode cannot be enforced) so the developer's later session inherits them; that is at-rest storage on a developer-owned workspace, not an env-only-at-rest claim.
+- **Flag fidelity** — the provider route forwards `agent run` flags (`-a`, `--model`, `--format`, `--cwd`, `--timeout`, `--require-approval`), `workflow run` execution flags (`--format`, `--headless`), and `workflow resume`'s `--format`; `--input` values remain in their base64-safe channel. A remote `workspace setup` also receives the operator's `-a` selection.
+- **Recursion guard** — at most 2 hops (`ADLC_HOP_DEPTH`); a malformed, negative or whitespace depth fails closed.
+- **Transport timeout** — remote SSH transport has a default 15-minute cap (`ADLC_TRANSPORT_TIMEOUT_MS` in milliseconds); set a higher value for long-running workflows.
+- **Loud failure** — a remote non-zero exit (its code is propagated), a corrupt handle, a missing handle, an invalid workspace file, or a transport that returns no result exits non-zero with the remote's stderr. There is no silent fallback.
+
+The live SSH transport is the default: `--provider coder` provisions or reuses a real Coder workspace and runs the step over `coder ssh`. The mock transport is opt-in for offline contract tests via `ADLC_CODER_MOCK=1` (or an injected `globalThis.__ADLC_CODER_TRANSPORT__`); there is no `--live` flag and `ADLC_CODER_LIVE` is not read. The default is deliberate: a command that asks for a remote workspace must never silently get a mock.
 
 ### Agent execution
 
@@ -145,12 +198,97 @@ Known constraint (inherited upstream): a gate nested inside
 step and its nested body on resume. Keep gates at the top level, or bind a
 `verdict_input` on the gate.
 
+**Agent-step run context and output (ADR-444).** `command` and `prompt` steps
+run the agent with these environment variables:
+
+- `ADLC_RUN_ID` and `ADLC_STEP_ID`.
+- `ADLC_STEP_OUTPUT`, the path `.adlc/workflows/runs/<run_id>/steps/<step_id>.output.json`. Any leftover file there is deleted before the step starts.
+- `ADLC_ISSUE_REF`, only when the run has an `issue_ref` input.
+
+A step can return a few named strings by writing a JSON object to
+`ADLC_STEP_OUTPUT`. The rules:
+
+- At most 16 fields.
+- Keys must match `^[a-z][a-z0-9_]{0,39}$`.
+- Values must be strings of at most 2048 characters.
+- No reserved keys (`stdout`, `exit_code`, …).
+
+After a successful exit, these fields are merged into the step output, so a
+later step or gate can read them, for example
+`context.link: "{{ steps.intent-product.output.mr_url }}"`. If any field breaks
+a rule, the file is ignored with a log line. Stdout is never parsed for
+results.
+
+### MCP
+
+| Command | Description |
+|---------|-------------|
+| `mcp install [DIR] --agent NAME` | Write each named agent's own MCP config from the project's `.mcp.json` |
+
+`mcp install` reads `.mcp.json` (the single standard declaration of MCP
+servers) and materialises its `mcpServers` into each named agent's own config
+shape: `opencode.json` (`mcp`), `.cursor/mcp.json` (`mcpServers`) and
+`.codex/config.toml` (`[mcp_servers.*]`); `claude-code` is a no-op — the
+standard is already its file. A name present in `.mcp.json` is tool-owned and
+regenerated on each run; the off switch is `disabled: true` in `.mcp.json`
+itself, which the tool never rewrites.
+
+Precondition: `team setup` has recorded an agent in `.adlc/init-options.json`,
+or pass `--agent`/`-a` (repeatable) explicitly. Supported agents:
+`claude-code`, `opencode`, `codex`, `cursor`.
+
+Exit contract: `0` only when every named agent is configured; `1` otherwise —
+target-level errors and per-server refusals both fail the run (an entry that
+cannot be fully expressed is never half-written). After the install, a
+copy-once gap report compares the team's `.mcp.json` against the project's and
+prints drift as warnings on stderr; it never changes the exit code. JSON
+targets are normalised to 2-space indent on first write.
+
+`team setup` and `team update` chain this command for the configured agent;
+the chained run has the same behavior — gap report included — and an MCP
+failure aborts the team command with exit 1.
+
 ### Top-level
 
 | Command | Description |
 |---------|-------------|
 | `version` | Print installed version |
 | `help` | Show full help |
+
+## Terminal output
+
+Human-facing output uses a shared UI layer (`src/ui/`) with the same visual
+language as the `specify` CLI: a cyan accent, bordered panels, aligned tables
+and a step tree for workflow runs. The package stays **dependency-free** — the
+layer is hand-rolled, so `npx adlc-cli` installs instantly and the npm
+provenance surface is unchanged.
+
+```
+▸ OpenCode (opencode)
+  → npx --yes skills@latest add tikalk/adlc-team-skills -a opencode
+  ✓ Found 12 skill(s) in .agents/skills
+  ✓ Generated 12 command file(s) in .opencode/command
+```
+
+### Color control
+
+| Mechanism | Effect |
+|-----------|--------|
+| TTY detection | Color is on automatically in a terminal, off when piped |
+| `NO_COLOR=1` | Disables color (any value; [no-color.org](https://no-color.org)) |
+| `FORCE_COLOR=1` | Forces color on, even when piped |
+| `--color` | Forces color on for this invocation |
+| `--no-color` | Disables color for this invocation |
+| `--format json` | **Always** disables color — the JSONL stream is a machine contract (ADR-406) |
+
+The `workflow state` helper family is also always unstyled: it is the
+LLM-executor's machine API (ADR-395).
+
+### Untrusted output is sanitized
+
+Repo URLs, step labels, agent names and file contents are stripped of control
+characters before they are printed, so a hostile value cannot inject ANSI
+sequences or rewrite the terminal.
 
 ## `.adlc/init-options.json`
 

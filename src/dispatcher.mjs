@@ -24,7 +24,7 @@
 //   2. Body path (superpowers model): output the skill's markdown body
 //      (frontmatter stripped). LLM-interpreted orientation/instructions.
 
-import { readFileSync, readSync, existsSync, readdirSync, statSync, accessSync, constants, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, readSync, existsSync, readdirSync, statSync, accessSync, constants, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isatty } from "node:tty";
 import { join, resolve, dirname, sep, delimiter, relative, isAbsolute, posix, win32 } from "node:path";
@@ -304,6 +304,15 @@ function resolveScriptArgv(scriptsField, skillDir, projectRoot) {
     // "pwsh" argv, which would make spawnSync raise ENOENT (spec-kit #4340).
     const launcher = findLauncher(["pwsh", "powershell"]);
     if (!launcher) return null;
+    // Windows PowerShell 5.1 reads BOM-less .ps1 files using the system ANSI
+    // codepage, so multi-byte UTF-8 decodes to arbitrary characters (an em
+    // dash becomes a curly quote = string delimiter → parse-error spam).
+    // Self-heal in place before launching 5.1; pwsh reads BOM-less files
+    // correctly, so skip when that is the launcher. Best-effort — a
+    // read-only checkout simply proceeds as before.
+    if (process.platform === "win32" && /powershell/i.test(launcher)) {
+      ensurePs1Bom(scriptPath);
+    }
     return [launcher, "-File", scriptPath, ...rest];
   }
   // sh: direct on POSIX; bash launcher on Windows.
@@ -313,6 +322,25 @@ function resolveScriptArgv(scriptsField, skillDir, projectRoot) {
     return ["bash", scriptPath.replace(/\\/g, "/"), ...rest];
   }
   return [scriptPath, ...rest];
+}
+
+// Best-effort in-place UTF-8 BOM for a non-ASCII .ps1 about to be launched
+// with Windows PowerShell 5.1. Self-contained (dispatcher ships standalone
+// and may only import node builtins); mirrors src/utils/encoding.mjs.
+function ensurePs1Bom(file) {
+  try {
+    const buf = readFileSync(file);
+    if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return;
+    if (!buf.some((b) => b > 0x7f)) return; // pure ASCII — safe under any ANSI codepage
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(buf);
+    } catch {
+      return; // not UTF-8 — never rewrite blindly
+    }
+    writeFileSync(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), buf]));
+  } catch {
+    // read-only checkout or I/O error — proceed unchanged
+  }
 }
 
 function parseScriptsBlock(raw) {

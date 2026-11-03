@@ -1,6 +1,6 @@
 {
   "name": "adlc-cli",
-  "version": "2.3.0",
+  "version": "2.7.0",
   "description": "Dual-mode CLI for coding agents: skill management + headless task execution + the workflow engine (dual-executor: skills in-session, CLI headless — ADR-395).",
   "type": "module",
   "bin": {
@@ -8,7 +8,7 @@
     "adlc-skills-cli": "bin/adlc-skills-cli.mjs"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test && node tests/e2e-node-gate.mjs --skip-agent",
     "test:evals": "node --test \"evals/opencode-session-end/tests/*.mjs\"",
     "test:all": "npm test && npm run test:evals",
     "prepublishOnly": "npm test"
@@ -19,7 +19,8 @@
   "files": [
     "bin/",
     "src/",
-    "shim/"
+    "shim/",
+    "workflows/"
   ],
   "keywords": [
     "ai",

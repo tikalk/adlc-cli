@@ -85,15 +85,16 @@ assert_exists "$WS/.agents/dispatcher.mjs"
 assert_exists "$WS/.opencode/plugins/adlc-skills-events.ts"
 pass "skills installed from remote GitHub source + events wired"
 
-# team setup command ran — deterministic part (agent + skills_source) configured.
-# NOTE: team_ai_directives wiring requires the interactive /team-setup skill
-# (mode selection) — headless runs can't answer it. Follow-up: non-interactive
-# mode for team setup when the directives path is known (e.g. from the
-# workspace file's git section).
+# team setup command ran — deterministic wiring included.
+# The workspace file passes --directives <cloned path>, so wiring needs no
+# agent session (interactive /team-setup cannot answer mode selection
+# headlessly — ADR-386-amendment follow-up, now implemented).
 [ -f "$WS/.adlc/init-options.json" ] || fail "init-options.json missing (team setup did not run)"
 grep -q '"agent"' "$WS/.adlc/init-options.json" && pass "init-options has agent" || fail "init-options missing agent"
 grep -q '"skills_source"' "$WS/.adlc/init-options.json" && pass "init-options has skills_source" \
   || fail "init-options missing skills_source"
+grep -q '"team_ai_directives"' "$WS/.adlc/init-options.json" && pass "init-options has team_ai_directives (deterministic wire)" \
+  || fail "init-options missing team_ai_directives (wire did not run)"
 
 # Brownfield: pre-cloned repo untouched by clone phase, discovered + linked
 [ "$( git -c safe.directory='*' -C "$WS/hermes-project" rev-parse HEAD )" = "$HERMES_HEAD" ] \

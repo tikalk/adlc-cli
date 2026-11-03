@@ -5,10 +5,25 @@ import { classifyAgentExit } from "../exit-codes.mjs";
 import { runTask } from "../run.mjs";
 import { normalizeLine } from "../run-events.mjs";
 import { renderTextEvent, handleInlineHitl } from "../render.mjs";
+import { appendFileSync } from "node:fs";
+import { spawnCompat } from "../utils/spawn.mjs";
+import { out, err, error, table, tint, combine, ACCENT } from "../ui/index.mjs";
 
 // ── run ────────────────────────────────────────────────────────────────
 export async function cmdAgentRun(runArgs) {
-  const { agent, model, format, requireApproval, prompt: rawPrompt, cwd, timeout } = parseRunArgs(runArgs);
+  // Mock-agent seam (e2e hardening): when ADLC_MOCK_AGENT is set, record args
+  // to a stub file and return 0 without spawning a live agent. Lets
+  // workspace agent-led paths (init/link, commands, goal) run deterministically.
+  if (process.env.ADLC_MOCK_AGENT && process.env.ADLC_MOCK_AGENT !== "0") {
+    const file =
+      process.env.ADLC_MOCK_AGENT_FILE ||
+      process.env.ADLC_AGENT_STUB_FILE ||
+      "./mock-agent.log";
+    appendFileSync(file, JSON.stringify({ args: runArgs }) + "\n");
+    return 0;
+  }
+
+  const { agent, model, mode, format, requireApproval, prompt: rawPrompt, cwd, timeout } = parseRunArgs(runArgs);
 
   let prompt = rawPrompt;
   if (prompt === "__STDIN__") {
@@ -20,15 +35,15 @@ export async function cmdAgentRun(runArgs) {
   }
 
   if (!prompt) {
-    console.error("Error: task is required (pass a string, or '-' for stdin)");
+    error("task is required (pass a string, or '-' for stdin)");
     return 1;
   }
 
   let profile;
   try {
     profile = getRunProfile(agent);
-  } catch (err) {
-    console.error(err.message);
+  } catch (cause) {
+    err(cause.message);
     return 1;
   }
 
@@ -37,6 +52,7 @@ export async function cmdAgentRun(runArgs) {
     profile,
     prompt,
     model,
+    mode,
     requireApproval,
     cwd: cwd ?? process.cwd(),
     onLine: async (line) => {
@@ -55,7 +71,7 @@ export async function cmdAgentRun(runArgs) {
 
   if (timeout) {
     timeoutHandle = setTimeout(() => {
-      console.error(`[run] timeout: killing agent after ${timeout}s`);
+      err(combine(tint("[run]", "gray"), ' ', tint(`timeout: killing agent after ${timeout}s`, "yellow")));
       kill("SIGTERM");
     }, timeout * 1000);
   }
@@ -65,9 +81,47 @@ export async function cmdAgentRun(runArgs) {
   return classifyAgentExit({ code, signal }).exitCode;
 }
 
+// ── interactive (TTY) handoff ──────────────────────────────────────────
+// Launch the agent's interactive UI with the prompt seeded, instead of a
+// headless one-shot run. Skills that are interactive wizards (e.g.
+// /team-setup: mode selection + confirm) cannot complete headlessly — the
+// model prints the question and the run exits.
+// Returns the exit code, or null when the profile has no interactive form
+// (caller falls back to headless).
+export async function runAgentInteractive(agentKey, prompt, { cwd } = {}) {
+  let profile;
+  try {
+    profile = getRunProfile(agentKey);
+  } catch (cause) {
+    err(cause.message);
+    return 1;
+  }
+  const spec = profile.interactive;
+  if (!spec) return null;
+
+  const env = { ...process.env, PWD: cwd ?? process.cwd() };
+  if (profile.envVars) Object.assign(env, profile.envVars);
+
+  return new Promise((resolvePromise) => {
+    const child = spawnCompat(profile.binary, [...(spec.args ?? []), prompt], {
+      cwd: cwd ?? process.cwd(),
+      env,
+      stdio: "inherit",
+    });
+    child.on("error", (cause) => {
+      err(combine(tint("[interactive]", "gray"), ' ', tint("spawn error:", "red"), ' ', cause.message));
+      resolvePromise(1);
+    });
+    child.on("exit", (code, signal) => {
+      resolvePromise(classifyAgentExit({ code, signal }).exitCode);
+    });
+  });
+}
+
 function parseRunArgs(argv) {
   let agent = "opencode";
   let model = null;
+  let mode = null;
   let format = "text";
   let requireApproval = null;
   let prompt = null;
@@ -80,6 +134,8 @@ function parseRunArgs(argv) {
       agent = argv[++i];
     } else if (arg === "--model") {
       model = argv[++i];
+    } else if (arg === "--mode") {
+      mode = argv[++i];
     } else if (arg === "--format") {
       format = argv[++i];
     } else if (arg === "--require-approval") {
@@ -95,23 +151,44 @@ function parseRunArgs(argv) {
     }
   }
 
-  return { agent, model, format, requireApproval, prompt, cwd, timeout };
+  return { agent, model, mode, format, requireApproval, prompt, cwd, timeout };
 }
 
 // ── list ───────────────────────────────────────────────────────────────
 export function cmdAgentList() {
-  console.log("Supported agents:\n");
-  console.log("Key                 Name                Commands dir                    Format   Events  Run   Npx agent");
-  console.log("─────────────────── ─────────────────── ─────────────────────────────── ──────── ─────── ───── ─────────────");
-
+  const rows = [];
   for (const [key, agent] of Object.entries(AGENTS)) {
     if (key === "generic") continue;
     const hasRun = RUN_PROFILES[key] ? "yes" : "—";
-    console.log(
-      `${key.padEnd(20)}${agent.name.padEnd(20)}${(agent.commands_dir || "—").padEnd(31)}${agent.format.padEnd(9)}${(agent.events ? "yes" : "no").padEnd(8)}${hasRun.padEnd(6)}${agent.npx_agent || "universal"}`,
-    );
+    rows.push([
+      tint(key, ACCENT),
+      agent.name,
+      agent.commands_dir || "—",
+      agent.format,
+      agent.events ? "yes" : "no",
+      hasRun,
+      agent.npx_agent || "universal",
+    ]);
   }
 
-  console.log("\nUse -a <key> with 'skill add' or 'agent run'.");
+  out("");
+  out(
+    table({
+      title: "Supported agents",
+      columns: [
+        { header: "Key", style: ACCENT },
+        { header: "Name" },
+        { header: "Commands dir" },
+        { header: "Format", optional: true },
+        { header: "Events" },
+        { header: "Run" },
+        { header: "Npx agent", optional: true },
+      ],
+      rows,
+    }),
+  );
+  out("");
+  out(tint("Use -a <key> with 'skills add' or 'agent run'.", "gray"));
+  out("");
   return 0;
 }

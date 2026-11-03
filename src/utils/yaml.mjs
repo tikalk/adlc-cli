@@ -44,11 +44,19 @@ export function parseYaml(text) {
       const value = match[2].trim();
       pos++;
 
-      if (value === "" || value === "|" || value === ">") {
-        const folded = value === "|" || value === ">";
+      // Block-scalar header ("|" / ">") with optional chomping flag and
+      // optional trailing comment ("goal: | # keep newlines").
+      const blockHeader = value.match(/^([|>])([+-]?)\s*(#.*)?$/);
+      // A value that is only a comment ("workspace: # block") behaves like an
+      // empty value: nested block below, or null when nothing follows.
+      const isEmpty = value === "" || /^#.*$/.test(value);
+      if (isEmpty || blockHeader) {
+        const folded = !!blockHeader;
         if (pos < lines.length && lines[pos].indent > indent) {
-          if (folded && !isMappingLine(lines[pos].content)) {
-            result[key] = parseFolded(indent, value === "|");
+          // An explicit "|" / ">" header is always a scalar — even when the
+          // content looks like a mapping ("key: value" inside a goal).
+          if (folded) {
+            result[key] = parseFolded(indent, blockHeader[1] === "|");
           } else {
             result[key] = parseBlock(lines[pos].indent);
           }
@@ -107,11 +115,19 @@ export function parseYaml(text) {
     return result;
   }
 
-  function isMappingLine(content) {
-    return KEY_FIRST_RE.test(content);
-  }
-
   function parseScalar(value) {
+    // Quoted value with an optional trailing comment ('"1.0" # version'):
+    // the comment is outside the quotes, so return the inner string.
+    const quote = value[0];
+    if (quote === '"' || quote === "'") {
+      const close = value.indexOf(quote, 1);
+      if (close !== -1) {
+        const rest = value.slice(close + 1);
+        if (rest.trim() === "" || /^\s+#/.test(rest)) {
+          return value.slice(1, close);
+        }
+      }
+    }
     const isQuoted =
       (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
       (value.startsWith("'") && value.endsWith("'") && value.length >= 2);

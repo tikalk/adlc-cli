@@ -20,6 +20,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      # `npm test` includes the workspace shell E2E (--skip-agent), which
+      # uses the vendored skill fixture (tests/fixtures/skills-src).
       - name: Run tests
         run: npm test
 

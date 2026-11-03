@@ -3,16 +3,17 @@
 // Ported from agentic-container/packages/runtime/src/engine/agent-registry.ts
 // and process.ts (invocation + spawn half; normalization lives in run-events.mjs).
 
-import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { spawnCompat, isWindows } from "./utils/spawn.mjs";
 import { getRunProfile } from "./registry.mjs";
+import { err, tint, combine } from "./ui/index.mjs";
 
 export function buildRunCommand(agentKey, prompt, opts = {}) {
   const profile = getRunProfile(agentKey);
   return buildCommandFromProfile(profile, prompt, opts);
 }
 
-function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {}) {
+function buildCommandFromProfile(profile, prompt, { model, mode, requireApproval } = {}) {
   const args = [...profile.args];
 
   if (requireApproval?.length > 0) {
@@ -22,6 +23,17 @@ function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {
 
   if (model && profile.modelFlag) {
     args.push(profile.modelFlag, model);
+  }
+
+  // Execution mode (plan vs build): translated per agent by the profile.
+  // An agent with no modeFlag cannot honour the request — fail loudly rather
+  // than silently running in the wrong mode.
+  if (mode) {
+    if (profile.modeFlag) {
+      args.push(profile.modeFlag, mode);
+    } else {
+      throw new Error(`agent has no execution-mode flag; cannot set mode ${JSON.stringify(mode)}`);
+    }
   }
 
   if (profile.promptPosition === "arg") {
@@ -38,8 +50,10 @@ function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {
   return { cmd: profile.binary, args, env };
 }
 
-export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }) {
-  const { cmd, args, env } = buildCommandFromProfile(profile, prompt, { model, requireApproval });
+export function runTask({ profile, prompt, model, mode, requireApproval, cwd, onLine, env: extraEnv }) {
+  const { cmd, args, env } = buildCommandFromProfile(profile, prompt, { model, mode, requireApproval });
+  // Caller-supplied variables (e.g. the workflow run context, ADR-444).
+  if (extraEnv) Object.assign(env, extraEnv);
 
   const childCwd = cwd ?? process.cwd();
   // Sync PWD with the spawn cwd — agents that resolve their project directory
@@ -47,11 +61,17 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
   // (docker WORKDIR) instead of the requested workspace.
   env.PWD = childCwd;
 
-  const child = spawn(cmd, args, {
+  // Windows: agent binaries are .cmd/.bat npm shims (claude, gemini, ...) —
+  // CreateProcess can't exec them directly (ENOENT); spawnCompat routes through
+  // cmd.exe there. POSIX stays a direct exec.
+  // detached is POSIX-only: it powers the kill(-pid) group signal below, but on
+  // Windows shell:true + detached:true (DETACHED_PROCESS) drops the child's
+  // stdout pipe — and negative-pid kills never worked there anyway.
+  const child = spawnCompat(cmd, args, {
     cwd: childCwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
+    detached: !isWindows,
   });
 
   const promise = new Promise((resolve) => {
@@ -65,7 +85,7 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
       rl.on("line", (line) => {
         lineQueue = lineQueue
           .then(() => onLine(line))
-          .catch((err) => console.error("[run] line error:", err));
+          .catch((cause) => err(combine(tint("[run]", "gray"), ' ', tint("line error:", "red"), ' ', cause)));
       });
     }
 
@@ -73,10 +93,10 @@ export function runTask({ profile, prompt, model, requireApproval, cwd, onLine }
       child.stderr.on("data", (chunk) => process.stderr.write(chunk));
     }
 
-    child.on("error", (err) => {
+    child.on("error", (cause) => {
       if (resolved) return;
       resolved = true;
-      console.error(`[run] spawn error: ${err.message}`);
+      err(combine(tint("[run]", "gray"), ' ', tint("spawn error:", "red"), ' ', cause.message));
       resolve({ code: 1, signal: null });
     });
 

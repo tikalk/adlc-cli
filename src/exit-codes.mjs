@@ -10,7 +10,7 @@ export function classifyAgentExit({ code, signal } = {}) {
   return { exitCode: 10 };
 }
 
-// Deliberately no import of RunStatus (src/factory/base.mjs) to keep this
+// Deliberately no import of RunStatus (src/workflow/base.mjs) to keep this
 // file import-free per the header contract — but that means these case
 // labels must be hand-kept in sync with RunStatus's actual *lowercase*
 // values ("completed", "paused", "failed", "aborted"). They previously

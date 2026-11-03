@@ -466,3 +466,31 @@ steps: []
     cleanup();
   }
 });
+
+test("command step falls back to .adlc/init-options.json agent when neither step nor workflow sets integration", async () => {
+  const { dir, cleanup } = makeProject();
+  try {
+    mkdirSync(join(dir, ".adlc"), { recursive: true });
+    writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "nonexistent-test-agent" }));
+    const path = writeWorkflow(dir, `
+schema_version: "1.0"
+workflow:
+  id: no-integration-wf
+  name: No Integration
+  version: "1.0.0"
+steps:
+  - id: run-it
+    type: command
+    command: some-skill
+`);
+    const engine = new WorkflowEngine(dir);
+    const state = await engine.execute(engine.loadWorkflow(path), {}, null, STEP_REGISTRY);
+    assert.equal(state.status, RunStatus.FAILED);
+    // Proves readAgent() was consulted (agentKey resolved to the configured
+    // name) rather than the old "no agent/integration configured" failure
+    // (agentKey stayed null) -- the profile itself doesn't need to exist.
+    assert.match(state.error, /unknown agent\/integration "nonexistent-test-agent"/);
+  } finally {
+    cleanup();
+  }
+});
