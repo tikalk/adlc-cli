@@ -411,6 +411,16 @@ export const RUN_PROFILES = {
     modeFlag: "--approval-mode",
     interactive: null,
   },
+  codex: {
+    binary: "codex",
+    args: ["exec", "--json"],
+    promptPosition: "arg",
+    outputFormat: "json",
+    permissionMode: "sandbox",
+    modelFlag: "--model",
+    modeFlag: "--sandbox",
+    interactive: null,
+  },
 };
 
 export function getRunProfile(key) {

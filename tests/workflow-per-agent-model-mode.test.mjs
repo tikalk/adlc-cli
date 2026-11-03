@@ -31,6 +31,12 @@ test("buildRunCommand: gemini with mode maps to --approval-mode", () => {
   assert.equal(args[args.indexOf("--approval-mode") + 1], "yolo");
 });
 
+test("buildRunCommand: codex with mode maps to --sandbox", () => {
+  const { args } = buildRunCommand("codex", "hello", { mode: "read-only" });
+  assert.ok(args.includes("--sandbox"), "must include --sandbox flag");
+  assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
+});
+
 test("buildRunCommand: agent without modeFlag throws descriptive error", () => {
   assert.throws(
     () => buildRunCommand("goose", "hello", { mode: "plan" }),

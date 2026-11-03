@@ -93,7 +93,7 @@ export function printCliHelp() {
   out(
     section("Agent Run Flags", [
       ...pairs([
-        ["-a <agent>", "Agent: opencode | claude-code | goose | gemini (default: opencode)"],
+        ["-a <agent>", "Agent: opencode | claude-code | goose | gemini | codex (default: opencode)"],
         ["--model <id>", "Model id passed to the agent CLI"],
         ["--mode <mode>", "Execution mode passed to the agent CLI (e.g. plan vs build)"],
         ["--format <fmt>", "Output: text (default, human) | json (normalized JSONL)"],
