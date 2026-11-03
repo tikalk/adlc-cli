@@ -353,6 +353,15 @@ export function resolveNpxAgent(agent) {
 // Only agents with a run profile can be used with `adlc-cli run`.
 // v1: the 4 agents supported by the Agentic Container.
 
+// Run profiles are per-agent: the same abstract run setting maps to a
+// different CLI flag (or no flag at all) on each agent.
+//   - `modelFlag`  — `--model`-style flag the model id is passed with.
+//   - `modeFlag`   — flag selecting the agent's execution mode (plan vs build
+//                    work). opencode picks its agent (`--agent plan`), claude
+//                    picks its permission mode (`--permission-mode plan`),
+//                    gemini its approval mode (`--approval-mode ...`). A null
+//                    modeFlag means the agent has no such switch: requesting a
+//                    mode for it fails the run instead of being dropped.
 export const RUN_PROFILES = {
   opencode: {
     binary: "opencode",
@@ -361,6 +370,7 @@ export const RUN_PROFILES = {
     outputFormat: "json",
     permissionMode: "auto",
     modelFlag: "-m",
+    modeFlag: "--agent",
     // Interactive handoff form (TTY): full TUI with the prompt auto-sent, which
     // stays resident so the user can answer follow-up questions. NOT
     // `run -i` — on opencode 1.17+ that flag is a no-op (the handler only
@@ -376,6 +386,7 @@ export const RUN_PROFILES = {
     permissionMode: "allowed-tools",
     allowedTools: ["Read", "Edit", "Write", "Bash", "WebFetch"],
     modelFlag: "--model",
+    modeFlag: "--permission-mode",
     // claude's interactive REPL takes the initial prompt as a positional arg.
     interactive: { args: [] },
   },
@@ -387,6 +398,7 @@ export const RUN_PROFILES = {
     permissionMode: "auto",
     envVars: { GOOSE_MODE: "auto" },
     modelFlag: null,
+    modeFlag: null,
     interactive: null,
   },
   gemini: {
@@ -396,6 +408,17 @@ export const RUN_PROFILES = {
     outputFormat: "text",
     permissionMode: "sandbox",
     modelFlag: "-m",
+    modeFlag: "--approval-mode",
+    interactive: null,
+  },
+  codex: {
+    binary: "codex",
+    args: ["exec", "--json"],
+    promptPosition: "arg",
+    outputFormat: "json",
+    permissionMode: "sandbox",
+    modelFlag: "--model",
+    modeFlag: "--sandbox",
     interactive: null,
   },
 };

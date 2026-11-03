@@ -13,7 +13,7 @@ export function buildRunCommand(agentKey, prompt, opts = {}) {
   return buildCommandFromProfile(profile, prompt, opts);
 }
 
-function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {}) {
+function buildCommandFromProfile(profile, prompt, { model, mode, requireApproval } = {}) {
   const args = [...profile.args];
 
   if (requireApproval?.length > 0) {
@@ -23,6 +23,17 @@ function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {
 
   if (model && profile.modelFlag) {
     args.push(profile.modelFlag, model);
+  }
+
+  // Execution mode (plan vs build): translated per agent by the profile.
+  // An agent with no modeFlag cannot honour the request — fail loudly rather
+  // than silently running in the wrong mode.
+  if (mode) {
+    if (profile.modeFlag) {
+      args.push(profile.modeFlag, mode);
+    } else {
+      throw new Error(`agent has no execution-mode flag; cannot set mode ${JSON.stringify(mode)}`);
+    }
   }
 
   if (profile.promptPosition === "arg") {
@@ -39,8 +50,8 @@ function buildCommandFromProfile(profile, prompt, { model, requireApproval } = {
   return { cmd: profile.binary, args, env };
 }
 
-export function runTask({ profile, prompt, model, requireApproval, cwd, onLine, env: extraEnv }) {
-  const { cmd, args, env } = buildCommandFromProfile(profile, prompt, { model, requireApproval });
+export function runTask({ profile, prompt, model, mode, requireApproval, cwd, onLine, env: extraEnv }) {
+  const { cmd, args, env } = buildCommandFromProfile(profile, prompt, { model, mode, requireApproval });
   // Caller-supplied variables (e.g. the workflow run context, ADR-444).
   if (extraEnv) Object.assign(env, extraEnv);
 

@@ -46,12 +46,12 @@ test("gemini run profile", () => {
 test("unknown agent throws with supported list", () => {
   assert.throws(
     () => getRunProfile("unknown-agent"),
-    /Unsupported agent.*opencode.*claude-code.*goose.*gemini/s,
+    /Unsupported agent.*Supported:/s,
   );
 });
 
-test("RUN_PROFILES exports all four agents", () => {
-  assert.deepEqual(Object.keys(RUN_PROFILES).sort(), ["claude-code", "gemini", "goose", "opencode"]);
+test("RUN_PROFILES exports all five agents", () => {
+  assert.deepEqual(Object.keys(RUN_PROFILES).sort(), ["claude-code", "codex", "gemini", "goose", "opencode"]);
 });
 
 test("interactive handoff specs: opencode opens resident TUI with seeded prompt", () => {

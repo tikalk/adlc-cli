@@ -1,0 +1,15 @@
+schema_version: "1.0"
+workflow:
+  id: factory-autonomous
+  name: Factory Autonomous
+  version: "1.0.0"
+inputs:
+  issue_ref:
+    type: string
+    default: ""
+steps:
+  - id: execute
+    type: command
+    command: factory-mission
+    input:
+      args: "--issue {{ inputs.issue_ref }}"
