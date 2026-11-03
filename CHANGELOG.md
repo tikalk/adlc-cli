@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-11-03
+
+### Added
+
+- **Declarative workflows + catalog** (#70) — the bundled `factory` workflow
+  ships as `workflows/factory/workflow.yml` with a `workflows/catalog.json`
+  index (published in the package). `WorkflowEngine.loadWorkflow` resolves a
+  source in order: https URL → local `.yml`/`.yaml` path → installed
+  (`.adlc/workflows/<id>/workflow.yml`) → bundled catalog. New commands:
+  `adlc-cli workflow search [query]`, `adlc-cli workflow add <id|url> [--as <name>]`
+  (writes the workflow and records it in `.adlc/workflows/workflow-registry.json`,
+  symlinked registries refused, atomic replace), and `adlc-cli workflow list`.
+
+### Changed
+
+- `loadWorkflow` is now async for every source; internal callers await it.
+  `src/workflow/builtins.mjs` is removed (the factory definition is the YAML
+  asset above; no compatibility shim).
+
+### Security
+
+- Remote workflows (which carry `run:` shell steps) require `https:`; plain
+  `http:` is accepted only for loopback hosts. Redirects are followed manually
+  — every hop is re-validated, capped at 5 hops, under one 30 s deadline and
+  the 5 MB size limit.
+
+### Fixed
+
+- `.gitattributes` forces LF on workflow YAML so Windows checkouts and tests
+  match the bundled definition byte-for-byte.
+
 ## [2.7.0] - 2026-10-31
 
 ### Added
