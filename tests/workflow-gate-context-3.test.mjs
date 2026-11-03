@@ -38,10 +38,15 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { WorkflowEngine, RunStatus } from "../src/workflow/engine.mjs";
-import { BUILTIN_WORKFLOWS } from "../src/workflow/builtins.mjs";
 import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
 import { StepStatus } from "../src/workflow/base.mjs";
 import { buildGateManifest, renderGateMessage, parseRecord } from "../src/workflow/gate-context.mjs";
+import { fileURLToPath } from "node:url";
+
+const FACTORY_YAML = readFileSync(
+  join(dirname(dirname(fileURLToPath(import.meta.url))), "workflows", "factory", "workflow.yml"),
+  "utf-8"
+);
 
 const PDR_GLOB = ".adlc/drafts/pdr/*.md";
 
@@ -336,7 +341,7 @@ test("R3: builtin factory — approving gate-product does not auto-pass gate-arc
   // stub (resume re-reads the run's workflow.yml copy, so the stub must be
   // real YAML); intent-architecture commits an ADR nobody has been shown.
   const adrCmd = `${fileStepCmd("write", ".adlc/drafts/adr/ADR-9.md", "# Unseen ADR\n\n## Decision Outcome\n\nWe never showed this.\n")} && git add .adlc/drafts && git commit -q -m adr`;
-  const yaml = BUILTIN_WORKFLOWS.factory.yaml.replace(
+  const yaml = FACTORY_YAML.replace(
     /^( {4})type: command\n {4}command: ([\w-]+)\n/gm,
     (_, i, cmd) => `${i}type: shell\n${i}run: '${cmd === "factory-architect" ? adrCmd : `echo ${cmd}`}'\n`,
   );

@@ -27,8 +27,12 @@ import { evaluateCondition } from "./expressions.mjs";
 import { readAgent } from "../utils/init-options.mjs";
 import { Lease } from "./lease.mjs";
 import { pushRunRef } from "./refs.mjs";
-import { getBuiltinWorkflow } from "./builtins.mjs";
 import { currentHeadSha, hasContextGate } from "./gate-context.mjs";
+import {
+  loadBundledCatalog,
+  getBundledWorkflowsDir,
+  fetchWorkflowFromUrl,
+} from "./catalog.mjs";
 
 export { RunStatus, StepStatus };
 export { Lease, LeaseHeldError } from "./lease.mjs";
@@ -73,34 +77,35 @@ export class WorkflowDefinition {
   }
 
   static fromYamlFile(path) {
+    let raw;
+    try {
+      raw = readFileSync(path, "utf-8");
+    } catch (exc) {
+      throw new Error(`Failed to read workflow file at ${path}: ${exc.message}`);
+    }
     let data;
     try {
-      data = parseYaml(readFileSync(path, "utf-8"));
+      data = parseYaml(raw);
     } catch (exc) {
       throw new Error(`Invalid YAML in ${path}: ${exc.message}`);
     }
     if (data === null || typeof data !== "object" || Array.isArray(data)) {
       throw new Error(`Workflow YAML must be a mapping, got ${Array.isArray(data) ? "list" : typeof data}.`);
     }
-    return new WorkflowDefinition(data, path);
+    return new WorkflowDefinition(data, path, raw);
   }
 
-  static fromString(content) {
-    const data = parseYaml(content);
+  static fromString(yamlString, sourcePath = null) {
+    let data;
+    try {
+      data = parseYaml(yamlString);
+    } catch (exc) {
+      throw new Error(`Invalid YAML: ${exc.message}`);
+    }
     if (data === null || typeof data !== "object" || Array.isArray(data)) {
       throw new Error(`Workflow YAML must be a mapping, got ${Array.isArray(data) ? "list" : typeof data}.`);
     }
-    return new WorkflowDefinition(data);
-  }
-
-  // Built-in (bundled) definition: parsed from the curated YAML string; the
-  // string is retained so run copies stay verbatim.
-  static fromBuiltin(id, yamlString) {
-    const def = WorkflowDefinition.fromString(yamlString);
-    if (def.id !== id) {
-      throw new Error(`Built-in workflow id mismatch: expected '${id}', definition declares '${def.id}'.`);
-    }
-    return new WorkflowDefinition(def.data, null, yamlString);
+    return new WorkflowDefinition(data, sourcePath, yamlString);
   }
 }
 
@@ -654,20 +659,42 @@ export class WorkflowEngine {
   }
 
   loadWorkflow(source) {
-    // Load from an installed ID (`.adlc/workflows/<id>/workflow.yml`), a
-    // bundled built-in (e.g. `factory`), or a local YAML path.
-    const path = resolve(source);
+    const strSource = String(source).trim();
+
+    // 1. HTTP/HTTPS URL
+    if (/^https?:\/\//i.test(strSource)) {
+      return (async () => {
+        const { yaml } = await fetchWorkflowFromUrl(strSource);
+        return WorkflowDefinition.fromString(yaml, strSource);
+      })();
+    }
+
+    // 2. Local YAML file path
+    const path = resolve(strSource);
     if (/\.(yml|yaml)$/i.test(path) && existsSync(path)) {
       return WorkflowDefinition.fromYamlFile(path);
     }
-    const installedPath = join(this.projectRoot, ".adlc", "workflows", String(source), "workflow.yml");
+
+    // 3. Workspace installed workflow (.adlc/workflows/<id>/workflow.yml)
+    const installedPath = join(this.projectRoot, ".adlc", "workflows", strSource, "workflow.yml");
     if (existsSync(installedPath)) {
       return WorkflowDefinition.fromYamlFile(installedPath);
     }
-    const builtin = getBuiltinWorkflow(String(source));
-    if (builtin !== null) {
-      return WorkflowDefinition.fromBuiltin(String(source), builtin.yaml);
+
+    // 4. Bundled catalog workflow
+    const catalog = loadBundledCatalog();
+    if (catalog.workflows && catalog.workflows[strSource]) {
+      const entry = catalog.workflows[strSource];
+      const bundledPath = join(getBundledWorkflowsDir(), entry.path.replace(/^workflows\//, ""));
+      if (existsSync(bundledPath)) {
+        return WorkflowDefinition.fromYamlFile(bundledPath);
+      }
     }
+    const directBundled = join(getBundledWorkflowsDir(), strSource, "workflow.yml");
+    if (existsSync(directBundled)) {
+      return WorkflowDefinition.fromYamlFile(directBundled);
+    }
+
     throw new Error(`Workflow not found: ${source}`);
   }
 
@@ -676,6 +703,9 @@ export class WorkflowEngine {
   }
 
   async execute(definition, inputs = null, runId = null, registry) {
+    if (definition && typeof definition.then === "function") {
+      definition = await definition;
+    }
     let effectiveRunId = runId;
     if (effectiveRunId === null || effectiveRunId === undefined) {
       const envRunId = (process.env.ADLC_WORKFLOW_RUN_ID || "").trim();
@@ -793,7 +823,7 @@ export class WorkflowEngine {
         definition = new WorkflowDefinition(raw);
       }
     } else {
-      definition = this.loadWorkflow(state.workflowId);
+      definition = await this.loadWorkflow(state.workflowId);
     }
 
     const dispatchErrors = dispatchDefaultErrors(definition);

@@ -17,7 +17,8 @@
   "files": [
     "bin/",
     "src/",
-    "shim/"
+    "shim/",
+    "workflows/"
   ],
   "keywords": [
     "ai",

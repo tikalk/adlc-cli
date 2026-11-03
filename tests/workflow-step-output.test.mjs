@@ -22,7 +22,12 @@ import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { WorkflowEngine, RunStatus } from "../src/workflow/engine.mjs";
 import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
-import { getBuiltinWorkflow } from "../src/workflow/builtins.mjs";
+import { fileURLToPath } from "node:url";
+
+const FACTORY_YAML = readFileSync(
+  join(dirname(dirname(fileURLToPath(import.meta.url))), "workflows", "factory", "workflow.yml"),
+  "utf-8"
+);
 
 const POSIX = process.platform !== "win32";
 const temps = [];
@@ -171,7 +176,7 @@ test("O3: a stale output file is removed before the step runs", { skip: !POSIX }
 });
 
 test("O4: the factory workflow publishes after each intent step and its gates link the publish step's mr_url", () => {
-  const yaml = getBuiltinWorkflow("factory").yaml;
+  const yaml = FACTORY_YAML;
   assert.match(yaml, /- id: intent-product[\s\S]*?- id: publish-product\n\s+type: shell[\s\S]*?- id: gate-product[\s\S]*?link: "\{\{ steps\.publish-product\.output\.mr_url \}\}"/);
   assert.match(yaml, /- id: intent-architecture[\s\S]*?- id: publish-architecture\n\s+type: shell[\s\S]*?- id: gate-architecture[\s\S]*?link: "\{\{ steps\.publish-architecture\.output\.mr_url \}\}"/);
 });
@@ -236,7 +241,7 @@ test("O5: the factory workflow declares issue_ref and dispatch, so its intent st
   writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
   const dump = join(tempDir("dump-"), "env.json");
   const wf = join(tempDir("factory-wf-"), "workflow.yml");
-  writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
+  writeFileSync(wf, FACTORY_YAML);
   await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_DUMP: dump, FAKE_EXIT: "0" }, async () => {
     delete process.env.FAKE_OUTPUT;
     const engine = new WorkflowEngine(dir);
@@ -258,7 +263,7 @@ test("O5: the factory workflow still runs without an issue (no ADLC_ISSUE_REF)",
   writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
   const dump = join(tempDir("dump-"), "env.json");
   const wf = join(tempDir("factory-wf-"), "workflow.yml");
-  writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
+  writeFileSync(wf, FACTORY_YAML);
   await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_DUMP: dump, FAKE_EXIT: "0" }, async () => {
     delete process.env.FAKE_OUTPUT;
     const engine = new WorkflowEngine(dir);
@@ -342,7 +347,7 @@ async function runFactory({ helper, runBranch = RUN_BRANCH_HELPER, beforeResume 
     if (runBranch) writeFileSync(join(dirname(h), "run-branch.sh"), runBranch);
   }
   const wf = join(tempDir("factory-wf-"), "workflow.yml");
-  writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
+  writeFileSync(wf, FACTORY_YAML);
   return withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_EXIT: "0" }, async () => {
     delete process.env.FAKE_OUTPUT;
     delete process.env.FAKE_DUMP;
@@ -530,7 +535,7 @@ test("O9: execute runs factory-mission with the run's issue, and gate-completion
   writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
   const prompts = join(tempDir("prompts-"), "prompts.jsonl");
   const wf = join(tempDir("factory-wf-"), "workflow.yml");
-  writeFileSync(wf, getBuiltinWorkflow("factory").yaml);
+  writeFileSync(wf, FACTORY_YAML);
   await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_PROMPTS: prompts }, async () => {
     const inputs = { issue_ref: "g/p#12", verdict: "" };
     const e1 = new WorkflowEngine(dir);

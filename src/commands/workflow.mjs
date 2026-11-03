@@ -14,6 +14,11 @@ import {
 } from "../workflow/engine.mjs";
 import { STEP_REGISTRY } from "../workflow/registry.mjs";
 import {
+  searchCatalog,
+  installWorkflow,
+  listWorkflows,
+} from "../workflow/catalog.mjs";
+import {
   stateStart,
   stateAdvance,
   statePause,
@@ -39,6 +44,7 @@ import {
   style,
   tint,
   sym,
+  section,
   statusStyle,
   ACCENT,
 } from "../ui/index.mjs";
@@ -63,6 +69,12 @@ export async function cmdWorkflow(args, flags, rawArgv) {
       return cmdWorkflowPark(rest, rawArgv);
     case "restore":
       return cmdWorkflowRestore(rest, rawArgv);
+    case "search":
+      return cmdWorkflowSearch(rest, rawArgv);
+    case "add":
+      return cmdWorkflowAdd(rest, rawArgv);
+    case "list":
+      return cmdWorkflowList(rest, rawArgv);
     case "help":
       printWorkflowHelp();
       return 0;
@@ -193,7 +205,7 @@ async function cmdWorkflowRun(rest, rawArgv) {
 
   let definition;
   try {
-    definition = engine.loadWorkflow(source);
+    definition = await engine.loadWorkflow(source);
   } catch (exc) {
     error(exc.message);
     return 1;
@@ -325,6 +337,107 @@ async function cmdWorkflowRestore(rest, rawArgv) {
   }
 }
 
+async function cmdWorkflowSearch(rest, rawArgv) {
+  const query = firstPositional(rest, rawArgv) ?? "";
+  const results = searchCatalog(query);
+  if (results.length === 0) {
+    out(tint("No workflows found matching query.", "gray"));
+    return 0;
+  }
+  const rows = results.map((w) => [
+    w.id || "",
+    w.version || "0.0.0",
+    w.name || "",
+    w.description || "",
+  ]);
+  out("");
+  out(
+    table({
+      title: "Workflow catalog",
+      columns: [
+        { header: "ID", style: ACCENT },
+        { header: "Version" },
+        { header: "Name" },
+        { header: "Description" },
+      ],
+      rows,
+    }),
+  );
+  out("");
+  return 0;
+}
+
+async function cmdWorkflowAdd(rest, rawArgv) {
+  const idOrUrl = firstPositional(rest, rawArgv);
+  if (!idOrUrl) {
+    err("Usage: adlc-cli workflow add <id|url> [--as <name>]");
+    return 1;
+  }
+  const asName = extractFlagValue(rawArgv, "as");
+  try {
+    const result = await installWorkflow(process.cwd(), idOrUrl, { as: asName });
+    success(`Installed workflow '${result.id}' to ${result.path}`);
+    return 0;
+  } catch (exc) {
+    error(exc.message);
+    return 1;
+  }
+}
+
+async function cmdWorkflowList(rest, rawArgv) {
+  const { installed, bundled } = listWorkflows(process.cwd());
+
+  out("");
+  section("Installed workflows");
+  if (installed.length === 0) {
+    out(tint("  (none installed in this workspace)", "gray"));
+  } else {
+    const rows = installed.map((w) => [
+      w.id || "",
+      w.version || "0.0.0",
+      w.name || "",
+      w.path || "",
+    ]);
+    out(
+      table({
+        columns: [
+          { header: "ID", style: ACCENT },
+          { header: "Version" },
+          { header: "Name" },
+          { header: "Path" },
+        ],
+        rows,
+      }),
+    );
+  }
+
+  out("");
+  section("Bundled workflows");
+  if (bundled.length === 0) {
+    out(tint("  (none)", "gray"));
+  } else {
+    const rows = bundled.map((w) => [
+      w.id || "",
+      w.version || "0.0.0",
+      w.name || "",
+      w.description || "",
+    ]);
+    out(
+      table({
+        columns: [
+          { header: "ID", style: ACCENT },
+          { header: "Version" },
+          { header: "Name" },
+          { header: "Description" },
+        ],
+        rows,
+      }),
+    );
+  }
+  out("");
+  return 0;
+}
+
 // The first argument that is neither a flag nor a flag's value.
 //
 // parseArgs strips a flag's name from the positional list but keeps its
@@ -343,7 +456,7 @@ function firstPositional(rest, rawArgv) {
 }
 
 // Flags whose value is a separate argument.
-const VALUED_FLAGS = ["handle-file", "remote", "issue-ref"];
+const VALUED_FLAGS = ["handle-file", "remote", "issue-ref", "as", "workflow", "run-id", "step", "status", "output-file", "output-json", "error", "format"];
 
 // Every value the valued flags carry, in either form ("--flag value" and
 // "--flag=value").
@@ -465,7 +578,7 @@ async function cmdWorkflowValidate(rest, rawArgv) {
   const engine = new WorkflowEngine(projectRoot);
   let definition;
   try {
-    definition = engine.loadWorkflow(source);
+    definition = await engine.loadWorkflow(source);
   } catch (exc) {
     error(exc.message);
     return 1;

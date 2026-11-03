@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "updated_at": "2026-11-02T00:00:00Z",
+  "workflows": {
+    "factory": {
+      "id": "factory",
+      "name": "Factory Outer Loop",
+      "description": "Factory outer loop — product → architecture → execution → sweep, with stage gates",
+      "version": "1.0.0",
+      "path": "workflows/factory/workflow.yml",
+      "tags": ["factory", "outer-loop", "adlc"]
+    }
+  }
+}
