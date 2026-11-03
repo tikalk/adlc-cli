@@ -18,7 +18,7 @@ test("engine.loadWorkflow resolves bundled 'factory' workflow", async () => {
     const def = await engine.loadWorkflow("factory");
     assert.equal(def.id, "factory");
     assert.equal(def.name, "Factory Outer Loop");
-    assert.ok(def.sourcePath.includes("workflows/factory/workflow.yml") || def.sourcePath.includes("workflows/factory"));
+    assert.ok(def.sourcePath.replace(/\\/g, "/").includes("workflows/factory"));
     assert.ok(def.sourceYaml);
   } finally {
     cleanup();

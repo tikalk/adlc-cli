@@ -1,0 +1,5 @@
+# Workflow definitions are read back byte-for-byte (tests, run copies);
+# keep them LF on every platform regardless of core.autocrlf.
+workflows/** text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
