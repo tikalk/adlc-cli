@@ -95,6 +95,7 @@ export function printCliHelp() {
       ...pairs([
         ["-a <agent>", "Agent: opencode | claude-code | goose | gemini (default: opencode)"],
         ["--model <id>", "Model id passed to the agent CLI"],
+        ["--mode <mode>", "Execution mode passed to the agent CLI (e.g. plan vs build)"],
         ["--format <fmt>", "Output: text (default, human) | json (normalized JSONL)"],
         ["--cwd <path>", "Working directory (default: current)"],
         ["--timeout <seconds>", "Kill agent after N seconds (CI safety)"],
@@ -432,6 +433,7 @@ export function printWorkflowHelp() {
         ["--input key=value", "Provide/repeat workflow inputs (run + resume + state start)"],
         ["--format json", "JSONL lifecycle events on stdout (run_started/step_started/step_completed/gate_paused/permission_request/run_paused/run_completed/run_failed)"],
         ["--headless", "validate/run: require every gate to declare verdict_input"],
+        ["-a, --agent <name>", "Coding agent to dispatch: claude-code | opencode | codex | cursor"],
       ]),
     ]),
   );

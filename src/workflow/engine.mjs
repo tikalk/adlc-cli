@@ -66,6 +66,7 @@ export class WorkflowDefinition {
     // Defaults (keep malformed values intact until validateWorkflow reports them).
     this.defaultIntegration = "integration" in workflow ? workflow.integration : undefined;
     this.defaultModel = "model" in workflow ? workflow.model : undefined;
+    this.defaultMode = "mode" in workflow ? workflow.mode : undefined;
     const rawDefaultOptions = "options" in workflow ? workflow.options : undefined;
     this.defaultOptions = rawDefaultOptions === null || rawDefaultOptions === undefined ? {} : rawDefaultOptions;
 
@@ -129,10 +130,19 @@ function dispatchDefaultErrors(definition) {
     );
   }
   if (definition.defaultModel !== undefined && definition.defaultModel !== null &&
-      typeof definition.defaultModel !== "string") {
+      typeof definition.defaultModel !== "string" &&
+      (typeof definition.defaultModel !== "object" || Array.isArray(definition.defaultModel))) {
     errors.push(
-      `'workflow.model' must be a string or null, got ${typeName(definition.defaultModel)} ` +
+      `'workflow.model' must be a string, mapping, or null, got ${typeName(definition.defaultModel)} ` +
       `(${repr(definition.defaultModel)}).`,
+    );
+  }
+  if (definition.defaultMode !== undefined && definition.defaultMode !== null &&
+      typeof definition.defaultMode !== "string" &&
+      (typeof definition.defaultMode !== "object" || Array.isArray(definition.defaultMode))) {
+    errors.push(
+      `'workflow.mode' must be a string, mapping, or null, got ${typeName(definition.defaultMode)} ` +
+      `(${repr(definition.defaultMode)}).`,
     );
   }
   if (typeof definition.defaultOptions !== "object" || definition.defaultOptions === null ||
@@ -746,6 +756,7 @@ export class WorkflowEngine {
       inputs: resolvedInputs,
       defaultIntegration: definition.defaultIntegration ?? null,
       defaultModel: definition.defaultModel ?? null,
+      defaultMode: definition.defaultMode ?? null,
       defaultOptions: definition.defaultOptions,
       projectRoot: String(this.projectRoot),
       runId: state.runId,
@@ -841,6 +852,7 @@ export class WorkflowEngine {
       steps: state.stepResults,
       defaultIntegration: definition.defaultIntegration ?? null,
       defaultModel: definition.defaultModel ?? null,
+      defaultMode: definition.defaultMode ?? null,
       defaultOptions: definition.defaultOptions,
       projectRoot: String(this.projectRoot),
       runId: state.runId,
@@ -934,6 +946,7 @@ export class WorkflowEngine {
         type: stepType,
         integration: result.output.integration ?? stepConfig.integration ?? context.defaultIntegration ?? null,
         model: result.output.model ?? stepConfig.model ?? context.defaultModel ?? null,
+        mode: result.output.mode ?? stepConfig.mode ?? context.defaultMode ?? null,
         options: result.output.options ?? stepConfig.options ?? {},
         input: result.output.input ?? stepConfig.input ?? {},
         output: result.output,
