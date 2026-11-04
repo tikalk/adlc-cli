@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] - 2026-11-04
+
+### Fixed
+
+- **skills add preserves workspace primary agent** (#74) — `writeAgent`
+  first-write-wins: adding skills for a secondary agent no longer silently
+  retargets `.adlc/init-options.json` agent.
+
 ## [2.9.0] - 2026-11-04
 
 ### Added
