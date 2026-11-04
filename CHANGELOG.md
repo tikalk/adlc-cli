@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-11-04
+
+### Added
+
+- **Factory issue-to-PR workflows and per-agent model/mode support** (#72) —
+  bundled `factory-autonomous` and `factory-supervised` workflows. Per-agent
+  model and mode options for workflows and CLI runs. Support for `codex` run profile.
+- **OpenCode session_end evaluation goldset and grader** (#68) — published
+  EVAL-001 criterion, goldset, and deterministic Tier-1 code-based grader for
+  OpenCode `session_end` mapping to `session.deleted` lifecycle events (ADR-479).
+
 ## [2.8.0] - 2026-11-03
 
 ### Added
@@ -17,12 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `adlc-cli workflow search [query]`, `adlc-cli workflow add <id|url> [--as <name>]`
   (writes the workflow and records it in `.adlc/workflows/workflow-registry.json`,
   symlinked registries refused, atomic replace), and `adlc-cli workflow list`.
-- **Factory issue-to-PR workflows and per-agent model/mode support** (#72) —
-  bundled `factory-autonomous` and `factory-supervised` workflows. Per-agent
-  model and mode options for workflows and CLI runs. Support for `codex` run profile.
-- **OpenCode session_end evaluation goldset and grader** (#68) — published
-  EVAL-001 criterion, goldset, and deterministic Tier-1 code-based grader for
-  OpenCode `session_end` mapping to `session.deleted` lifecycle events (ADR-479).
 
 ### Changed
 
