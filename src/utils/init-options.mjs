@@ -29,6 +29,11 @@ export function readAgent(projectRoot = process.cwd()) {
 }
 
 export function writeAgent(agent, projectRoot = process.cwd()) {
+  // Never silently switch the workspace's primary agent: `skills add -a`
+  // installs for a (possibly secondary) agent, so it must not retarget the
+  // primary. First write wins; pass { force: true } to switch deliberately.
+  const existing = readInitOptions(projectRoot).agent;
+  if (existing && existing !== agent) return readInitOptions(projectRoot);
   return writeInitOptions({ agent }, projectRoot);
 }
 

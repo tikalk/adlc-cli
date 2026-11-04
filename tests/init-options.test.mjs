@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { readInitOptions, writeInitOptions, readAgent, readSkillsSource, readTeamAiDirectives } from "../src/utils/init-options.mjs";
+import { readInitOptions, writeInitOptions, readAgent, writeAgent, readSkillsSource, readTeamAiDirectives } from "../src/utils/init-options.mjs";
 
 test("writeInitOptions merges with existing fields", () => {
   const tmp = mkdtempSync(join(tmpdir(), "adlc-test-"));
@@ -19,6 +19,24 @@ test("writeInitOptions merges with existing fields", () => {
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 });
 
+test("writeAgent preserves a previously configured primary agent", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "adlc-test-"));
+  try {
+    const dir = join(tmp, ".adlc");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "init-options.json"), JSON.stringify({ agent: "claude-code" }));
+    writeAgent("opencode", tmp);
+    assert.equal(readAgent(tmp), "claude-code");
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("writeAgent sets the agent when none is configured", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "adlc-test-"));
+  try {
+    writeAgent("opencode", tmp);
+    assert.equal(readAgent(tmp), "opencode");
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
 test("readAgent returns null when not configured", () => {
   const tmp = mkdtempSync(join(tmpdir(), "adlc-test-"));
   try { assert.equal(readAgent(tmp), null); }

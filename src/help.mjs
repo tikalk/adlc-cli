@@ -60,7 +60,7 @@ export function printCliHelp() {
   out(
     section("Commands", [
       ...pairs([
-        ["skills add <source> -a <agent>", "Install skills + generate commands + wire events"],
+        ["skills add <source> -a <agent>", "Install skills + generate commands + wire events (never changes the workspace primary agent)"],
         ["skills update [-a <agent>]", "Regenerate commands from installed skills"],
         ["skills remove [-a <agent>]", "Remove generated commands + event configs"],
         ["skills status [-a <agent>]", "Report installed commands/events state"],
