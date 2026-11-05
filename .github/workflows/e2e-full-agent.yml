@@ -39,4 +39,9 @@ jobs:
       - name: Run workspace shell E2E (full agent)
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-        run: bash tests/e2e-workspace.sh
+        run: |
+          if [ -z "$OPENCODE_API_KEY" ]; then
+            echo "FATAL: OPENCODE_API_KEY secret is empty or unavailable (fork runs have no secrets)"
+            exit 1
+          fi
+          bash tests/e2e-workspace.sh
