@@ -89,3 +89,12 @@ test("runTask + normalizeLine: fake agent → normalized JSONL contract", async 
   assert.ok(out.some((e) => e.type === "message" && e.text.includes("hello from fake agent")));
   assert.ok(out.some((e) => e.type === "complete"));
 });
+
+test("normalizeLine: opencode error object unwraps nested message (no [object Object])", () => {
+  // Real opencode shape: {"type":"error","error":{"type":"...","message":"..."}}
+  const line = JSON.stringify({ type: "error", error: { type: "provider.no-route", message: "Model unavailable: fake" } });
+  const out = normalizeLine(line, "json");
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, "error");
+  assert.equal(out[0].message, "Model unavailable: fake");
+});

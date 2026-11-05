@@ -26,6 +26,24 @@ export function normalizeLine(rawLine, outputFormat) {
   }
 }
 
+/**
+ * Extract a human-readable message from an error-shaped value.
+ * opencode emits `error` as a nested object ({type, message}) —
+ * a bare `String(obj)` would print "[object Object]" and hide the cause.
+ */
+function errorText(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    if (typeof value.message === "string") return value.message;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value ?? "");
+}
+
 function mapOpenCode(raw) {
   const type = raw.type;
   switch (type) {
@@ -56,7 +74,7 @@ function mapOpenCode(raw) {
       return []; // suppress — intermediate step boundary
     }
     case "error":
-      return [{ type: "error", message: raw.message ?? raw.part?.error ?? String(raw) }];
+      return [{ type: "error", message: errorText(raw.message ?? raw.error ?? raw.part?.error ?? raw) }];
     case "complete":
     case "completed":
       return [{ type: "complete" }];
@@ -93,7 +111,7 @@ function mapStreamJson(raw) {
     case "permission_request":
       return [{ type: "permission_request", tool: raw.tool ?? raw.tool_name ?? raw.name, request_id: raw.id ?? raw.request_id }];
     case "error":
-      return [{ type: "error", message: raw.message ?? raw.error ?? String(raw) }];
+      return [{ type: "error", message: errorText(raw.message ?? raw.error ?? raw) }];
     case "result":
       return [{ type: "complete" }];
     case "system":
