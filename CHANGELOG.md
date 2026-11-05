@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] - 2026-11-05
+
+### Added
+
+- **Stale-context refresh on session start** (#77) — `session_start` handlers
+  re-run boot on cache hits and replace the exact previously injected text by
+  identity, so fresh counts land in place instead of stale caches or duplicated
+  blocks. `file.edited` events invalidate the shared session_start cache in
+  both V1 and V2 paths, and unrelated injected content is never touched.
+
 ## [2.9.1] - 2026-11-04
 
 ### Fixed
