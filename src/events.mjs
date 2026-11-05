@@ -307,12 +307,48 @@ function _drainPendingNudgeV2(event: { system?: any[] }): void {
   event.system.push({ type: "text", text: nudge })
 }
 
+// Clear the session_start cache — one helper for every invalidation path
+// (init-options change, emitted file edit) so neither path drifts.
+function _invalidateSessionStartCache(): void {
+  for (const k of Object.keys(_sessionStartCache)) delete _sessionStartCache[k]
+}
+
+// Replace the previously injected session_start text in-place. Matches only
+// the exact cached string we injected (not any block containing the marker),
+// so unrelated EXTREMELY_IMPORTANT content is never overwritten.
+function _replaceInjectedTextV1(firstUser: any, oldText: string, newText: string): boolean {
+  for (const p of firstUser.parts) {
+    if (p.type === "text" && p.text === oldText) {
+      p.text = newText
+      return true
+    }
+  }
+  return false
+}
+
+// Same replacement for the V2 model-request shape (string or {text} parts).
+function _replaceInjectedTextV2(system: any[], oldText: string, newText: string): boolean {
+  for (let i = 0; i < system.length; i++) {
+    const s = system[i]
+    if (typeof s === "string") {
+      if (s === oldText) {
+        system[i] = newText
+        return true
+      }
+    } else if (s && typeof s === "object" && s.text === oldText) {
+      s.text = newText
+      return true
+    }
+  }
+  return false
+}
+
 function _checkSessionStartState(): void {
   let _exists = false, _mtime = 0
   try { const st = statSync(".adlc/init-options.json"); _exists = true; _mtime = st.mtimeMs } catch {}
   const _stateChanged = _exists !== _sessionStartState.exists || _mtime !== _sessionStartState.mtime
   if (_stateChanged) {
-    for (const k of Object.keys(_sessionStartCache)) delete _sessionStartCache[k]
+    _invalidateSessionStartCache()
     _sessionStartState = { exists: _exists, mtime: _mtime }
   }
 }
@@ -350,6 +386,10 @@ ${v1Entries}
 //   pre_tool_use       → ctx.tool.hook("execute.before")
 //   post_tool_use      → ctx.tool.hook("execute.after")
 //   file_edited        → ctx.event.subscribe() stash + drain in context hook
+//     (V1: "event" subscription stash + drain in messages.transform).
+// Emitted file edits also invalidate the session_start cache, so the next
+// context pass re-runs boot (fresh counts after new drafts) and replaces the
+// exact previously injected text instead of duplicating it.
 //   session_end        → event.subscribe() session.deleted side-effect
 //                        (native session-end equivalent; dispatcher runs scripts only)
 function buildOpenCodeV2Setup(resolvedEvents, agentConfig) {
@@ -368,12 +408,26 @@ function buildOpenCodeV2Setup(resolvedEvents, agentConfig) {
           _drainPendingNudgeV2(event)
           _checkSessionStartState()
           const _key = ${JSON.stringify(h.skill)}
-          if (!(_key in _sessionStartCache)) {
+          const _wasCached = _key in _sessionStartCache
+          const _oldText = _wasCached ? _sessionStartCache[_key] : ""
+          if (!_wasCached) {
             _sessionStartCache[_key] = runEvent(_key, ${JSON.stringify(canonicalEvent)}, ${h.timeout})
           }
-          const ctxText = _sessionStartCache[_key]
+          let ctxText = _sessionStartCache[_key]
           if (!ctxText) return
           event.system ??= []
+          if (_wasCached) {
+            // Refresh: re-run boot for fresh counts and replace the exact
+            // previously injected text (matched by identity, not by marker,
+            // so unrelated EXTREMELY_IMPORTANT content is never touched).
+            // Falls through to push when the old text is gone (fresh start).
+            const _fresh = runEvent(_key, ${JSON.stringify(canonicalEvent)}, ${h.timeout})
+            if (_fresh && _fresh !== _oldText && _replaceInjectedTextV2(event.system, _oldText, _fresh)) {
+              _sessionStartCache[_key] = _fresh
+              return
+            }
+            if (_fresh) { _sessionStartCache[_key] = _fresh; ctxText = _fresh }
+          }
           const texts = event.system.map((s: any) => (typeof s === "string" ? s : (s.text ?? "")))
           if (texts.some((t: string) => t.includes("EXTREMELY_IMPORTANT"))) return
           event.system.push({ type: "text", text: ctxText })
@@ -395,6 +449,10 @@ function buildOpenCodeV2Setup(resolvedEvents, agentConfig) {
         fileEditedRuns.push(`          try {
             const nudge = runEvent(${JSON.stringify(h.skill)}, ${JSON.stringify(canonicalEvent)}, ${h.timeout}, JSON.stringify(event))
             if (nudge) _pendingNudge = nudge
+            // Any emitted edit may change boot output (new drafts) — drop the
+            // session_start cache so the next context pass re-runs and
+            // replaces the exact previously injected text.
+            _invalidateSessionStartCache()
           } catch (e) {
             console.error("adlc file.edited hook failed:", (e as Error).message)
           }`);
@@ -436,6 +494,10 @@ ${sessionDeletedRuns.join("\n")}
         for await (const event of ctx.event.subscribe()) {
           if ((event as any).type !== "file.edited") continue
 ${fileEditedRuns.join("\n")}
+          // Any emitted edit may change boot output (new drafts) — drop the
+          // session_start cache so the next context pass re-runs and replaces
+          // the exact previously injected text.
+          _invalidateSessionStartCache()
         }
       })()`);
     if (!hasContext) {
@@ -478,18 +540,32 @@ function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
         try { const st = statSync(".adlc/init-options.json"); _exists = true; _mtime = st.mtimeMs } catch {}
         const _stateChanged = _exists !== _sessionStartState.exists || _mtime !== _sessionStartState.mtime
         if (_stateChanged) {
-          for (const k of Object.keys(_sessionStartCache)) delete _sessionStartCache[k]
+          _invalidateSessionStartCache()
           _sessionStartState = { exists: _exists, mtime: _mtime }
         }
         const _key = ${JSON.stringify(h.skill)}
-        if (!(_key in _sessionStartCache)) {
+        const _wasCached = _key in _sessionStartCache
+        const _oldText = _wasCached ? _sessionStartCache[_key] : ""
+        if (!_wasCached) {
           _sessionStartCache[_key] = runEvent(_key, ${JSON.stringify(canonicalEvent)}, ${h.timeout})
         }
-        const ctx = _sessionStartCache[_key]
+        let ctx = _sessionStartCache[_key]
         if (!ctx) return
         // Inject into first user message (active instructions, not passive system prompt)
         const firstUser = output.messages.find((m: any) => m.info.role === 'user')
         if (!firstUser || !firstUser.parts.length) return
+        if (_wasCached) {
+          // Refresh: re-run boot for fresh counts and replace the exact
+          // previously injected text (matched by identity, not by marker,
+          // so unrelated EXTREMELY_IMPORTANT content is never touched).
+          // Falls through to push when the old text is gone (fresh start).
+          const _fresh = runEvent(_key, ${JSON.stringify(canonicalEvent)}, ${h.timeout})
+          if (_fresh && _fresh !== _oldText && _replaceInjectedTextV1(firstUser, _oldText, _fresh)) {
+            _sessionStartCache[_key] = _fresh
+            return
+          }
+          if (_fresh) { _sessionStartCache[_key] = _fresh; ctx = _fresh }
+        }
         // Guard: skip if already injected (prevents double-injection on step re-fires)
         if (firstUser.parts.some((p: any) => p.type === 'text' && p.text.includes('EXTREMELY_IMPORTANT'))) return
         const ref = firstUser.parts[0]
@@ -520,6 +596,10 @@ function buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig) {
         fileEditedRuns.push(`      try {
         const nudge = runEvent(${JSON.stringify(h.skill)}, ${JSON.stringify(canonicalEvent)}, ${h.timeout}, JSON.stringify(event))
         if (nudge) _pendingNudge = nudge
+        // Any emitted edit may change boot output (new drafts) — drop the
+        // session_start cache so the next messages.transform re-runs and
+        // replaces the exact previously injected text.
+        _invalidateSessionStartCache()
       } catch (e) {
         console.error("adlc file.edited hook failed:", (e as Error).message)
       }`);

@@ -404,7 +404,7 @@ describe("Events: opencode plugin generation", () => {
       const messagesTransform = content.match(/"experimental\.chat\.messages\.transform": async \(_input, output\) => \{([\s\S]*?)\n    \}/);
       assert.ok(messagesTransform, "messages.transform handler present");
       assert.ok(messagesTransform[1].includes("_sessionStartCache"), "handler references cache");
-      assert.ok(messagesTransform[1].includes("!(_key in _sessionStartCache)"), "handler checks cache before spawn");
+      assert.ok(messagesTransform[1].includes("_wasCached"), "handler checks cache before spawn");
       assert.ok(messagesTransform[1].includes("runEvent"), "handler still calls runEvent on cache miss");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
@@ -431,7 +431,7 @@ describe("Events: opencode plugin generation", () => {
       assert.ok(messagesTransform[1].includes("statSync"), "handler uses statSync to check mtime");
       assert.ok(messagesTransform[1].includes(".adlc/init-options.json"), "handler checks init-options.json");
       assert.ok(messagesTransform[1].includes("_sessionStartState"), "handler references state variable");
-      assert.ok(messagesTransform[1].includes("delete _sessionStartCache"), "handler clears cache on state change");
+      assert.ok(messagesTransform[1].includes("_invalidateSessionStartCache()"), "handler clears cache on state change");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -452,6 +452,73 @@ describe("Events: opencode plugin generation", () => {
       assert.ok(messagesTransform[1].includes("unshift"), "unshifts into parts");
       // Guard against double-injection
       assert.ok(messagesTransform[1].includes("EXTREMELY_IMPORTANT"), "guard checks for EXTREMELY_IMPORTANT marker");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("session_start handler uses exact-replace refresh on cache hit (V1)", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      const messagesTransform = content.match(/"experimental\.chat\.messages\.transform": async \(_input, output\) => \{([\s\S]*?)\n    \}/);
+      assert.ok(messagesTransform, "messages.transform handler present");
+      const body = messagesTransform[1];
+      // Refresh path: re-run on cache hit and replace exact previously injected text
+      assert.ok(body.includes("_wasCached"), "tracks cache-hit state");
+      assert.ok(body.includes("_oldText"), "remembers previously injected text");
+      assert.ok(body.includes("_replaceInjectedTextV1"), "replaces exact previously injected text");
+      assert.ok(!body.includes("p.text.includes(_oldText)"), "matches by identity, not substring");
+      // Unrelated EXTREMELY_IMPORTANT content is never overwritten — guard stays marker-based
+      assert.ok(body.includes("p.text.includes('EXTREMELY_IMPORTANT')"), "double-injection guard intact");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("session_start context hook uses exact-replace refresh on cache hit (V2)", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      assert.ok(content.includes("_replaceInjectedTextV2"), "V2 exact-replace helper present");
+      const contextHook = content.match(/hook\("context", \(event: any\) => \{([\s\S]*?)\n      \}\)/);
+      assert.ok(contextHook, "V2 context hook present");
+      assert.ok(contextHook[1].includes("_replaceInjectedTextV2"), "context hook replaces exact injected text");
+      assert.ok(contextHook[1].includes("_invalidateSessionStartCache()") === false, "context hook itself does not invalidate");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("file.edited invalidates session_start cache in V1 and V2", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      const manifest = {
+        events: {
+          session_start: [{ skill: "team-boot", timeout: 60 }],
+          file_edited: [{ skill: "team-boot", timeout: 10 }],
+        },
+      };
+      const agentConfig = getEventAgentConfig("opencode");
+      const resolved = resolveEvents(manifest, agentConfig);
+      installEvents("opencode", projectRoot, resolved, ".agents/skills");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+
+      assert.ok(content.includes("_invalidateSessionStartCache"), "shared invalidation helper present");
+      assert.ok(content.includes("function _invalidateSessionStartCache"), "helper defined once");
+      assert.ok(content.includes("function _replaceInjectedTextV1"), "V1 replace helper defined");
+      assert.ok(content.includes("function _replaceInjectedTextV2"), "V2 replace helper defined");
+      // V1 event subscription + V2 ctx.event.subscribe both invalidate
+      const invalidations = content.match(/_invalidateSessionStartCache\(\)/g) || [];
+      assert.ok(invalidations.length >= 2, `both V1 and V2 file.edited paths invalidate (found ${invalidations.length})`);
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
