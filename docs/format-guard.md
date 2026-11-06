@@ -64,3 +64,36 @@ adlc-cli format audit --source opencode --db session.db --since 7d
 `long` means a message with at least 800 characters. The audit never
 writes or repairs — it reports `scanned / long / collapsed / rate` so a
 team can measure the collapse before enforcing the artifact gate below.
+
+## Repository enforcement (agent-agnostic)
+
+This layer operates on files, not on any agent API:
+
+```bash
+npm run format:check   # CI gate: fails when any docs/README Markdown collapsed
+npm run format:fix     # local repair of docs/README
+```
+
+A `.pre-commit-config.yaml` local hook:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: format-check
+        name: format check (collapsed Markdown)
+        entry: node bin/adlc-cli.mjs format check
+        language: system
+        types: [markdown]
+```
+
+Or a plain `.git/hooks/pre-commit` snippet over staged Markdown:
+
+```bash
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' || true)
+[ -n "$staged" ] && node bin/adlc-cli.mjs format check $staged
+```
+
+The intentionally-collapsed scanner fixtures under
+`tests/fixtures/format/` are excluded from the `docs`/`README` gate by
+design.
