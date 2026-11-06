@@ -53,3 +53,14 @@ and log. The contract wording (Task 1) and transcript/artifact checks
   logs the result.
 - **Generic**: any agent with a post-response shell hook runs
   `adlc-cli format check -` on the response text.
+
+## Transcript audit (read-only)
+
+```bash
+adlc-cli format audit --source jsonl --dir ~/.local/share/opencode --json
+adlc-cli format audit --source opencode --db session.db --since 7d
+```
+
+`long` means a message with at least 800 characters. The audit never
+writes or repairs — it reports `scanned / long / collapsed / rate` so a
+team can measure the collapse before enforcing the artifact gate below.

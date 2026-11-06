@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { detectCollapsed } from "../format/detect.mjs";
 import { reflowMarkdown } from "../format/reflow.mjs";
 import { out, err } from "../ui/index.mjs";
+import { auditJsonl, auditOpencode, AUDIT_LONG_MIN } from "../format/audit.mjs";
 import { printFormatHelp } from "../help.mjs";
 
 function detectOptions(flags) {
@@ -86,8 +87,7 @@ export async function cmdFormat(args, flags = {}) {
     return 2;
   }
   if (sub === "audit") {
-    err('Error: audit is implemented in Task 6 (use "format check" for now).');
-    return 2;
+    return cmdAudit(flags);
   }
 
   const positionals = rest.length === 0 ? ["-"] : rest;
@@ -188,4 +188,51 @@ export async function cmdFormat(args, flags = {}) {
     }
   }
   return anyAmbiguous ? 3 : 0;
+}
+
+function parseSinceMs(raw) {
+  if (!raw) return 0;
+  const m = /^(\d+)(d|h)$/.exec(raw);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = m[2] === "d" ? 86_400_000 : 3_600_000;
+  return Date.now() - n * unit;
+}
+
+async function cmdAudit(flags = {}) {
+  const source = flags.source ?? "jsonl";
+  if (source !== "jsonl" && source !== "opencode") {
+    err('Error: --source must be "jsonl" or "opencode".');
+    return 2;
+  }
+  const sinceMs = parseSinceMs(flags.since);
+  if (sinceMs === null) {
+    err('Error: --since must look like "7d" or "24h".');
+    return 2;
+  }
+  let result;
+  try {
+    if (source === "jsonl") {
+      const dir = flags.dir ?? ".";
+      result = await auditJsonl({ dir, sinceMs });
+    } else {
+      if (!flags.db) {
+        err("Error: --db is required for --source opencode.");
+        return 2;
+      }
+      result = await auditOpencode({ dbPath: flags.db, sinceMs });
+    }
+  } catch (cause) {
+    err(`Error: ${cause.message}`);
+    return 2;
+  }
+  if (flags.json) {
+    out(JSON.stringify(result, null, 2));
+  } else {
+    out(`scanned: ${result.scanned}`);
+    out(`long (>= ${AUDIT_LONG_MIN} chars): ${result.long}`);
+    out(`collapsed: ${result.collapsed}`);
+    out(`rate: ${(result.rate * 100).toFixed(1)}%`);
+  }
+  return 0;
 }

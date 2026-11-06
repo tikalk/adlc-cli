@@ -360,6 +360,22 @@ export function parseArgs(argv) {
       flags.recursive = true;
     } else if (arg === "--min-length") {
       flags.minLength = Number(rest[++i]);
+    } else if (arg === "--source") {
+      flags.source = rest[++i];
+    } else if (arg.startsWith("--source=")) {
+      flags.source = arg.slice("--source=".length);
+    } else if (arg === "--db") {
+      flags.db = rest[++i];
+    } else if (arg.startsWith("--db=")) {
+      flags.db = arg.slice("--db=".length);
+    } else if (arg === "--dir") {
+      flags.dir = rest[++i];
+    } else if (arg.startsWith("--dir=")) {
+      flags.dir = arg.slice("--dir=".length);
+    } else if (arg === "--since") {
+      flags.since = rest[++i];
+    } else if (arg.startsWith("--since=")) {
+      flags.since = arg.slice("--since=".length);
     } else if (arg === "-") {
       args.push(arg);
     } else if (arg === "--no-color") {
