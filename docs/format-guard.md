@@ -38,3 +38,18 @@ adlc-cli format check .adlc/runs --recursive
 line, and table rows, and preserves every non-whitespace character and pipe.
 A table whose cells cannot be grouped unambiguously is refused with exit 3
 and left untouched — the guard never guesses.
+
+## Adapter recipes (thin wrappers around the CLI)
+
+Interactive repair is not portable across agents, so adapters only detect
+and log. The contract wording (Task 1) and transcript/artifact checks
+(Tasks 6-7) are the universal layers.
+
+- **OpenCode**: subscribe to `session.idle`, read the last assistant text,
+  and shell out to `adlc-cli format check --json`. Log on collapse;
+  default stays log-only.
+- **Claude Code**: add a `Stop` hook that runs
+  `adlc-cli format check - --json` with the transcript text on stdin and
+  logs the result.
+- **Generic**: any agent with a post-response shell hook runs
+  `adlc-cli format check -` on the response text.
