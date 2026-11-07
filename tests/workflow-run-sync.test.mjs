@@ -12,12 +12,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { WorkflowEngine, RunStatus } from "../src/workflow/engine.mjs";
+import { WorkflowEngine, RunState, RunStatus } from "../src/workflow/engine.mjs";
 import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
 import { stateStart, stateAdvance, statePause } from "../src/workflow/state.mjs";
 import { parkRun, restoreRun, syncRunRef } from "../src/workflow/refs.mjs";
@@ -338,6 +338,99 @@ test("I-3: symlinks inside the run dir are not followed, not pushed, not written
       assert.ok(!readFileSync(join(outside, "nested", "deep.txt"), "utf-8").includes("***"), "redaction must not traverse the dir symlink");
     });
   } finally {
+    if (prev === undefined) delete process.env.TEST_TOKEN;
+    else process.env.TEST_TOKEN = prev;
+  }
+});
+
+// ── I-4: transition redaction is staged, local run dir stays raw ──────────
+
+test("I-4a: transition sync masks the remote but leaves local inputs.json raw across pause", async () => {
+  const SECRET = "supersecretvalue123456";
+  const { dir, bare } = repo({ remote: true });
+  const wf = join(tempDir("sync-wf-"), "workflow.yml");
+  writeFileSync(wf, `schema_version: "1.0"
+workflow:
+  id: sync-wf-in4
+  name: SyncIn4
+  version: "1.0.0"
+inputs:
+  token:
+    type: string
+steps:
+  - id: one
+    type: shell
+    run: "echo one"
+  - id: two
+    type: shell
+    run: "echo two"
+`, "utf-8");
+  const prev = process.env.TEST_TOKEN;
+  process.env.TEST_TOKEN = SECRET;
+  try {
+    await withPushInterval(0, async () => {
+      await stateStart({ projectRoot: dir, workflowSource: wf, runId: "i4a", inputs: { token: SECRET } });
+      const localAfterStart = JSON.parse(readFileSync(join(runDir(dir, "i4a"), "inputs.json"), "utf-8"));
+      assert.equal(localAfterStart.inputs.token, SECRET, "local inputs.json must stay raw after the start sync (resume depends on it)");
+      const remoteInputs = remoteShow(bare, "i4a", "inputs.json");
+      assert.ok(!remoteInputs.includes(SECRET), "remote inputs.json must be masked");
+      assert.ok(remoteInputs.includes("***"), "remote inputs.json must carry the mask");
+      await statePause({ projectRoot: dir, runId: "i4a", stepId: "two" });
+      const localAfterPause = JSON.parse(readFileSync(join(runDir(dir, "i4a"), "inputs.json"), "utf-8"));
+      assert.equal(localAfterPause.inputs.token, SECRET, "local inputs.json must stay raw after the pause sync");
+      // Resume-level check: a resume that does not re-pass inputs reads
+      // inputs.json — it must still see the raw secret value.
+      const state = RunState.load("i4a", dir);
+      assert.deepEqual(state.inputs, { token: SECRET }, "loaded run state must carry the raw input for resume");
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TEST_TOKEN;
+    else process.env.TEST_TOKEN = prev;
+  }
+});
+
+test("I-4b: redaction failure skips the push entirely (fail-closed), no throw, remote unchanged", async () => {
+  const SECRET = "supersecretvalue123456";
+  const { dir, bare } = repo({ remote: true });
+  const wf = join(tempDir("sync-wf-"), "workflow.yml");
+  writeFileSync(wf, `schema_version: "1.0"
+workflow:
+  id: sync-wf-in4b
+  name: SyncIn4b
+  version: "1.0.0"
+inputs:
+  token:
+    type: string
+steps:
+  - id: one
+    type: shell
+    run: "echo one"
+`, "utf-8");
+  const prev = process.env.TEST_TOKEN;
+  process.env.TEST_TOKEN = SECRET;
+  try {
+    await withPushInterval(0, async () => {
+      await stateStart({ projectRoot: dir, workflowSource: wf, runId: "i4b", inputs: { token: SECRET } });
+      // Baseline remote state exists and is masked.
+      const before = remoteRefSha(bare, "i4b");
+      // Re-secret the local file so the staged copy needs a rewrite, then
+      // force redaction to fail portably: a read-only inputs.json (chmod 444
+      // maps to the Windows read-only attribute) makes the in-place rewrite
+      // throw inside redactRunDir.
+      const localInputs = join(runDir(dir, "i4b"), "inputs.json");
+      writeFileSync(localInputs, JSON.stringify({ inputs: { token: SECRET } }) + "\n", "utf-8");
+      chmodSync(localInputs, 0o444);
+      let threw = null;
+      try {
+        syncRunRef(dir, "i4b", runDir(dir, "i4b"), { minIntervalSeconds: 0 });
+      } catch (exc) {
+        threw = exc;
+      }
+      assert.equal(threw, null, "syncRunRef must not throw when redaction fails");
+      assert.equal(remoteRefSha(bare, "i4b"), before, "remote ref must be unchanged when redaction fails (no unredacted push)");
+    });
+  } finally {
+    try { chmodSync(join(runDir(dir, "i4b"), "inputs.json"), 0o666); } catch {}
     if (prev === undefined) delete process.env.TEST_TOKEN;
     else process.env.TEST_TOKEN = prev;
   }

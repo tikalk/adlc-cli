@@ -3,7 +3,8 @@
 // main history stays untouched. Called at session exit points (pause and
 // terminal states); best-effort: silently skipped outside a git repo.
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { err } from "../ui/index.mjs";
@@ -120,22 +121,53 @@ export function redactRunDir(runDir, env = process.env) {
   return rewritten;
 }
 
+// Stage a throwaway copy of the run dir for redaction: the pushed tree is
+// built from the copy, never from the live run dir. Machine-local files
+// (EXCLUDED_RUN_FILES, ADR-477) and symlinks (ADR-478, no traversal) are
+// left out of the copy entirely. Returns { dir, cleanup } or null when the
+// copy itself fails — callers treat null as "skip this push" (fail-closed,
+// fail-soft).
+function stageRunDir(runDir) {
+  let staged;
+  try {
+    staged = mkdtempSync(join(tmpdir(), "adlc-runref-"));
+    const copy = (absSrc, absDst) => {
+      for (const name of readdirSync(absSrc)) {
+        if (EXCLUDED_RUN_FILES.has(name)) continue;
+        const src = join(absSrc, name);
+        const dst = join(absDst, name);
+        // lstat, never stat: symlinks are skipped, not copied or followed.
+        const st = lstatSync(src);
+        if (st.isSymbolicLink()) continue;
+        if (st.isDirectory()) {
+          mkdirSync(dst, { recursive: true });
+          copy(src, dst);
+        } else {
+          copyFileSync(src, dst);
+        }
+      }
+    };
+    copy(runDir, staged);
+  } catch {
+    if (staged) {
+      try { rmSync(staged, { recursive: true, force: true }); } catch {}
+    }
+    return null;
+  }
+  return {
+    dir: staged,
+    cleanup() {
+      try { rmSync(staged, { recursive: true, force: true }); } catch {}
+    },
+  };
+}
+
 // syncRunRef — record the run dir as refs/factory-runs/<runId> locally, then
 // force-push that ref to the remote so another machine can restore it
 // (ADR-475). The remote push is throttled by ADLC_WORKFLOW_PUSH_INTERVAL
 // seconds (default 60; 0 = every transition) and is fail-soft: an offline
 // pod never fails the run, and the local ref stays valid for the next sync.
 export function syncRunRef(projectRoot, runId, runDir, { remote = "origin", minIntervalSeconds = pushIntervalSeconds() } = {}) {
-  // Every sync is redacted, not just park: the remote sees the run dir on
-  // every transition, so a secret-valued input must be masked before the
-  // first push lands on origin (ADR-478, ADR-497). Fail-soft: a redaction
-  // hiccup must not fail the transition either.
-  try {
-    redactRunDir(runDir);
-  } catch (exc) {
-    err(`[workflow] run-ref redaction skipped for ${runId}: ${exc?.message ?? exc}`);
-  }
-  if (!pushRunRef(projectRoot, runId, runDir)) return false;
   const ref = `refs/factory-runs/${runId}`;
   const stamp = join(runDir, PUSH_STAMP);
   if (minIntervalSeconds > 0 && existsSync(stamp)) {
@@ -150,6 +182,29 @@ export function syncRunRef(projectRoot, runId, runDir, { remote = "origin", minI
     if (Number.isFinite(last) && Date.now() - last < minIntervalSeconds * 1000) {
       return true;
     }
+  }
+  // Every sync is redacted, but never in place: the live run dir must stay
+  // byte-identical across a transition, because resume() reads inputs.json
+  // (and later steps read their original values) from it — masking there
+  // would silently substitute "***" into a resumed run (ADR-497: "no run
+  // file edited in place except redaction at park"). The pushed tree is
+  // built from a throwaway staging copy instead: copy, redact the copy,
+  // hash+push the copy, discard it. Machine-local files (ADR-477) never
+  // enter the staging copy at all. Fail-closed: if redaction of the staged
+  // copy fails, the push is skipped entirely — the wire never receives
+  // unredacted content — but the transition itself stays fail-soft.
+  const staged = stageRunDir(runDir);
+  if (staged === null) return false;
+  try {
+    try {
+      redactRunDir(staged.dir);
+    } catch (exc) {
+      err(`[workflow] run-ref redaction failed for ${runId}; push skipped: ${exc?.message ?? exc}`);
+      return true;
+    }
+    if (!pushRunRef(projectRoot, runId, staged.dir)) return false;
+  } finally {
+    staged.cleanup();
   }
   const pushed = spawnSync("git", ["push", "--quiet", remote, `+${ref}:${ref}`], {
     cwd: projectRoot,
