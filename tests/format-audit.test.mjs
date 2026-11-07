@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractAssistantTexts, auditJsonl, auditOpencode } from "../src/format/audit.mjs";
+import { extractAssistantTexts, auditJsonl, auditOpencode, defaultSqliteJson } from "../src/format/audit.mjs";
 
 test("extracts text from Claude-style assistant records", () => {
   const texts = extractAssistantTexts({
@@ -36,4 +36,8 @@ test("auditOpencode maps injected sqlite rows", async () => {
   const sqlite = () => [{ data: JSON.stringify({ content: [{ type: "text", text: flat }] }) }];
   const r = await auditOpencode({ dbPath: "unused", sqlite });
   assert.equal(r.collapsed, 1);
+});
+
+test("defaultSqliteJson refuses dash-prefixed db paths", () => {
+  assert.throws(() => defaultSqliteJson("-x", "SELECT 1"), /suspicious --db/);
 });

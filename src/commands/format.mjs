@@ -71,9 +71,8 @@ function walkMarkdown(dir) {
   return found;
 }
 
-function checkOne(text) {
-  const r = detectCollapsed(text);
-  return r;
+function checkOne(text, options) {
+  return detectCollapsed(text, options);
 }
 
 export async function cmdFormat(args, flags = {}) {
@@ -217,7 +216,7 @@ async function cmdAudit(flags = {}) {
       result = await auditJsonl({ dir, sinceMs });
     } else {
       if (!flags.db) {
-        err("Error: --db is required for --source opencode.");
+        err("Error: --db <path> is required for --source opencode.");
         return 2;
       }
       result = await auditOpencode({ dbPath: flags.db, sinceMs });

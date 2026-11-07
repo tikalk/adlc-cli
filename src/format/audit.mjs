@@ -103,6 +103,9 @@ export async function auditJsonl({ dir, sinceMs = 0 } = {}) {
 }
 
 export function defaultSqliteJson(dbPath, sql) {
+  if (typeof dbPath !== "string" || dbPath.startsWith("-")) {
+    throw new Error(`refusing to pass suspicious --db value to sqlite3: ${JSON.stringify(dbPath)}`);
+  }
   let raw;
   try {
     raw = execFileSync("sqlite3", ["-json", dbPath, sql], { encoding: "utf8" });
