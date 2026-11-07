@@ -378,3 +378,75 @@ test("AC-T6: park/restore carries trace files into a second clone", async () => 
   assert.equal(state.status, RunStatus.COMPLETED);
   assert.ok(existsSync(tracePaths(restored).manifest), "restored run keeps its manifest");
 });
+
+// ── I-1 (review pr-83): mid-run syncs keep the event stream off the remote ─
+//
+// ADR-490 retention is decided only at finalize. While the run is still
+// executing, its event stream must not reach the remote — a run that later
+// completes (and is pruned to manifest-only) would otherwise already have
+// uploaded the full events.jsonl blobs to the remote object store. Paused
+// runs ship the stream (cross-session resume needs continuity, AC-T6) and
+// terminal pushes ship the tree per retention class.
+
+test("I-1: mid-run syncs exclude trace/events.jsonl; paused and terminal pushes ship it per retention", async () => {
+  const { dir, bare } = repo({ remote: true });
+  await withEnv("ADLC_WORKFLOW_PUSH_INTERVAL", "0", async () => {
+    const treeOf = (runId) =>
+      git(bare, "ls-tree", "-r", "--name-only", `refs/factory-runs/${runId}`).split("\n").filter(Boolean);
+
+    // Mid-run (status running): identity and artifact index travel, the
+    // event stream does not.
+    await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "i1-run" });
+    const midTree = treeOf("i1-run");
+    assert.ok(!midTree.includes("trace/events.jsonl"), `mid-run push must not ship events.jsonl (tree: ${midTree.join(", ")})`);
+    assert.ok(midTree.includes("trace/manifest.json"), "manifest still travels mid-run");
+    assert.ok(midTree.includes("trace/artifacts.json"), "artifact index still travels mid-run");
+    assert.ok(existsSync(join(runDir(dir, "i1-run"), "trace", "events.jsonl")), "the local stream keeps recording");
+
+    // Paused (park semantics, AC-T6): the stream ships so a restored run
+    // keeps its pre-pause events.
+    await statePause({ projectRoot: dir, runId: "i1-run", stepId: "two" });
+    const pausedTree = treeOf("i1-run");
+    assert.ok(pausedTree.includes("trace/events.jsonl"), `paused push must ship events.jsonl (tree: ${pausedTree.join(", ")})`);
+
+    // Terminal failed (retention full): the stream ships.
+    await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "i1-fail" });
+    await stateAdvance({ projectRoot: dir, runId: "i1-fail", stepId: "one", status: "failed", error: "boom" });
+    const failedTree = treeOf("i1-fail");
+    assert.ok(failedTree.includes("trace/events.jsonl"), `terminal failed push must ship events.jsonl (tree: ${failedTree.join(", ")})`);
+
+    // Terminal completed with default sampling (manifest-only): the pruned
+    // stream never reaches the remote, the manifest does.
+    await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "i1-done" });
+    await stateAdvance({ projectRoot: dir, runId: "i1-done", stepId: "one", status: "completed" });
+    await stateAdvance({ projectRoot: dir, runId: "i1-done", stepId: "two", status: "completed" });
+    const doneTree = treeOf("i1-done");
+    assert.ok(!doneTree.includes("trace/events.jsonl"), `pruned successful run must not ship events.jsonl (tree: ${doneTree.join(", ")})`);
+    assert.ok(doneTree.includes("trace/manifest.json"), "manifest-only run still ships its manifest");
+  });
+});
+
+// ── I-2 (review pr-83): manifest head_sha records the post-step revision ────
+//
+// ADR-490 replay identity: the manifest must carry the revision the run
+// actually ended on, not only the one it started from.
+
+test("I-2: finalize refreshes manifest head_sha when steps moved the repo HEAD", async () => {
+  const { dir } = repo();
+  const startSha = git(dir, "rev-parse", "HEAD");
+  await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "i2-sha" });
+
+  const before = readJson(tracePaths(runDir(dir, "i2-sha")).manifest);
+  assert.equal(before.repository.head_sha, startSha, "run-start manifest records the start HEAD");
+
+  // Steps moved the repo HEAD after the run started.
+  write(dir, "step-work.txt", "moved head\n");
+  commitAll(dir, "step work");
+  const movedSha = git(dir, "rev-parse", "HEAD");
+  assert.notEqual(movedSha, startSha);
+
+  await stateAdvance({ projectRoot: dir, runId: "i2-sha", stepId: "one", status: "failed", error: "boom" });
+  const after = readJson(tracePaths(runDir(dir, "i2-sha")).manifest);
+  assert.equal(after.repository.head_sha, movedSha, "finalize must record the post-step revision");
+  assert.equal(after.repository.run_start_sha, startSha, "run_start_sha keeps the run-start revision");
+});

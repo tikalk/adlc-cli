@@ -20,11 +20,31 @@ const EXCLUDED_RUN_FILES = new Set(["lease.json", ".push-ts"]);
 const PUSH_STAMP = ".push-ts";
 const DEFAULT_PUSH_INTERVAL = 60;
 
+// ADR-490 retention is decided only at finalize. While the run is still
+// executing (state.json status "running") its event stream must not reach
+// the remote — a run that later completes would otherwise have already
+// uploaded the very events.jsonl blobs that finalize prunes (the guarantee
+// would be tip-only). Mid-run syncs stage the run dir without this file.
+// Paused runs ship it (cross-session restore/resume needs the stream to
+// continue where it left off — park, AC-T6) and terminal statuses ship the
+// tree after finalizeTrace applied the retention class.
+const MIDRUN_EXCLUDED_FILES = ["trace/events.jsonl"];
+
 function pushIntervalSeconds() {
   const raw = process.env.ADLC_WORKFLOW_PUSH_INTERVAL;
   if (raw === undefined || raw === "") return DEFAULT_PUSH_INTERVAL;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_PUSH_INTERVAL;
+}
+
+// Status recorded in the run dir's state.json, or null when unreadable —
+// never throws, the sync stays fail-soft.
+function runStatusOf(runDir) {
+  try {
+    return JSON.parse(readFileSync(join(runDir, "state.json"), "utf-8"))?.status ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function pushRunRef(projectRoot, runId, runDir) {
@@ -196,6 +216,16 @@ export function syncRunRef(projectRoot, runId, runDir, { remote = "origin", minI
   const staged = stageRunDir(runDir);
   if (staged === null) return false;
   try {
+    // ADR-490: while the run executes (status "running"), the retention
+    // class is still pending — the event stream stays off the wire until
+    // finalize decides it (paused/terminal pushes below ship the tree per
+    // retention class). Only the staged copy is trimmed; the live run dir
+    // keeps recording events.
+    if (runStatusOf(runDir) === "running") {
+      for (const rel of MIDRUN_EXCLUDED_FILES) {
+        rmSync(join(staged.dir, ...rel.split("/")), { force: true });
+      }
+    }
     try {
       redactRunDir(staged.dir);
     } catch (exc) {

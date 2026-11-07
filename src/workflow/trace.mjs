@@ -240,6 +240,13 @@ export function finalizeTrace(runDir, state, { sampleRate } = {}) {
   manifest.outcome = status;
   manifest.updated_at = nowIso();
 
+  // ADR-490 replay identity: head_sha must reflect the revision the run
+  // actually ended on, not only the one it started from. Steps can move the
+  // repo HEAD after initTrace captured it, so refresh at every finalize —
+  // run_start_sha keeps the run-start revision for the pair.
+  const headSha = currentHeadSha(state?.projectRoot ?? process.cwd());
+  if (headSha && manifest.repository) manifest.repository.head_sha = headSha;
+
   if (status === RunStatus.PAUSED) {
     if (lastEventName(paths) !== "run_paused") {
       appendTraceEvent(runDir, { event: "run_paused", step_id: state?.currentStepId ?? null });
