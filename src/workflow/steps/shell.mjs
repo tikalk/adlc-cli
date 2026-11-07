@@ -5,6 +5,11 @@ import { exec } from "node:child_process";
 import { StepBase, StepContext, StepResult, StepStatus, typeName } from "../base.mjs";
 import { evaluateExpression } from "../expressions.mjs";
 import { prepareStepOutput, readStepOutput, runContextEnv } from "./agent.mjs";
+import { redactSecrets } from "../redact.mjs";
+
+// Re-exported for existing consumers/tests; the implementation lives in
+// ../redact.mjs so the refs transport can redact without importing a step.
+export { redactSecrets } from "../redact.mjs";
 
 export class ShellStep extends StepBase {
   static typeKey = "shell";
@@ -149,38 +154,6 @@ function stderrTail(stderr, env = process.env) {
   if (!text) return "";
   const tail = text.length > STDERR_TAIL_CHARS ? `…${text.slice(-STDERR_TAIL_CHARS)}` : text;
   return ` stderr: ${tail}`;
-}
-
-// Secret-shaped env var names whose values never appear in an error message.
-const SECRET_ENV_NAME = /TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL|JWT/i;
-// Well-known token formats (GitLab, GitHub, Slack, Anthropic/OpenAI-style keys, JWTs).
-const TOKEN_PATTERNS = [
-  /\bglpat-[A-Za-z0-9_-]{10,}/g,
-  /\bgl(?:dt|rt|cbt|ptt|ft|ffct|imt|oas|agent|soat)-[A-Za-z0-9_-]{10,}/g,
-  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
-  /\bsk-[A-Za-z0-9_-]{20,}/g,
-  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
-];
-
-/** Mask credentials in text bound for logs, notifiers or persisted run state. */
-export function redactSecrets(text, env = process.env) {
-  let out = text
-    // userinfo in URLs: https://user:token@host → https://***@host
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1***@")
-    // Authorization-style headers and key=value pairs: everything after the
-    // separator to the end of the line is masked, keeping only a known auth
-    // scheme. Multi-parameter schemes (AWS SigV4, Digest) carry credentials
-    // past the first word, and over-masking an error message costs nothing.
-    // A value on the next line (YAML, folded header) is masked too.
-    .replace(/\b(authorization|private-token|x-api-key)([ \t]*[:=](?:[ \t]*\r?\n)?[ \t]*)((?:bearer|basic|token|bot|digest|negotiate|apikey|key)[ \t]+)?[^\s][^\r\n]*/gi, "$1$2$3***");
-  for (const re of TOKEN_PATTERNS) out = out.replace(re, "***");
-  for (const [name, value] of Object.entries(env)) {
-    if (!value || value.length < 8 || !SECRET_ENV_NAME.test(name)) continue;
-    out = out.split(value).join("***");
-  }
-  return out;
 }
 
 function execAsync(cmd, opts) {

@@ -26,7 +26,7 @@ import { RunStatus, StepStatus, StepContext, typeName, repr } from "./base.mjs";
 import { evaluateCondition } from "./expressions.mjs";
 import { readAgent } from "../utils/init-options.mjs";
 import { Lease } from "./lease.mjs";
-import { pushRunRef } from "./refs.mjs";
+import { syncRunRef } from "./refs.mjs";
 import { currentHeadSha, hasContextGate } from "./gate-context.mjs";
 import {
   loadBundledCatalog,
@@ -803,7 +803,9 @@ export class WorkflowEngine {
       this.emit("run_failed", { run_id: state.runId, error: state.error, status: state.status });
     }
     try {
-      pushRunRef(this.projectRoot, state.runId, state.runsDir);
+      // Exit path (pause/terminal): push unconditionally so another machine
+      // can restore the run even if this pod is torn down immediately.
+      syncRunRef(this.projectRoot, state.runId, state.runsDir, { minIntervalSeconds: 0 });
     } catch {}
     if (lease) lease.release();
   }
@@ -921,6 +923,9 @@ export class WorkflowEngine {
         state.currentStepIndex = stepOffset + i;
       }
       await state.save();
+      // Step-boundary durability: throttled remote sync bounds the crash
+      // window to ADLC_WORKFLOW_PUSH_INTERVAL (ADR-475).
+      syncRunRef(this.projectRoot, state.runId, state.runsDir);
       if (lease) lease.renew();
       this.emit("step_started", { run_id: state.runId, step_id: stepId, step_type: stepType });
 
