@@ -15,7 +15,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -251,4 +251,65 @@ test("AC-B4: the remote fetch lands in refs/remotes/<remote>/, not refs/factory-
   );
   const localRefs = git(b, "for-each-ref", "--format=%(refname)", "refs/factory-runs/");
   assert.ok(!localRefs.includes("refs/factory-runs/b4-local-only"), "local refs/factory-runs untouched");
+});
+
+// ── security: --remote is never a git option ──────────────────────────────
+//
+// A remote beginning with "-" is parsed by git as an option, not a
+// positional remote: `git fetch --upload-pack=<cmd> <remote>` runs <cmd>
+// through the shell. The board must reject such values before any git
+// call (same checkRemote guard park/restore use), not execute them.
+
+test("security: --upload-pack remote is rejected, never executed (buildBoardIndex)", async () => {
+  const { dir } = repo();
+  await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "sec-run" });
+  const marker = join(tempDir("board-sec-"), "PWNED");
+
+  assert.throws(
+    () => buildBoardIndex({ projectRoot: dir, remote: `--upload-pack=touch ${marker}` }),
+    /invalid remote/,
+    "buildBoardIndex must throw on an option-shaped remote",
+  );
+  assert.ok(!existsSync(marker), "injection payload must NOT have executed");
+});
+
+test("security: leading-dash remote is rejected by buildBoardIndex", async () => {
+  const { dir } = repo();
+  await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "sec-dash" });
+
+  assert.throws(
+    () => buildBoardIndex({ projectRoot: dir, remote: "--sort=evil" }),
+    /invalid remote/,
+  );
+});
+
+test("security: CLI --remote=<option-shaped> exits 1 without executing", async () => {
+  const { dir } = repo();
+  await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "sec-cli" });
+  const marker = join(tempDir("board-sec-cli-"), "PWNED");
+
+  // Inline "--remote=value" form: bypasses the command layer's leading-dash
+  // check in extractFlagValue, so the guard must hold in buildBoardIndex.
+  const cli = spawnSync(process.execPath, [CLI, "workflow", "board", `--remote=--upload-pack=touch ${marker}`], {
+    cwd: dir,
+    encoding: "utf-8",
+  });
+  assert.notEqual(cli.status, 0, "board must exit non-zero on an option-shaped remote");
+  assert.match(cli.stderr, /invalid remote/, "usage error must name the invalid remote");
+  assert.ok(!existsSync(marker), "injection payload must NOT have executed");
+});
+
+test("security: CLI space-separated --remote <option-shaped> is safe", async () => {
+  const { dir } = repo();
+  await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "sec-cli2" });
+  const marker = join(tempDir("board-sec-cli2-"), "PWNED");
+
+  // Space-separated form: extractFlagValue drops leading-dash values, so the
+  // remote falls back to "origin" — nothing option-shaped reaches git.
+  const cli = spawnSync(process.execPath, [CLI, "workflow", "board", "--remote", `--upload-pack=touch ${marker}`], {
+    cwd: dir,
+    encoding: "utf-8",
+  });
+  assert.equal(cli.status, 0, "space-separated option-shaped remote falls back to origin (unreachable ok)");
+  assert.ok(!existsSync(marker), "injection payload must NOT have executed");
 });

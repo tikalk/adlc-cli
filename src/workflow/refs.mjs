@@ -353,7 +353,7 @@ function runDirFor(projectRoot, runId) {
 // (git's remote-helper transport runs <command> directly) -- `remote` is
 // operator-supplied here (a local CLI flag), never attacker data from a
 // parked ref, so that trust assumption is accepted, not defended against.
-function checkRemote(remote) {
+export function checkRemote(remote) {
   if (typeof remote !== "string" || remote === "" || remote.startsWith("-") || /[\0\n]/.test(remote)) {
     throw new Error(`invalid remote ${JSON.stringify(remote)}`);
   }

@@ -10,6 +10,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { checkRemote } from "./refs.mjs";
 
 const RUNS_DIR = ".adlc/workflows/runs";
 const RUN_REF_PREFIX = "refs/factory-runs/";
@@ -129,6 +130,12 @@ function rowFrom({ state, manifest, remoteSha, source }) {
 // sets remoteError and the board shows local runs only; refs that do not
 // parse are skipped and counted in skippedRemote.
 export function buildBoardIndex({ projectRoot = process.cwd(), remote = "origin" } = {}) {
+  // A remote is a name or URL, never a git option (refs.mjs checkRemote —
+  // same guard park/restore use): a value like `--upload-pack=<cmd>` would
+  // be parsed by git fetch as an option and run <cmd>. Validated here, at
+  // the single entry point before any git call, so both flag forms
+  // (`--remote x`, `--remote=x`) are covered.
+  checkRemote(remote);
   const local = new Map(localRuns(projectRoot).map((r) => [r.state.run_id, r]));
 
   let remoteError = null;
