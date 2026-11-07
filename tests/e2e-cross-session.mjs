@@ -179,7 +179,24 @@ steps:
   scan(runDirB);
   check(`seeded secret absent from the restored run dir (${secretHits} hits)`, secretHits === 0);
   const maskText = readFileSync(join(runDirB, "state.json"), "utf-8");
-  check("work-step output carries the mask", maskText.includes("***"));
+  // The work step is `echo leaked=$CROSS_SESSION_TOKEN`. On POSIX the shell
+  // expands the variable, so the secret enters the step output and the
+  // capture-redaction path must mask it with `***`. On Windows the CLI's
+  // shell step runs through cmd.exe (Node's exec default — no shell override
+  // in src/workflow/steps/shell.mjs), which does not expand POSIX variables:
+  // the step output literally reads `leaked=$CROSS_SESSION_TOKEN`, the secret
+  // never enters the stream, and there is nothing to redact. So on win32 we
+  // assert the no-expansion behavior instead. The redaction path itself
+  // stays covered by the POSIX lanes and the unit tests, and the raw-secret
+  // absence scan above runs on all platforms.
+  if (process.platform === "win32") {
+    check(
+      "work-step output carries the unexpanded variable (cmd does not expand POSIX vars)",
+      maskText.includes("leaked=$CROSS_SESSION_TOKEN"),
+    );
+  } else {
+    check("work-step output carries the mask", maskText.includes("***"));
+  }
 
   console.log("== 5. session B: resume → completed (V6) ==");
   const resumeB = cli(podB, ["workflow", "resume", runId, "--input", "verdict=approve"]);
