@@ -12,7 +12,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, chmodSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -285,14 +285,18 @@ steps:
 
 // ── I-2: unreadable throttle stamp is treated as absent (fail-soft) ────────
 
-test("I-2: unreadable .push-ts (chmod 000) does not throw and the transition still pushes", async () => {
+test("I-2: unreadable .push-ts (EISDIR) does not throw and the transition still pushes", async () => {
   const { dir, bare } = repo({ remote: true });
   await withPushInterval(0, async () => {
     await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "i2" });
   });
   const stamp = join(runDir(dir, "i2"), ".push-ts");
   assert.ok(existsSync(stamp), "start push writes the throttle stamp");
-  chmodSync(stamp, 0o000);
+  // Simulate an unreadable stamp cross-platform: chmod 000 has no effect on
+  // Windows ACLs, but a directory at the stamp path makes readFileSync
+  // throw EISDIR on Linux, macOS, and Windows alike.
+  rmSync(stamp);
+  mkdirSync(stamp);
   await withPushInterval(3600, async () => {
     // Must not throw (EACCES on stamp read) and must still push: an
     // unreadable stamp counts as absent, so the throttle window is over.
