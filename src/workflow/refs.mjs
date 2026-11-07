@@ -3,7 +3,7 @@
 // main history stays untouched. Called at session exit points (pause and
 // terminal states); best-effort: silently skipped outside a git repo.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { err } from "../ui/index.mjs";
@@ -51,7 +51,12 @@ export function pushRunRef(projectRoot, runId, runDir) {
     for (const name of readdirSync(absDir).sort()) {
       if (EXCLUDED_RUN_FILES.has(name)) continue;
       const abs = join(absDir, name);
-      if (statSync(abs).isDirectory()) {
+      // lstat, never stat: a symlink (file or directory) is skipped, not
+      // followed — a run dir must never ship or hash out-of-tree content,
+      // and a dangling symlink must not fail the walk (ADR-478).
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
         entries.push(`040000 tree ${hashDir(abs)}\t${name}`);
       } else {
         const h = git(["hash-object", "-w", abs]);
@@ -87,7 +92,12 @@ export function redactRunDir(runDir, env = process.env) {
   const walk = (absDir) => {
     for (const name of readdirSync(absDir)) {
       const abs = join(absDir, name);
-      if (statSync(abs).isDirectory()) {
+      // lstat, never stat: redaction must not write through a symlink into
+      // files outside the run dir, nor recurse into symlinked directories;
+      // a dangling symlink must not fail the walk (ADR-478).
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
         walk(abs);
         continue;
       }
@@ -116,11 +126,27 @@ export function redactRunDir(runDir, env = process.env) {
 // seconds (default 60; 0 = every transition) and is fail-soft: an offline
 // pod never fails the run, and the local ref stays valid for the next sync.
 export function syncRunRef(projectRoot, runId, runDir, { remote = "origin", minIntervalSeconds = pushIntervalSeconds() } = {}) {
+  // Every sync is redacted, not just park: the remote sees the run dir on
+  // every transition, so a secret-valued input must be masked before the
+  // first push lands on origin (ADR-478, ADR-497). Fail-soft: a redaction
+  // hiccup must not fail the transition either.
+  try {
+    redactRunDir(runDir);
+  } catch (exc) {
+    err(`[workflow] run-ref redaction skipped for ${runId}: ${exc?.message ?? exc}`);
+  }
   if (!pushRunRef(projectRoot, runId, runDir)) return false;
   const ref = `refs/factory-runs/${runId}`;
   const stamp = join(runDir, PUSH_STAMP);
   if (minIntervalSeconds > 0 && existsSync(stamp)) {
-    const last = Number(readFileSync(stamp, "utf-8").trim());
+    // Unreadable stamp (EACCES, TOCTOU removal) counts as absent: proceed
+    // to push, never fail the transition (ADR-497 fail-soft).
+    let last = NaN;
+    try {
+      last = Number(readFileSync(stamp, "utf-8").trim());
+    } catch {
+      last = NaN;
+    }
     if (Number.isFinite(last) && Date.now() - last < minIntervalSeconds * 1000) {
       return true;
     }
@@ -129,6 +155,7 @@ export function syncRunRef(projectRoot, runId, runDir, { remote = "origin", minI
     cwd: projectRoot,
     encoding: "utf-8",
     maxBuffer: 16 * 1024 * 1024,
+    timeout: 30_000,
   });
   if (pushed.error || pushed.status !== 0) {
     const detail = pushed.error ? pushed.error.message : String(pushed.stderr ?? "").trim();

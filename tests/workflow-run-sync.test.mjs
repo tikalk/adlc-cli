@@ -12,7 +12,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { WorkflowEngine, RunStatus } from "../src/workflow/engine.mjs";
 import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
 import { stateStart, stateAdvance, statePause } from "../src/workflow/state.mjs";
-import { parkRun, restoreRun } from "../src/workflow/refs.mjs";
+import { parkRun, restoreRun, syncRunRef } from "../src/workflow/refs.mjs";
 
 const CLI_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -247,6 +247,96 @@ test("AC-5: advance without an origin still succeeds (fail-soft push)", async ()
     assert.equal(state.currentStepIndex, 1);
     assert.ok(existsSync(join(runDir(dir, "ac5"), "state.json")));
   });
+});
+
+// ── I-1: transition pushes are redacted, not just park ─────────────────────
+
+test("I-1: transition push masks secret-valued inputs on the remote from run start", async () => {
+  const SECRET = "supersecretvalue123456";
+  const { dir, bare } = repo({ remote: true });
+  const wf = join(tempDir("sync-wf-"), "workflow.yml");
+  writeFileSync(wf, `schema_version: "1.0"
+workflow:
+  id: sync-wf-in
+  name: SyncIn
+  version: "1.0.0"
+inputs:
+  token:
+    type: string
+steps:
+  - id: one
+    type: shell
+    run: "echo one"
+`, "utf-8");
+  const prev = process.env.TEST_TOKEN;
+  process.env.TEST_TOKEN = SECRET;
+  try {
+    await withPushInterval(0, async () => {
+      await stateStart({ projectRoot: dir, workflowSource: wf, runId: "i1", inputs: { token: SECRET } });
+      const remoteInputs = remoteShow(bare, "i1", "inputs.json");
+      assert.ok(!remoteInputs.includes(SECRET), "remote inputs.json must not leak the secret on the first push");
+      assert.ok(remoteInputs.includes("***"), "remote inputs.json must carry the mask");
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TEST_TOKEN;
+    else process.env.TEST_TOKEN = prev;
+  }
+});
+
+// ── I-2: unreadable throttle stamp is treated as absent (fail-soft) ────────
+
+test("I-2: unreadable .push-ts (chmod 000) does not throw and the transition still pushes", async () => {
+  const { dir, bare } = repo({ remote: true });
+  await withPushInterval(0, async () => {
+    await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "i2" });
+  });
+  const stamp = join(runDir(dir, "i2"), ".push-ts");
+  assert.ok(existsSync(stamp), "start push writes the throttle stamp");
+  chmodSync(stamp, 0o000);
+  await withPushInterval(3600, async () => {
+    // Must not throw (EACCES on stamp read) and must still push: an
+    // unreadable stamp counts as absent, so the throttle window is over.
+    const state = await stateAdvance({ projectRoot: dir, runId: "i2", stepId: "one", status: "completed" });
+    assert.equal(state.currentStepIndex, 1);
+    const remote = JSON.parse(remoteShow(bare, "i2", "state.json"));
+    assert.equal(remote.current_step_index, 1, "advance must push when the stamp is unreadable");
+  });
+});
+
+// ── I-3: symlinks in the run dir are skipped, not followed ─────────────────
+
+test("I-3: symlinks inside the run dir are not followed, not pushed, not written through", async () => {
+  const SECRET = "supersecretvalue123456";
+  const { dir, bare } = repo({ remote: true });
+  const prev = process.env.TEST_TOKEN;
+  process.env.TEST_TOKEN = SECRET;
+  try {
+    await withPushInterval(0, async () => {
+      await stateStart({ projectRoot: dir, workflowSource: workflowFile(), runId: "i3" });
+      const rd = runDir(dir, "i3");
+      const outside = tempDir("sync-outside-");
+      write(outside, "secret.txt", `token=${SECRET}\n`);
+      write(join(outside, "nested"), "deep.txt", `deep ${SECRET}\n`);
+      symlinkSync(join(outside, "secret.txt"), join(rd, "leak-file"));
+      symlinkSync(join(outside, "nested"), join(rd, "leak-dir"));
+      symlinkSync(join(outside, "missing"), join(rd, "dangling"));
+      write(rd, "marker.txt", "present\n");
+      // Must not throw on the dangling symlink; must push a clean tree.
+      const pushed = syncRunRef(dir, "i3", rd, { minIntervalSeconds: 0 });
+      assert.equal(pushed, true, "syncRunRef must succeed despite the dangling symlink");
+      const tree = remoteTree(bare, "i3");
+      assert.ok(tree.includes("marker.txt"), "the push must actually happen (marker file visible on the remote)");
+      assert.ok(!tree.includes("leak-file"), "file symlink must not enter the pushed tree");
+      assert.ok(!tree.some((p) => p === "leak-dir" || p.startsWith("leak-dir/")), "dir symlink must not be traversed into the pushed tree");
+      assert.ok(!tree.includes("dangling"), "dangling symlink must not enter the pushed tree");
+      // Redaction must not write through the symlinks into outside files.
+      assert.ok(!readFileSync(join(outside, "secret.txt"), "utf-8").includes("***"), "redaction must not write through the file symlink");
+      assert.ok(!readFileSync(join(outside, "nested", "deep.txt"), "utf-8").includes("***"), "redaction must not traverse the dir symlink");
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TEST_TOKEN;
+    else process.env.TEST_TOKEN = prev;
+  }
 });
 
 // Keep CLI_ROOT referenced so the test fails loudly if the worktree moves.
