@@ -235,6 +235,7 @@ async function runNewTree({ command, args, flags }, argv) {
         case "state":
         case "park":
         case "restore":
+        case "board":
         case "search":
         case "add":
         case "list":
