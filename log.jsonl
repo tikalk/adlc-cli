@@ -1,0 +1,6 @@
+{"event":"step_started","step_id":"run-branch","type":"shell","timestamp":"2026-11-07T20:44:23.598Z"}
+{"event":"step_completed","step_id":"run-branch","status":"completed","timestamp":"2026-11-07T20:44:23.671Z"}
+{"event":"step_started","step_id":"intent-product","type":"command","timestamp":"2026-11-07T20:44:23.678Z"}
+{"event":"step_completed","step_id":"intent-product","status":"failed","timestamp":"2026-11-07T20:44:23.683Z"}
+{"event":"step_failed","step_id":"intent-product","error":"Step 'intent-product': no agent/integration configured. Set step 'integration:', workflow 'workflow.integration:', or .adlc/init-options.json agent.","timestamp":"2026-11-07T20:44:23.686Z"}
+{"event":"workflow_finished","status":"failed","timestamp":"2026-11-07T20:44:23.695Z"}
