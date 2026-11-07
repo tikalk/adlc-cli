@@ -3,3 +3,4 @@
 workflows/** text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+tests/fixtures/format/** text eol=lf

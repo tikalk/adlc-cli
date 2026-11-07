@@ -9,6 +9,7 @@ import { cmdAgentRun, cmdAgentList } from "./commands/agent.mjs";
 import { cmdWorkspaceSetup, cmdWorkspaceInit, cmdWorkspaceStatus } from "./commands/workspace.mjs";
 import { cmdWorkflow } from "./commands/workflow.mjs";
 import { cmdMcpInstall } from "./commands/mcp.mjs";
+import { cmdFormat } from "./commands/format.mjs";
 import {
   printCliHelp,
   printSkillsHelp,
@@ -18,6 +19,7 @@ import {
   printWorkspaceHelp,
   printWorkflowHelp,
   printMcpHelp,
+  printFormatHelp,
   printHelp,
 } from "./help.mjs";
 import { setColorMode, out, err, style, combine } from "./ui/index.mjs";
@@ -261,6 +263,10 @@ async function runNewTree({ command, args, flags }, argv) {
           return 1;
       }
     }
+    case "format": {
+      const sub = args[0] ?? "help";
+      return cmdFormat([sub, ...args.slice(1)], flags);
+    }
     case "version":
       out(`adlc-cli ${VERSION}`);
       return 0;
@@ -344,6 +350,34 @@ export function parseArgs(argv) {
       flags.format = rest[++i];
     } else if (arg.startsWith("--format=")) {
       flags.format = arg.slice("--format=".length);
+    } else if (arg === "--json") {
+      flags.json = true;
+    } else if (arg === "--write") {
+      flags.write = true;
+    } else if (arg === "--stdout") {
+      flags.stdout = true;
+    } else if (arg === "--recursive") {
+      flags.recursive = true;
+    } else if (arg === "--min-length") {
+      flags.minLength = Number(rest[++i]);
+    } else if (arg === "--source") {
+      flags.source = rest[++i];
+    } else if (arg.startsWith("--source=")) {
+      flags.source = arg.slice("--source=".length);
+    } else if (arg === "--db") {
+      flags.db = rest[++i];
+    } else if (arg.startsWith("--db=")) {
+      flags.db = arg.slice("--db=".length);
+    } else if (arg === "--dir") {
+      flags.dir = rest[++i];
+    } else if (arg.startsWith("--dir=")) {
+      flags.dir = arg.slice("--dir=".length);
+    } else if (arg === "--since") {
+      flags.since = rest[++i];
+    } else if (arg.startsWith("--since=")) {
+      flags.since = arg.slice("--since=".length);
+    } else if (arg === "-") {
+      args.push(arg);
     } else if (arg === "--no-color") {
       flags.noColor = true;
     } else if (arg === "--color") {

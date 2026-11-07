@@ -6,6 +6,7 @@ import { runTask } from "../run.mjs";
 import { normalizeLine } from "../run-events.mjs";
 import { renderTextEvent, handleInlineHitl } from "../render.mjs";
 import { appendFileSync } from "node:fs";
+import { createStreamGuard } from "../format/stream-guard.mjs";
 import { spawnCompat } from "../utils/spawn.mjs";
 import { out, err, error, table, tint, combine, ACCENT } from "../ui/index.mjs";
 
@@ -23,7 +24,22 @@ export async function cmdAgentRun(runArgs) {
     return 0;
   }
 
-  const { agent, model, mode, format, requireApproval, prompt: rawPrompt, cwd, timeout } = parseRunArgs(runArgs);
+  const { agent, model, mode, format, formatGuard, requireApproval, prompt: rawPrompt, cwd, timeout } = parseRunArgs(runArgs);
+
+  if (!["none", "warn", "fix"].includes(formatGuard)) {
+    err("--format-guard must be one of: none, warn, fix");
+    return 1;
+  }
+  const guard = createStreamGuard({ mode: formatGuard });
+  const emit = async (event) => {
+    if (format === "json") {
+      process.stdout.write(JSON.stringify(event) + "\n");
+    } else if (event.type === "permission_request" && process.stdin.isTTY) {
+      await handleInlineHitl(event, kill);
+    } else {
+      renderTextEvent(event);
+    }
+  };
 
   let prompt = rawPrompt;
   if (prompt === "__STDIN__") {
@@ -58,13 +74,12 @@ export async function cmdAgentRun(runArgs) {
     onLine: async (line) => {
       const events = normalizeLine(line, profile.outputFormat);
       for (const event of events) {
-        if (format === "json") {
-          process.stdout.write(JSON.stringify(event) + "\n");
-        } else if (event.type === "permission_request" && process.stdin.isTTY) {
-          await handleInlineHitl(event, kill);
-        } else {
-          renderTextEvent(event);
+        if (event.type === "message") {
+          for (const e of guard.push(event)) await emit(e);
+          continue;
         }
+        for (const e of guard.flush()) await emit(e);
+        await emit(event);
       }
     },
   });
@@ -78,6 +93,7 @@ export async function cmdAgentRun(runArgs) {
 
   const { code, signal } = await promise;
   if (timeoutHandle) clearTimeout(timeoutHandle);
+  for (const e of guard.flush()) await emit(e);
   return classifyAgentExit({ code, signal }).exitCode;
 }
 
@@ -127,6 +143,7 @@ function parseRunArgs(argv) {
   let prompt = null;
   let cwd = null;
   let timeout = null;
+  let formatGuard = "none";
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -144,6 +161,8 @@ function parseRunArgs(argv) {
       cwd = argv[++i];
     } else if (arg === "--timeout") {
       timeout = parseInt(argv[++i], 10);
+    } else if (arg === "--format-guard") {
+      formatGuard = argv[++i] ?? "";
     } else if (arg === "-") {
       prompt = "__STDIN__";
     } else if (!arg.startsWith("-")) {
@@ -151,7 +170,7 @@ function parseRunArgs(argv) {
     }
   }
 
-  return { agent, model, mode, format, requireApproval, prompt, cwd, timeout };
+  return { agent, model, mode, format, formatGuard, requireApproval, prompt, cwd, timeout };
 }
 
 // ── list ───────────────────────────────────────────────────────────────

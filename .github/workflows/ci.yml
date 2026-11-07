@@ -32,6 +32,9 @@ jobs:
       - name: Run eval graders (Tier 1)
         run: npm run test:evals
 
+      - name: Check Markdown formatting
+        run: npm run format:check
+
       - name: Verify CLI starts
         run: node bin/adlc-skills-cli.mjs agents
 

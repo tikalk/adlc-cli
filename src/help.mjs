@@ -84,6 +84,7 @@ export function printCliHelp() {
         ["workflow list", "List installed and bundled workflows"],
         ["workflow state …", "LLM-executor helpers: start/advance/pause/fail/show"],
         ["mcp install [DIR] --agent NAME", "Write each named agent's MCP config from .mcp.json"],
+        ["format check|fix [paths...]", "Detect or deterministically repair collapsed Markdown"],
         ["version", "Print installed version"],
         ["help", "Show this help"],
       ]),
@@ -487,5 +488,53 @@ export function printWorkflowHelp() {
       ]),
     ]),
   );
+  out("");
+}
+
+export function printFormatHelp() {
+  out("");
+  out(section("Usage", [tint("adlc-cli format <check|fix> [paths...] [flags]", "bold")]));
+  out(
+    section("Commands", [
+      ...pairs([
+        ["format check [paths...]", "Detect collapsed Markdown (exit 1 when any file is collapsed)"],
+        ["format fix [paths...]", "Deterministically reflow collapsed Markdown to stdout (or --write in place)"],
+        ["format audit [--source jsonl|opencode]", "Read-only transcript audit (scanned/long/collapsed/rate)"],
+        ["help", "Show this help"],
+      ]),
+    ]),
+  );
+  out(
+    section("Flags", [
+      ...pairs([
+        ["--json", "Machine-readable JSON output"],
+        ["--write", "fix: rewrite files in place"],
+        ["--stdout", "fix --write: also print the result"],
+        ["--recursive", "Scan directories for *.md files"],
+        ["--min-length <n>", "Detector length threshold (default 200)"],
+        ["--source <s>", "audit: jsonl (default) | opencode"],
+        ["--db <path>", "audit: OpenCode session SQLite path"],
+        ["--dir <path>", "audit: JSONL transcript directory"],
+        ["--since <Nd|Nh>", "audit: only records newer than N days/hours"],
+        ["-", "Read from stdin"],
+      ]),
+    ]),
+  );
+  out(
+    section("Exit Codes", [
+      ...pairs([
+        ["0", "clean (check) / fixed (fix)"],
+        ["1", "collapsed Markdown found (check)"],
+        ["2", "usage or I/O error"],
+        ["3", "ambiguous table — fix refuses to guess"],
+      ]),
+    ]),
+  );
+  out(
+    section("Notes", [
+      tint("fix is deterministic and preserves every non-whitespace character and pipe; ambiguous tables return exit 3 and leave the file untouched.", "gray"),
+    ]),
+  );
+  out(section("More", [tint("Run 'adlc-cli help' for the full list.", "gray")]));
   out("");
 }
