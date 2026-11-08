@@ -27,6 +27,7 @@ import { evaluateCondition } from "./expressions.mjs";
 import { readAgent } from "../utils/init-options.mjs";
 import { Lease } from "./lease.mjs";
 import { syncRunRef } from "./refs.mjs";
+import { initTrace, appendTraceEvent, finalizeTrace } from "./trace.mjs";
 import { currentHeadSha, hasContextGate } from "./gate-context.mjs";
 import {
   loadBundledCatalog,
@@ -526,6 +527,11 @@ export class RunState {
       } finally {
         closeSync(fd);
       }
+      // Trace bundle v1 (ADR-490): mirror the lifecycle entry into the
+      // ADR-362 stream. Fail-soft — telemetry never breaks a run.
+      try {
+        appendTraceEvent(this.runsDir, entry);
+      } catch {}
     });
   }
 
@@ -750,6 +756,11 @@ export class WorkflowEngine {
       state.runStartSha = currentHeadSha(String(this.projectRoot));
     }
     await state.save();
+    // Trace bundle v1 (ADR-490): identity + lifecycle stream from the start.
+    try {
+      initTrace(state.runsDir, { state, projectRoot: this.projectRoot, definition });
+      appendTraceEvent(state.runsDir, { event: "run_started", workflow_id: definition.id });
+    } catch {}
     this.emit("run_started", { run_id: state.runId, workflow_id: definition.id });
 
     const context = new StepContext({
@@ -802,6 +813,11 @@ export class WorkflowEngine {
     } else if (state.status === RunStatus.FAILED || state.status === RunStatus.ABORTED) {
       this.emit("run_failed", { run_id: state.runId, error: state.error, status: state.status });
     }
+    try {
+      // Trace: close the bundle (retention) before the ref is pushed, so a
+      // pruned successful trace never reaches the remote.
+      finalizeTrace(state.runsDir, state);
+    } catch {}
     try {
       // Exit path (pause/terminal): push unconditionally so another machine
       // can restore the run even if this pod is torn down immediately.
@@ -873,6 +889,11 @@ export class WorkflowEngine {
     state.error = null;
     state.status = RunStatus.RUNNING;
     await state.save();
+    // Trace: resume keeps the original manifest identity and appends a marker.
+    try {
+      initTrace(state.runsDir, { state, projectRoot: this.projectRoot, definition });
+      appendTraceEvent(state.runsDir, { event: "run_resumed", workflow_id: definition.id });
+    } catch {}
     this.emit("run_started", { run_id: state.runId, workflow_id: definition.id, resumed: true });
 
     // Resume from the current step — re-execute it so gates can prompt again.
