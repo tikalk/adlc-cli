@@ -1,0 +1,51 @@
+{
+  "run_id": "bd1ddcbc",
+  "workflow_id": "factory",
+  "installed_workflow_id": null,
+  "installed_registry_root": null,
+  "status": "failed",
+  "current_step_index": 1,
+  "current_step_id": "intent-product",
+  "step_results": {
+    "run-branch": {
+      "type": "shell",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": {},
+      "output": {
+        "exit_code": 0,
+        "stdout": "run-branch: skipped run-branch.sh (factory-mission helpers not installed)\n",
+        "stderr": "run-branch: skipped run-branch.sh (factory-mission helpers not installed)\n",
+        "skipped": "run-branch: skipped run-branch.sh (factory-mission helpers not installed)"
+      },
+      "status": "completed",
+      "error": null
+    },
+    "intent-product": {
+      "type": "command",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": "/factory-product",
+      "output": {
+        "integration": null,
+        "model": null,
+        "mode": null,
+        "input": "/factory-product",
+        "stdout": "",
+        "stderr": "",
+        "exit_code": -1
+      },
+      "status": "failed",
+      "error": "Step 'intent-product': no agent/integration configured. Set step 'integration:', workflow 'workflow.integration:', or .adlc/init-options.json agent."
+    }
+  },
+  "workflow_dir": "/home/runner/work/adlc-cli/adlc-cli/workflows/factory",
+  "created_at": "2026-11-08T22:06:21.905Z",
+  "updated_at": "2026-11-08T22:06:23.286Z",
+  "error": "Step 'intent-product': no agent/integration configured. Set step 'integration:', workflow 'workflow.integration:', or .adlc/init-options.json agent.",
+  "run_start_sha": "338d90bf9223f4ef984199239109693c6f04522e"
+}
