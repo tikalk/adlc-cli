@@ -1,6 +1,6 @@
 {
   "name": "adlc-cli",
-  "version": "2.11.0",
+  "version": "2.12.0",
   "description": "Dual-mode CLI for coding agents: skill management + headless task execution + the workflow engine (dual-executor: skills in-session, CLI headless \u2014 ADR-395).",
   "type": "module",
   "bin": {
