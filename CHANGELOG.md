@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.12.1] - 2026-11-09
+
+### Fixed
+
+- **Truncated output before process exit** (#87) — `bin/adlc-cli.mjs` and `bin/adlc-skills-cli.mjs` now flush stdout/stderr before exiting (`process.exit()` drops writes still queued in libuv; stdout to a pipe is asynchronous on POSIX). Previously large output could be silently truncated on platforms with a small pipe buffer (macOS lost the tail of `workflow help` in the v2.12.0 Publish run, failing CI and skipping the npm publish). The standalone hook dispatcher (`src/dispatcher.mjs`) writes injection bodies synchronously for the same reason.
+
 All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
