@@ -24,7 +24,7 @@
 //   2. Body path (superpowers model): output the skill's markdown body
 //      (frontmatter stripped). LLM-interpreted orientation/instructions.
 
-import { readFileSync, writeFileSync, readSync, existsSync, readdirSync, statSync, accessSync, constants, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, writeSync, readSync, existsSync, readdirSync, statSync, accessSync, constants, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isatty } from "node:tty";
 import { join, resolve, dirname, sep, delimiter, relative, isAbsolute, posix, win32 } from "node:path";
@@ -128,22 +128,40 @@ function main() {
 //   - "suppress": emit nothing (strict-JSON agents on non-injectable events).
 //   - JSON envelopes: emit a single-line JSON object, only when text is
 //     non-empty (an empty additionalContext is useless noise).
+// Write to stdout synchronously. The dispatcher exits right after writing
+// (process.exit drops writes still queued in libuv), and a skill body can be
+// larger than the pipe buffer — a body-path injection would be silently
+// truncated, dropping instructions the agent was supposed to receive. A sync
+// write to fd 1 completes before the exit; failures stay fail-open because a
+// closed stdout must never break the agent session.
+function writeStdout(text) {
+  const buf = Buffer.from(text, "utf-8");
+  let offset = 0;
+  try {
+    while (offset < buf.length) {
+      offset += writeSync(1, buf, offset, buf.length - offset);
+    }
+  } catch {
+    // fail-open: stdout closed or broken — emit nothing rather than throw
+  }
+}
+
 function writeOutput(text, envelope) {
   if (!text) return;
   if (envelope === "suppress") return;
   if (envelope === "hookSpecificOutput") {
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { additionalContext: text } }) + "\n");
+    writeStdout(JSON.stringify({ hookSpecificOutput: { additionalContext: text } }) + "\n");
     return;
   }
   if (envelope === "additionalContext") {
-    process.stdout.write(JSON.stringify({ additionalContext: text }) + "\n");
+    writeStdout(JSON.stringify({ additionalContext: text }) + "\n");
     return;
   }
   if (envelope === "additional_context") {
-    process.stdout.write(JSON.stringify({ additional_context: text }) + "\n");
+    writeStdout(JSON.stringify({ additional_context: text }) + "\n");
     return;
   }
-  process.stdout.write(text);
+  writeStdout(text);
 }
 
 function parseEnvelope(arg) {
