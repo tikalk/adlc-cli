@@ -986,6 +986,41 @@ describe("Dispatcher: execution paths", () => {
     }
   });
 
+  it("body path: a body larger than the pipe buffer is delivered whole", () => {
+    // process.exit() drops writes still queued in libuv. A body larger than
+    // the pipe buffer (200 KB here) makes that visible: the tail vanishes
+    // unless the writer drains stdout before exiting. Skill bodies routinely
+    // run tens of KB, and a truncated injection silently drops instructions.
+    const projectRoot = mkdtempSync(join(tmpdir(), "adlc-bigbody-"));
+    try {
+      const skillsDir = join(projectRoot, ".agents", "skills");
+      mkdirSync(join(skillsDir, "big-body"), { recursive: true });
+      const filler = "0123456789abcdef".repeat((200 * 1024) / 16);
+      writeFileSync(
+        join(skillsDir, "big-body", "SKILL.md"),
+        `---\nname: big-body\ndescription: oversized body\n---\n\nBEGIN-MARKER\n${filler}\nEND-MARKER\n`,
+        "utf-8",
+      );
+      installDispatcher(projectRoot);
+      const dispatcher = join(projectRoot, DISPATCHER_REL);
+
+      const result = spawnSync("node", [dispatcher, "session_start", "big-body", skillsDir, "10"], {
+        encoding: "utf-8",
+        cwd: projectRoot,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+
+      assert.equal(result.status, 0, `dispatcher exited ${result.status}: ${result.stderr}`);
+      assert.ok(result.stdout.includes("BEGIN-MARKER"), "body head missing");
+      assert.ok(
+        result.stdout.includes("END-MARKER"),
+        `body truncated at ${result.stdout.length} bytes (expected > 200 KB)`,
+      );
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("script path: runs skill's script when scripts: present", () => {
     const projectRoot = mkdtempSync(join(tmpdir(), "adlc-script-"));
     try {
