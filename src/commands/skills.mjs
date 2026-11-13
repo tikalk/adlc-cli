@@ -169,7 +169,12 @@ export async function cmdAdd(args, flags) {
     mkdirSync(absCommandsDir, { recursive: true });
 
     let generated = 0;
+    let referenceSkipped = 0;
     for (const skill of filtered) {
+      if (skill.frontmatter?.["reference-only"] === true || skill.frontmatter?.["reference-only"] === "true") {
+        referenceSkipped++;
+        continue;
+      }
       const filename = commandFilename(skill, agent, { prefix });
       const content = generateCommand(skill, agent, { mode, prefix, source });
       const filepath = join(absCommandsDir, filename);
@@ -180,6 +185,12 @@ export async function cmdAdd(args, flags) {
       glyph: sym.success,
       color: "green",
     });
+    if (referenceSkipped > 0) {
+      item(`Skipped ${referenceSkipped} reference-only skill(s) (no command file)`, {
+        glyph: sym.info,
+        color: "gray",
+      });
+    }
 
     const agentEventConfig = getEventAgentConfig(agentKey);
     if (agentEventConfig && !noEvents) {
@@ -322,6 +333,17 @@ export async function cmdUpdate(args, flags) {
     let skipped = 0;
 
     for (const skill of skills) {
+      if (skill.frontmatter?.["reference-only"] === true || skill.frontmatter?.["reference-only"] === "true") {
+        const filename = commandFilename(skill, agent, { prefix });
+        const filepath = join(absCommandsDir, filename);
+        if (existsSync(filepath) && isGenerated(readFileSync(filepath, "utf-8"))) {
+          rmSync(filepath);
+          updated++;
+        } else {
+          skipped++;
+        }
+        continue;
+      }
       const filename = commandFilename(skill, agent, { prefix });
       const filepath = join(absCommandsDir, filename);
 
