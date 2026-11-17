@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_id": "b22d7ac9",
+  "workflow_id": "factory",
+  "issue_ref": null,
+  "repository": {
+    "remote": "git@github.com:tikalk/adlc-cli.git",
+    "branch": "feat/multiple-skills-sources",
+    "run_start_sha": "116d4c268382b47dae9974e1b36babd266429576",
+    "head_sha": "116d4c268382b47dae9974e1b36babd266429576"
+  },
+  "agent": {
+    "id": null,
+    "session_id": null,
+    "parent_session_id": null
+  },
+  "model": {
+    "name": null,
+    "route": null
+  },
+  "container": {
+    "image_digest": null
+  },
+  "config": {
+    "skill_lock_hash": null,
+    "mcp_config_hash": null
+  },
+  "created_at": "2026-11-17T09:30:13.430Z",
+  "updated_at": "2026-11-17T09:30:16.899Z",
+  "finished_at": "2026-11-17T09:30:16.962Z",
+  "outcome": "failed",
+  "gateway_cost": null,
+  "retention_class": "full",
+  "workload_class": "unknown",
+  "trace_pruned": false
+}
