@@ -1,6 +1,7 @@
 // Workspace commands: setup (workspace.yml-driven), init (brownfield), status (audit).
-// Setup separates deterministic steps (git clone, dirs, skills add — no LLM) from
-// agent-led steps (workspace init/link, commands, first-boot goal — via agent run).
+// Setup separates deterministic steps (git clone, dirs, skills add, workspace
+// init/link via the workspace skill's scripts — no LLM) from agent-led steps
+// (`agent run` commands, first-boot goal; init/link only as a fallback).
 // The goal runs only when setup assembled something (clone or dir creation) —
 // AX-faithful first-boot workspace finishing; convergence re-runs skip it.
 
@@ -13,11 +14,15 @@ import {
   writeFileSync,
   chmodSync,
   rmSync,
+  readdirSync,
+  lstatSync,
 } from "node:fs";
 import { join, resolve, relative, isAbsolute, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { parseYaml } from "../utils/yaml.mjs";
 import { readAgent } from "../utils/init-options.mjs";
+import { getAgent } from "../registry.mjs";
+import { expandTilde } from "../source.mjs";
 import {
   out,
   error,
@@ -55,6 +60,211 @@ export function isHttpUrl(source) {
 
 export function isHttpsUrl(source) {
   return /^https:\/\//i.test(source);
+}
+
+// ── workspace init/link (deterministic) ─────────────────────────────────
+const GITIGNORE_COMMIT_MSG = "[workspace] Configure .gitignore for workspace conventions";
+// A hung skill script must not hang setup; init/link finish in seconds.
+const WORKSPACE_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
+
+// The workspace skill's bash scripts in the agent's project skills dir, or
+// null when the skill is not installed (or on Windows, where the skill's
+// PowerShell variant would need an agent to drive it).
+function resolveWorkspaceScripts(projectRoot, agentKey) {
+  if (process.platform === "win32") return null;
+  const agentDef = getAgent(agentKey);
+  if (!agentDef || !agentDef.skills_dir) return null;
+  const dir = resolve(projectRoot, expandTilde(agentDef.skills_dir), "workspace", "scripts", "bash");
+  const init = join(dir, "setup-workspace.sh");
+  const link = join(dir, "workspace.sh");
+  return existsSync(init) && existsSync(link) ? { init, link } : null;
+}
+
+// Mirrors the workspace skill's --init/--link contract without an agent:
+// setup-workspace.sh --json, append (never remove) the .gitignore rules it
+// reports missing and commit them, then workspace.sh --json --link.
+async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, dirtyBefore = null) {
+  const linkFlag = link ? " --link" : "";
+  sectionHeader(`workspace init${link ? " + link" : ""}`);
+  const scripts = resolveWorkspaceScripts(projectRoot, agent);
+  if (dryRun) {
+    const agentDef = getAgent(agent);
+    const base = join((agentDef && agentDef.skills_dir) || "<skills_dir>", "workspace", "scripts", "bash");
+    item(`$ bash ${join(base, "setup-workspace.sh")} --json`, { glyph: sym.arrow, color: "gray" });
+    if (link) item(`$ bash ${join(base, "workspace.sh")} --json --link`, { glyph: sym.arrow, color: "gray" });
+    item(`(fallback when the workspace skill is not installed: agent run -a ${agent} "Run /workspace --init${linkFlag}")`, {
+      glyph: sym.arrow,
+      color: "gray",
+    });
+    return 0;
+  }
+  if (!scripts) {
+    item(`workspace skill scripts not installed — agent-led fallback`, { glyph: sym.arrow, color: "gray" });
+    item(`agent run -a ${agent} "Run /workspace --init${linkFlag}"`, { glyph: sym.arrow, color: "gray" });
+    const code = await cmdAgentRun(["-a", agent, `Run /workspace --init${linkFlag}`]);
+    if (code !== 0) {
+      failure("workspace init failed");
+      return code || 1;
+    }
+    return 0;
+  }
+
+  item(`$ bash ${relative(projectRoot, scripts.init)} --json`, { glyph: sym.arrow, color: "gray" });
+  const init = spawnSync("bash", [scripts.init, "--json"], {
+    cwd: projectRoot,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "inherit"],
+    timeout: WORKSPACE_SCRIPT_TIMEOUT_MS,
+  });
+  if (init.status !== 0) {
+    failure(`workspace init script failed (${init.status === null ? `killed: ${init.signal}` : `exit ${init.status}`})`);
+    return init.status || 1;
+  }
+  let report;
+  try {
+    // The script prints one JSON object (pretty-printed by jq) on stdout.
+    const initOut = String(init.stdout);
+    report = JSON.parse(initOut.slice(initOut.indexOf("{")));
+  } catch {
+    failure("workspace init script did not emit JSON");
+    return 1;
+  }
+  const missing = Array.isArray(report.GITIGNORE_RULES_MISSING)
+    ? report.GITIGNORE_RULES_MISSING.filter((r) => typeof r === "string" && r !== "" && !r.includes("\n"))
+    : [];
+  if (missing.length > 0) {
+    const code = appendGitignoreRules(projectRoot, missing);
+    if (code !== 0) return code;
+  }
+
+  if (link) {
+    item(`$ bash ${relative(projectRoot, scripts.link)} --json --link`, { glyph: sym.arrow, color: "gray" });
+    // Before this step, init ran on the clean clone. Now skills install runs
+    // first and rewrites tracked files (.adlc/init-options.json), and
+    // workspace.sh --link refuses on any tracked change — so set aside only
+    // the files setup itself changed, and put them back afterwards.
+    const res = withSetupChangesSetAside(projectRoot, dirtyBefore, () =>
+      spawnSync("bash", [scripts.link, "--json", "--link"], {
+        cwd: projectRoot,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "inherit"],
+        timeout: WORKSPACE_SCRIPT_TIMEOUT_MS,
+      })
+    );
+    const linkOut = String(res.stdout || "");
+    if (res.status !== 0) {
+      // On refusal the script's JSON carries the reason; show it raw.
+      process.stdout.write(linkOut);
+      failure(`workspace link script failed (${res.status === null ? `killed: ${res.signal}` : `exit ${res.status}`})`);
+      return res.status || 1;
+    }
+    // workspace.sh exits 0 even when a repo fails to link — the errors are
+    // only in its JSON report, which an agent would have read.
+    let linkReport = null;
+    try {
+      linkReport = JSON.parse(linkOut.slice(linkOut.indexOf("{")));
+    } catch {
+      failure("workspace link script did not emit JSON");
+      return 1;
+    }
+    const count = (key) => Number(linkReport[key]) || 0;
+    item(
+      `link: ${count("REGISTERED_COUNT")} registered, ${count("SKIPPED_COUNT")} skipped, ${count("ERROR_COUNT")} error(s)`,
+      { glyph: sym.arrow, color: "gray" }
+    );
+    if (Number(linkReport.ERROR_COUNT) > 0) {
+      const errors = Array.isArray(linkReport.ERRORS) ? linkReport.ERRORS.join("; ") : "";
+      failure(`workspace link reported ${linkReport.ERROR_COUNT} error(s)${errors ? `: ${errors}` : ""}`);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+// Tracked paths (relative to the repo top level) that differ from HEAD,
+// staged or not, plus the top level itself; null outside a git work tree.
+function trackedChanges(projectRoot) {
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: projectRoot, encoding: "utf-8" });
+  if (top.status !== 0) return null;
+  const root = top.stdout.trim();
+  const diff = spawnSync("git", ["diff", "--name-only", "HEAD"], { cwd: root, encoding: "utf-8" });
+  if (diff.status !== 0) return null;
+  return { root, paths: new Set(diff.stdout.split("\n").filter(Boolean)) };
+}
+
+// Runs fn with the tracked files setup changed since `before` restored to
+// HEAD, then writes setup's versions back (also when fn throws).
+function withSetupChangesSetAside(projectRoot, before, fn) {
+  const now = before ? trackedChanges(projectRoot) : null;
+  const changed = now ? [...now.paths].filter((p) => !before.paths.has(p)) : [];
+  if (changed.length === 0) return fn();
+  const saved = changed.map((p) => {
+    const file = join(now.root, p);
+    return { file, content: existsSync(file) ? readFileSync(file) : null };
+  });
+  item(`setting aside setup's own changes for --link: ${changed.join(", ")}`, { glyph: sym.arrow, color: "gray" });
+  spawnSync("git", ["checkout", "HEAD", "--", ...changed], { cwd: now.root, stdio: "inherit" });
+  try {
+    return fn();
+  } finally {
+    for (const { file, content } of saved) {
+      if (content === null) rmSync(file, { force: true });
+      else writeFileSync(file, content);
+    }
+  }
+}
+
+function appendGitignoreRules(projectRoot, rules) {
+  const file = join(projectRoot, ".gitignore");
+  const current = existsSync(file) ? readFileSync(file, "utf-8") : "";
+  const prefix = current === "" || current.endsWith("\n") ? "" : "\n";
+  writeFileSync(file, current + prefix + rules.join("\n") + "\n", "utf-8");
+  item(`.gitignore: added ${rules.length} rule(s)`, { glyph: sym.arrow, color: "gray" });
+  // The skill commits the rules; outside a git work tree (greenfield, no
+  // `git init` yet) there is nothing to commit to.
+  const inside = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: projectRoot, encoding: "utf-8" });
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") return 0;
+  const add = spawnSync("git", ["add", "--", ".gitignore"], { cwd: projectRoot, stdio: "inherit" });
+  const commit =
+    add.status === 0
+      ? spawnSync("git", ["commit", "-q", "-m", GITIGNORE_COMMIT_MSG, "--", ".gitignore"], {
+          cwd: projectRoot,
+          stdio: "inherit",
+        })
+      : add;
+  if (commit.status !== 0) {
+    failure("could not commit .gitignore rules");
+    return commit.status || 1;
+  }
+  return 0;
+}
+
+// True when `dir` is a real directory (not a symlink) with no entries, e.g.
+// an uninitialized submodule placeholder left by a non-recursive clone. A
+// symlink never counts as empty: cloning into one could write outside the
+// project root.
+function isEmptyDir(dir) {
+  try {
+    return lstatSync(dir).isDirectory() && readdirSync(dir).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+// True when `path` is registered as a submodule path in projectRoot's
+// .gitmodules (false with no .gitmodules, outside a git repo, or unregistered).
+function isRegisteredSubmodule(projectRoot, path) {
+  if (!existsSync(join(projectRoot, ".gitmodules"))) return false;
+  const r = spawnSync(
+    "git",
+    ["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+    { cwd: projectRoot, encoding: "utf-8" }
+  );
+  if (r.status !== 0) return false;
+  const want = path.replace(/^\.\//, "").replace(/\/+$/, "");
+  return r.stdout
+    .split("\n")
+    .some((line) => line.slice(line.indexOf(" ") + 1).trim() === want);
 }
 
 export function isSafeGitRemote(url) {
@@ -297,7 +507,7 @@ export async function cmdWorkspaceSetup(args, flags) {
         return 1;
       }
       const target = join(projectRoot, mod.path);
-      if (existsSync(target)) {
+      if (existsSync(target) && !isEmptyDir(target)) {
         item(`${mod.path} (exists, skipping clone)`, { glyph: sym.exists, color: "gray" });
         continue;
       }
@@ -342,6 +552,29 @@ export async function cmdWorkspaceSetup(args, flags) {
         }
       }
       changed = true;
+      // An empty dir at a registered submodule path is a non-recursive clone's
+      // placeholder: check it out at the superproject's pinned commit instead
+      // of skipping it (git clone into an empty dir covers the other case).
+      if (existsSync(target) && isRegisteredSubmodule(projectRoot, mod.path)) {
+        // git fetches from the URL in .gitmodules (the trusted superproject's),
+        // not from mod.repo; git's protocol policy applies to it.
+        const subArgs = ["submodule", "update", "--init", "--", mod.path];
+        item(`$ git ${subArgs.join(" ")}`, { glyph: sym.arrow, color: "gray" });
+        if (mod.branch || mod.ref) {
+          item(`branch/ref ignored for submodule ${mod.path} (the superproject pins its commit)`, {
+            glyph: sym.arrow,
+            color: "gray",
+          });
+        }
+        if (!dryRun) {
+          const result = spawnSync("git", subArgs, { stdio: "inherit", cwd: projectRoot });
+          if (result.status !== 0) {
+            failure(`git submodule update failed for ${mod.path}`);
+            return result.status || 1;
+          }
+        }
+        continue;
+      }
       const gitArgs = ["clone", safeRepo, mod.path];
       if (mod.branch) gitArgs.push("--branch", resolveSecrets(mod.branch));
       // The printed plan must never carry a secret — not even a 2-character
@@ -406,25 +639,12 @@ export async function cmdWorkspaceSetup(args, flags) {
     }
   }
 
-  // 6. workspace.init / workspace.link — agent-led (workspace skill)
-  if (ws.init) {
-    const linkFlag = ws.link ? " --link" : "";
-    sectionHeader(`workspace init${ws.link ? " + link" : ""} (agent-led)`);
-    if (dryRun) {
-      item(`agent run -a ${agent} "Run /workspace --init${linkFlag}"`, {
-        glyph: sym.arrow,
-        color: "gray",
-      });
-    } else {
-      const code = await cmdAgentRun(["-a", agent, `Run /workspace --init${linkFlag}`]);
-      if (code !== 0) {
-        failure("workspace init failed");
-        return code || 1;
-      }
-    }
-  }
+  // Tracked files already changed before setup installs skills: `--link`
+  // must still refuse on those, but not on files setup itself changes below.
+  const dirtyBeforeSkills = !dryRun && ws.init && ws.link ? trackedChanges(projectRoot) : null;
 
-  // 7. skills.sources — deterministic install (no LLM); -y: setup is non-interactive
+  // 6. skills.sources — deterministic install (no LLM); -y: setup is non-interactive.
+  // Runs before init so the workspace skill's scripts exist when init needs them.
   const sources = wsfile.skills && wsfile.skills.sources;
   if (Array.isArray(sources) && sources.length > 0) {
     sectionHeader(`skills.sources (${sources.length} source(s))`);
@@ -438,6 +658,14 @@ export async function cmdWorkspaceSetup(args, flags) {
         }
       }
     }
+  }
+
+  // 7. workspace.init / workspace.link — the installed workspace skill's own
+  // scripts, run directly (no LLM). Agent-led only as a fallback when the
+  // skill (or bash) is not available.
+  if (ws.init) {
+    const code = await runWorkspaceInit(projectRoot, agent, !!ws.link, dryRun, cmdAgentRun, dirtyBeforeSkills);
+    if (code !== 0) return code;
   }
 
   // 8. commands — sequential, stop on first failure
