@@ -253,50 +253,52 @@ export async function cmdUpdate(args, flags) {
 
   if (flags.pull) {
     const lockPath = join(projectRoot, "skills-lock.json");
-    let pullSource = null;
+    let pullSources = [];
     if (existsSync(lockPath)) {
       try {
         const lock = JSON.parse(readFileSync(lockPath, "utf-8"));
         const skillNames = flags.skill && flags.skill !== "*" ? [flags.skill] : Object.keys(lock.skills || {});
         for (const name of skillNames) {
           const entry = lock.skills?.[name];
-          if (entry?.source && !pullSource) pullSource = entry.source;
+          if (entry?.source && !pullSources.includes(entry.source)) pullSources.push(entry.source);
         }
       } catch {}
     }
-    // Fallback: read from init-options.json
-    if (!pullSource) {
-      pullSource = readSkillsSource();
+    // Fallback: read from init-options.json (string or array of sources)
+    if (pullSources.length === 0) {
+      pullSources = readSkillsSource() ?? [];
     }
-    if (!pullSource) {
+    if (pullSources.length === 0) {
       error("--pull requires skills-lock.json with source info (run 'add' first)");
       return 1;
     }
-    // Resolve the selective-install closure once (shared across agents).
-    let pullSelected = null;
-    if (flags.skill && flags.skill !== "*") {
-      pullSelected = expandSkillSelection(await fetchSkillsDeps(pullSource), flags.skill);
-    }
-    for (const agentKey of agents) {
-      const npxAgent = resolveNpxAgent(agentKey);
-      const npxArgs = ["--yes", resolveSkillsPackageSpec(), "add", pullSource, "-a", npxAgent, "--copy"];
-      if (pullSelected) {
-        for (const name of pullSelected) npxArgs.push("-s", name);
+    for (const pullSource of pullSources) {
+      // Resolve the selective-install closure once per source (shared across agents).
+      let pullSelected = null;
+      if (flags.skill && flags.skill !== "*") {
+        pullSelected = expandSkillSelection(await fetchSkillsDeps(pullSource), flags.skill);
       }
-      npxArgs.push("-y");
-      out("");
-      out(combine(style("▸", ACCENT), ' ', style(`Pulling latest skills for ${agentKey}`, "bold")));
-      item(`npx ${npxArgs.join(" ")}`, { glyph: sym.arrow, color: "gray" });
-      const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
-      if (result.status !== 0) {
-        if (result.error) {
-          item(`could not run npx: ${result.error.message}`, { glyph: sym.failure, color: "red" });
+      for (const agentKey of agents) {
+        const npxAgent = resolveNpxAgent(agentKey);
+        const npxArgs = ["--yes", resolveSkillsPackageSpec(), "add", pullSource, "-a", npxAgent, "--copy"];
+        if (pullSelected) {
+          for (const name of pullSelected) npxArgs.push("-s", name);
         }
-        item(`npx skills add failed for ${agentKey}`, { glyph: sym.failure, color: "red" });
-        const spawnError = describeSpawnError(result);
-        if (spawnError) item(`spawn error: ${spawnError}`, { glyph: sym.info, color: "gray" });
-        failure(`skills pull failed for ${agentKey}`);
-        return result.status || 1;
+        npxArgs.push("-y");
+        out("");
+        out(combine(style("▸", ACCENT), ' ', style(`Pulling latest skills for ${agentKey}`, "bold")));
+        item(`npx ${npxArgs.join(" ")}`, { glyph: sym.arrow, color: "gray" });
+        const result = spawnNpxSync(npxArgs, { stdio: "inherit", cwd: projectRoot });
+        if (result.status !== 0) {
+          if (result.error) {
+            item(`could not run npx: ${result.error.message}`, { glyph: sym.failure, color: "red" });
+          }
+          item(`npx skills add failed for ${agentKey}`, { glyph: sym.failure, color: "red" });
+          const spawnError = describeSpawnError(result);
+          if (spawnError) item(`spawn error: ${spawnError}`, { glyph: sym.info, color: "gray" });
+          failure(`skills pull failed for ${agentKey}`);
+          return result.status || 1;
+        }
       }
     }
   }

@@ -20,7 +20,7 @@ import {
 import { join, resolve, relative, isAbsolute, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { parseYaml } from "../utils/yaml.mjs";
-import { readAgent } from "../utils/init-options.mjs";
+import { readAgent, writeSkillsSource } from "../utils/init-options.mjs";
 import { getAgent } from "../registry.mjs";
 import { expandTilde } from "../source.mjs";
 import {
@@ -658,6 +658,9 @@ export async function cmdWorkspaceSetup(args, flags) {
         }
       }
     }
+    // `skills add` records one source at a time; record the whole list so later
+    // `skills update --pull` / `team update` refresh every source.
+    if (!dryRun) writeSkillsSource(sources);
   }
 
   // 7. workspace.init / workspace.link — the installed workspace skill's own
