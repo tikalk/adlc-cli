@@ -2,7 +2,7 @@
 // first-boot-only goal semantics), init/status prompts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -91,6 +91,7 @@ test("setup errors on workspace file missing schema_version", async () => {
 test("setup skips clone when target path already exists (idempotent)", async () => {
   const dir = makeTempWorkspace();
   mkdirSync(join(dir, "backend")); // pre-existing repo dir
+  writeFileSync(join(dir, "backend", "README.md"), "checked out\n", "utf-8");
   try {
     const r = await run(["workspace", "setup", "--dry-run"], dir);
     assert.equal(r.code ?? 0, 0, r.stderr);
@@ -620,6 +621,104 @@ goal: > # folded multiline goal
     assert.equal(agentLines.length, 1, `expected one agent run line, got: ${r.stdout}`);
     assert.match(agentLines[0], /agent run -a opencode "Run the setup for this project"/);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── empty target dirs (uninitialized submodules) ───────────────────────
+// A non-recursive clone of a superproject leaves each submodule as an empty
+// placeholder dir. Setup must populate it, not skip it as "exists".
+
+const GIT_ONLY_YML = (repo) => `schema_version: "1.0"
+name: "Test Workspace"
+version: "1.0.0"
+agent: opencode
+
+workspace:
+  git:
+    - repo: ${repo}
+      path: child
+`;
+
+// Local file:// submodules need protocol.file.allow (git >= 2.38.1).
+const GIT_ENV = {
+  ...process.env,
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "protocol.file.allow",
+  GIT_CONFIG_VALUE_0: "always",
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@example.com",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@example.com",
+};
+const git = (args, cwd) => {
+  const r = spawnSync("git", args, { cwd, env: GIT_ENV, encoding: "utf-8" });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
+  return r.stdout.trim();
+};
+
+// Builds <root>/src (child repo, one commit) and <root>/ws — a non-recursive
+// clone of a superproject that registers src as submodule "child".
+function makeSuperprojectClone() {
+  const root = mkdtempSync(join(tmpdir(), "adlc-ws-sub-"));
+  const src = join(root, "src");
+  mkdirSync(src);
+  git(["init", "-q", "-b", "main"], src);
+  writeFileSync(join(src, "CDR.md"), "# child\n", "utf-8");
+  git(["add", "."], src);
+  git(["commit", "-q", "-m", "child"], src);
+  const pinned = git(["rev-parse", "HEAD"], src);
+
+  const sup = join(root, "sup");
+  mkdirSync(sup);
+  git(["init", "-q", "-b", "main"], sup);
+  git(["submodule", "add", "-q", src, "child"], sup);
+  mkdirSync(join(sup, ".adlc"));
+  writeFileSync(join(sup, ".adlc", "workspace.yml"), GIT_ONLY_YML(src), "utf-8");
+  git(["add", "."], sup);
+  git(["commit", "-q", "-m", "sup"], sup);
+
+  const ws = join(root, "ws");
+  git(["clone", "-q", sup, ws]); // no --recurse-submodules → child/ is empty
+  return { root, src, ws, pinned };
+}
+
+test("setup --dry-run: empty registered submodule dir is initialized, not skipped", async () => {
+  const { root, ws } = makeSuperprojectClone();
+  try {
+    const r = await run(["workspace", "setup", "--dry-run"], ws, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /child \(exists, skipping clone\)/);
+    assert.match(r.stdout, /git submodule update --init -- child/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("setup: empty registered submodule dir is checked out at the pinned commit", async () => {
+  const { root, ws, pinned } = makeSuperprojectClone();
+  try {
+    const r = await run(["workspace", "setup"], ws, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.ok(existsSync(join(ws, "child", "CDR.md")), "submodule content missing");
+    assert.equal(git(["rev-parse", "HEAD"], join(ws, "child")), pinned);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("setup: empty plain dir (not a submodule) is cloned into", async () => {
+  const { root, src } = makeSuperprojectClone();
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-empty-"));
+  try {
+    mkdirSync(join(dir, ".adlc"));
+    writeFileSync(join(dir, ".adlc", "workspace.yml"), GIT_ONLY_YML(src), "utf-8");
+    mkdirSync(join(dir, "child")); // empty placeholder, no superproject
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.ok(existsSync(join(dir, "child", "CDR.md")), "clone content missing");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });

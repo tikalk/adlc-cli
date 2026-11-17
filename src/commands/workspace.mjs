@@ -13,6 +13,8 @@ import {
   writeFileSync,
   chmodSync,
   rmSync,
+  readdirSync,
+  statSync,
 } from "node:fs";
 import { join, resolve, relative, isAbsolute, sep } from "node:path";
 import { tmpdir } from "node:os";
@@ -55,6 +57,32 @@ export function isHttpUrl(source) {
 
 export function isHttpsUrl(source) {
   return /^https:\/\//i.test(source);
+}
+
+// True when `dir` is a directory with no entries (e.g. an uninitialized
+// submodule placeholder left by a non-recursive clone).
+function isEmptyDir(dir) {
+  try {
+    return statSync(dir).isDirectory() && readdirSync(dir).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+// True when `path` is registered as a submodule path in projectRoot's
+// .gitmodules (false with no .gitmodules, outside a git repo, or unregistered).
+function isRegisteredSubmodule(projectRoot, path) {
+  if (!existsSync(join(projectRoot, ".gitmodules"))) return false;
+  const r = spawnSync(
+    "git",
+    ["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+    { cwd: projectRoot, encoding: "utf-8" }
+  );
+  if (r.status !== 0) return false;
+  const want = path.replace(/^\.\//, "").replace(/\/+$/, "");
+  return r.stdout
+    .split("\n")
+    .some((line) => line.slice(line.indexOf(" ") + 1).trim() === want && line.includes(".path "));
 }
 
 export function isSafeGitRemote(url) {
@@ -297,7 +325,7 @@ export async function cmdWorkspaceSetup(args, flags) {
         return 1;
       }
       const target = join(projectRoot, mod.path);
-      if (existsSync(target)) {
+      if (existsSync(target) && !isEmptyDir(target)) {
         item(`${mod.path} (exists, skipping clone)`, { glyph: sym.exists, color: "gray" });
         continue;
       }
@@ -342,6 +370,21 @@ export async function cmdWorkspaceSetup(args, flags) {
         }
       }
       changed = true;
+      // An empty dir at a registered submodule path is a non-recursive clone's
+      // placeholder: check it out at the superproject's pinned commit instead
+      // of skipping it (git clone into an empty dir covers the other case).
+      if (existsSync(target) && isRegisteredSubmodule(projectRoot, mod.path)) {
+        const subArgs = ["submodule", "update", "--init", "--", mod.path];
+        item(`$ git ${subArgs.join(" ")}`, { glyph: sym.arrow, color: "gray" });
+        if (!dryRun) {
+          const result = spawnSync("git", subArgs, { stdio: "inherit", cwd: projectRoot });
+          if (result.status !== 0) {
+            failure(`git submodule update failed for ${mod.path}`);
+            return result.status || 1;
+          }
+        }
+        continue;
+      }
       const gitArgs = ["clone", safeRepo, mod.path];
       if (mod.branch) gitArgs.push("--branch", resolveSecrets(mod.branch));
       // The printed plan must never carry a secret — not even a 2-character
