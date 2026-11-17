@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, symlinkSync, lstatSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,8 +55,14 @@ test("setup --dry-run prints the full plan without executing", async () => {
     assert.match(r.stdout, /git clone https:\/\/github\.com\/org\/backend backend --branch main/);
     assert.match(r.stdout, /mkdir -p adlc-team-skills/);
     assert.match(r.stdout, /workspace init \+ link\b/);
-    assert.match(r.stdout, /setup-workspace\.sh --json/);
-    assert.match(r.stdout, /workspace\.sh --json --link/);
+    if (process.platform === "win32") {
+      // bash scripts never run on Windows: the plan shows the agent fallback only
+      assert.doesNotMatch(r.stdout, /setup-workspace\.sh --json/);
+      assert.match(r.stdout, /agent run -a opencode "Run \/workspace --init --link"/);
+    } else {
+      assert.match(r.stdout, /setup-workspace\.sh --json/);
+      assert.match(r.stdout, /workspace\.sh --json --link/);
+    }
     assert.match(r.stdout, /skills add tikalk\/adlc-team-skills/);
     // skills install before init, so the workspace skill's scripts exist
     assert.ok(
@@ -747,18 +753,20 @@ workspace:
 const POSIX_ONLY = { skip: process.platform === "win32" && "workspace skill scripts are bash-only" };
 
 // Stub workspace-skill scripts under opencode's skills_dir (.agents/skills).
-function installWorkspaceScriptStubs(dir, missingRules = [], linkErrors = 0) {
+function installWorkspaceScriptStubs(dir, missingRules = [], linkErrors = 0, raw = {}) {
   const bin = join(dir, ".agents", "skills", "workspace", "scripts", "bash");
   mkdirSync(bin, { recursive: true });
   const log = join(dir, "scripts.log");
   // Pretty-printed across lines, like the real script's `jq -n` output.
-  const initJson = JSON.stringify({ GITIGNORE_RULES_MISSING: missingRules, CHILD_COUNT: 0 }, null, 2);
+  const initJson = raw.init ?? JSON.stringify({ GITIGNORE_RULES_MISSING: missingRules, CHILD_COUNT: 0 }, null, 2);
   // workspace.sh exits 0 even when a repo failed to link; errors are in JSON.
-  const linkJson = JSON.stringify(
-    { MODE: "link", ERROR_COUNT: linkErrors, ERRORS: linkErrors ? ["child: not a git repo"] : [] },
-    null,
-    2
-  );
+  const linkJson =
+    raw.link ??
+    JSON.stringify(
+      { MODE: "link", ERROR_COUNT: linkErrors, ERRORS: linkErrors ? ["child: not a git repo"] : [] },
+      null,
+      2
+    );
   writeFileSync(
     join(bin, "setup-workspace.sh"),
     `#!/usr/bin/env bash\necho "setup-workspace.sh $*" >> "${log}"\necho '${initJson}'\n`,
@@ -916,6 +924,11 @@ echo '{"ERROR_COUNT": 0, "ERRORS": []}'
     assert.match(readFileSync(log, "utf-8"), /workspace\.sh --json --link/);
     const opts = JSON.parse(readFileSync(join(dir, ".adlc", "init-options.json"), "utf-8"));
     assert.equal(opts.skills_source, "./skills-src", "setup's own init-options change must survive link");
+    // Re-run: init-options.json is now already changed (by run 1) before
+    // skills install; setup still owns it, so link must not refuse on it.
+    const again = await run(["workspace", "setup"], dir, fakeNpxEnv(dir));
+    assert.equal(again.code ?? 0, 0, again.stderr + again.stdout);
+    assert.equal(readFileSync(log, "utf-8").match(/workspace\.sh --json --link/g).length, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -962,5 +975,78 @@ test("setup: link prints a one-line summary, not the raw JSON report", POSIX_ONL
     assert.match(r.stdout, /link: 0 registered, 0 skipped, 0 error\(s\)/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── follow-up: advisory nits from PR #90 reviews ─────────────────────────
+
+test("trackedChanges reports non-ASCII paths unquoted (N3)", async () => {
+  const { trackedChanges } = await import("../src/commands/workspace.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-utf8-"));
+  try {
+    git(["init", "-q", "-b", "main"], dir);
+    writeFileSync(join(dir, "קובץ.txt"), "a\n", "utf-8");
+    git(["add", "."], dir);
+    git(["commit", "-q", "-m", "base"], dir);
+    writeFileSync(join(dir, "קובץ.txt"), "b\n", "utf-8");
+    const changes = trackedChanges(dir);
+    assert.ok(changes.paths.has("קובץ.txt"), [...changes.paths].join(","));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: init fails on a report without GITIGNORE_RULES_MISSING (O-N2)", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML.replace("link: true", "link: false"));
+  try {
+    installWorkspaceScriptStubs(dir, [], 0, { init: JSON.stringify({ CHILD_COUNT: 0 }) });
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.notEqual(r.code ?? 0, 0, "a malformed init report must fail setup");
+    assert.match(r.stdout + r.stderr, /GITIGNORE_RULES_MISSING/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: link fails on a report without ERROR_COUNT (O-N2)", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML);
+  try {
+    git(["init", "-q", "-b", "main"], dir);
+    installWorkspaceScriptStubs(dir, [], 0, { link: JSON.stringify({ MODE: "link" }) });
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.notEqual(r.code ?? 0, 0, "a malformed link report must fail setup");
+    assert.match(r.stdout + r.stderr, /ERROR_COUNT/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: .gitignore append skips rules already present and rules with \\r (O-N3)", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML.replace("link: true", "link: false"));
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".adlc/*\n", "utf-8");
+    installWorkspaceScriptStubs(dir, [".adlc/*", "bad\rrule", "graphify-out/"]);
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.equal(readFileSync(join(dir, ".gitignore"), "utf-8"), ".adlc/*\ngraphify-out/\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: refuses to write through a symlinked .gitignore (O-N4)", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML.replace("link: true", "link: false"));
+  const outside = mkdtempSync(join(tmpdir(), "adlc-ws-gi-"));
+  try {
+    writeFileSync(join(outside, "target"), "", "utf-8");
+    symlinkSync(join(outside, "target"), join(dir, ".gitignore"));
+    installWorkspaceScriptStubs(dir, ["graphify-out/"]);
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.notEqual(r.code ?? 0, 0, "a symlinked .gitignore must fail setup");
+    assert.equal(readFileSync(join(outside, "target"), "utf-8"), "", "nothing written through the link");
+    assert.ok(lstatSync(join(dir, ".gitignore")).isSymbolicLink());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });

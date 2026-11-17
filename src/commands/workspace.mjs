@@ -64,8 +64,25 @@ export function isHttpsUrl(source) {
 
 // ── workspace init/link (deterministic) ─────────────────────────────────
 const GITIGNORE_COMMIT_MSG = "[workspace] Configure .gitignore for workspace conventions";
+// Tracked files setup itself writes (skills add / team setup), relative to
+// the project root.
+const SETUP_OWNED_FILES = [".adlc/init-options.json"];
 // A hung skill script must not hang setup; init/link finish in seconds.
 const WORKSPACE_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
+
+// The workspace scripts print one JSON object (pretty-printed by jq) on
+// stdout; null when there is none.
+function parseScriptJson(stdout) {
+  const text = String(stdout || "");
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  try {
+    const value = JSON.parse(text.slice(start));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 // The workspace skill's bash scripts in the agent's project skills dir, or
 // null when the skill is not installed (or on Windows, where the skill's
@@ -87,6 +104,10 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
   const linkFlag = link ? " --link" : "";
   sectionHeader(`workspace init${link ? " + link" : ""}`);
   const scripts = resolveWorkspaceScripts(projectRoot, agent);
+  if (dryRun && process.platform === "win32") {
+    item(`agent run -a ${agent} "Run /workspace --init${linkFlag}"`, { glyph: sym.arrow, color: "gray" });
+    return 0;
+  }
   if (dryRun) {
     const agentDef = getAgent(agent);
     const base = join((agentDef && agentDef.skills_dir) || "<skills_dir>", "workspace", "scripts", "bash");
@@ -120,18 +141,19 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
     failure(`workspace init script failed (${init.status === null ? `killed: ${init.signal}` : `exit ${init.status}`})`);
     return init.status || 1;
   }
-  let report;
-  try {
-    // The script prints one JSON object (pretty-printed by jq) on stdout.
-    const initOut = String(init.stdout);
-    report = JSON.parse(initOut.slice(initOut.indexOf("{")));
-  } catch {
+  const report = parseScriptJson(init.stdout);
+  if (!report) {
     failure("workspace init script did not emit JSON");
     return 1;
   }
-  const missing = Array.isArray(report.GITIGNORE_RULES_MISSING)
-    ? report.GITIGNORE_RULES_MISSING.filter((r) => typeof r === "string" && r !== "" && !r.includes("\n"))
-    : [];
+  // Fail closed on a report that breaks the skill's contract.
+  if (!Array.isArray(report.GITIGNORE_RULES_MISSING)) {
+    failure("workspace init report has no GITIGNORE_RULES_MISSING array");
+    return 1;
+  }
+  const missing = report.GITIGNORE_RULES_MISSING.filter(
+    (r) => typeof r === "string" && r !== "" && !/[\r\n]/.test(r)
+  );
   if (missing.length > 0) {
     const code = appendGitignoreRules(projectRoot, missing);
     if (code !== 0) return code;
@@ -151,6 +173,10 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
         timeout: WORKSPACE_SCRIPT_TIMEOUT_MS,
       })
     );
+    if (res === null) {
+      failure("could not set aside setup's own changes for --link (git checkout failed)");
+      return 1;
+    }
     const linkOut = String(res.stdout || "");
     if (res.status !== 0) {
       // On refusal the script's JSON carries the reason; show it raw.
@@ -160,11 +186,13 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
     }
     // workspace.sh exits 0 even when a repo fails to link — the errors are
     // only in its JSON report, which an agent would have read.
-    let linkReport = null;
-    try {
-      linkReport = JSON.parse(linkOut.slice(linkOut.indexOf("{")));
-    } catch {
+    const linkReport = parseScriptJson(linkOut);
+    if (!linkReport) {
       failure("workspace link script did not emit JSON");
+      return 1;
+    }
+    if (!Number.isInteger(linkReport.ERROR_COUNT)) {
+      failure("workspace link report has no numeric ERROR_COUNT");
       return 1;
     }
     const count = (key) => Number(linkReport[key]) || 0;
@@ -183,29 +211,37 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
 
 // Tracked paths (relative to the repo top level) that differ from HEAD,
 // staged or not, plus the top level itself; null outside a git work tree.
-function trackedChanges(projectRoot) {
+// -z keeps non-ASCII paths unquoted (core.quotepath).
+export function trackedChanges(projectRoot) {
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: projectRoot, encoding: "utf-8" });
   if (top.status !== 0) return null;
   const root = top.stdout.trim();
-  const diff = spawnSync("git", ["diff", "--name-only", "HEAD"], { cwd: root, encoding: "utf-8" });
+  const diff = spawnSync("git", ["diff", "-z", "--name-only", "HEAD"], { cwd: root, encoding: "utf-8" });
   if (diff.status !== 0) return null;
-  return { root, paths: new Set(diff.stdout.split("\n").filter(Boolean)) };
+  return { root, paths: new Set(diff.stdout.split("\0").filter(Boolean)) };
 }
 
 // Runs fn with the tracked files setup changed since `before` restored to
-// HEAD, then writes setup's versions back (also when fn throws).
+// HEAD, then writes setup's versions back (also when fn throws). Contract:
+// fn (workspace.sh --link) must not write those files, since the restore
+// would overwrite its changes. Returns null when they cannot be set aside.
 function withSetupChangesSetAside(projectRoot, before, fn) {
   const now = before ? trackedChanges(projectRoot) : null;
-  const changed = now ? [...now.paths].filter((p) => !before.paths.has(p)) : [];
+  // Files setup owns are set aside even when already changed before this run
+  // (e.g. by a previous setup run); their contents are written back as-is.
+  const owned = now
+    ? SETUP_OWNED_FILES.map((f) => relative(now.root, join(projectRoot, f)).split(sep).join("/"))
+    : [];
+  const changed = now ? [...now.paths].filter((p) => !before.paths.has(p) || owned.includes(p)) : [];
   if (changed.length === 0) return fn();
   const saved = changed.map((p) => {
     const file = join(now.root, p);
     return { file, content: existsSync(file) ? readFileSync(file) : null };
   });
   item(`setting aside setup's own changes for --link: ${changed.join(", ")}`, { glyph: sym.arrow, color: "gray" });
-  spawnSync("git", ["checkout", "HEAD", "--", ...changed], { cwd: now.root, stdio: "inherit" });
+  const checkout = spawnSync("git", ["checkout", "HEAD", "--", ...changed], { cwd: now.root, stdio: "inherit" });
   try {
-    return fn();
+    return checkout.status === 0 ? fn() : null;
   } finally {
     for (const { file, content } of saved) {
       if (content === null) rmSync(file, { force: true });
@@ -216,10 +252,29 @@ function withSetupChangesSetAside(projectRoot, before, fn) {
 
 function appendGitignoreRules(projectRoot, rules) {
   const file = join(projectRoot, ".gitignore");
+  // Never write through a symlink: it could point outside the project.
+  let isLink = false;
+  try {
+    isLink = lstatSync(file).isSymbolicLink();
+  } catch {
+    // no .gitignore yet
+  }
+  if (isLink) {
+    failure(".gitignore is a symlink — refusing to append workspace rules");
+    return 1;
+  }
   const current = existsSync(file) ? readFileSync(file, "utf-8") : "";
+  const present = new Set(current.split(/\r?\n/));
+  const toAdd = [...new Set(rules)].filter((r) => !present.has(r));
+  if (toAdd.length === 0) return 0;
   const prefix = current === "" || current.endsWith("\n") ? "" : "\n";
-  writeFileSync(file, current + prefix + rules.join("\n") + "\n", "utf-8");
-  item(`.gitignore: added ${rules.length} rule(s)`, { glyph: sym.arrow, color: "gray" });
+  try {
+    writeFileSync(file, current + prefix + toAdd.join("\n") + "\n", "utf-8");
+  } catch (err) {
+    failure(`could not write .gitignore: ${err.message}`);
+    return 1;
+  }
+  item(`.gitignore: added ${toAdd.length} rule(s)`, { glyph: sym.arrow, color: "gray" });
   // The skill commits the rules; outside a git work tree (greenfield, no
   // `git init` yet) there is nothing to commit to.
   const inside = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: projectRoot, encoding: "utf-8" });
