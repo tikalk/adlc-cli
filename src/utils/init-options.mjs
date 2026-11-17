@@ -37,12 +37,27 @@ export function writeAgent(agent, projectRoot = process.cwd()) {
   return writeInitOptions({ agent }, projectRoot);
 }
 
-export function readSkillsSource(projectRoot = process.cwd()) {
-  return readInitOptions(projectRoot).skills_source || null;
+// `skills_source` is a string (one source) or an array of strings (several).
+// Normalize to a de-duplicated array of non-empty strings.
+export function normalizeSkillsSources(value) {
+  const list = Array.isArray(value) ? value : [value];
+  return [...new Set(list.filter((s) => typeof s === "string" && s.trim() !== ""))];
 }
 
+// Returns the configured sources as an array, or null when none are configured.
+export function readSkillsSource(projectRoot = process.cwd()) {
+  const sources = normalizeSkillsSources(readInitOptions(projectRoot).skills_source);
+  return sources.length > 0 ? sources : null;
+}
+
+// Adds `source` to the configured sources (never drops an existing one).
+// A single source stays a plain string so existing files keep their format.
 export function writeSkillsSource(source, projectRoot = process.cwd()) {
-  return writeInitOptions({ skills_source: source }, projectRoot);
+  const merged = normalizeSkillsSources([
+    ...(readSkillsSource(projectRoot) ?? []),
+    ...normalizeSkillsSources(source),
+  ]);
+  return writeInitOptions({ skills_source: merged.length === 1 ? merged[0] : merged }, projectRoot);
 }
 
 export function readTeamAiDirectives(projectRoot = process.cwd()) {

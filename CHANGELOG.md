@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Several skills sources** — `skills_source` in `.adlc/init-options.json` may be a string or an array of strings. `skills add` now adds a source to the list instead of overwriting it, and `skills update --pull` (and so `team update`) pulls from every listed source. A single string keeps working unchanged.
+
 ## [2.12.1] - 2026-11-09
 
 ### Fixed
