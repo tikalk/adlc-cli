@@ -54,6 +54,14 @@ function targetAgents(flags) {
   return ALL_AGENTS();
 }
 
+// A marked skill ships no command file (ADR-507). Both marker spellings
+// arrive as the string "true" after frontmatter quote-stripping, but the
+// bare boolean is accepted too.
+function isReferenceOnly(skill) {
+  const marker = skill.frontmatter?.["reference-only"];
+  return marker === true || marker === "true";
+}
+
 // ── add ────────────────────────────────────────────────────────────────
 export async function cmdAdd(args, flags) {
   const source = args[0];
@@ -171,7 +179,7 @@ export async function cmdAdd(args, flags) {
     let generated = 0;
     let referenceSkipped = 0;
     for (const skill of filtered) {
-      if (skill.frontmatter?.["reference-only"] === true || skill.frontmatter?.["reference-only"] === "true") {
+      if (isReferenceOnly(skill)) {
         referenceSkipped++;
         continue;
       }
@@ -333,10 +341,11 @@ export async function cmdUpdate(args, flags) {
     let skipped = 0;
 
     for (const skill of skills) {
-      if (skill.frontmatter?.["reference-only"] === true || skill.frontmatter?.["reference-only"] === "true") {
+      if (isReferenceOnly(skill)) {
         const filename = commandFilename(skill, agent, { prefix });
         const filepath = join(absCommandsDir, filename);
-        if (existsSync(filepath) && isGenerated(readFileSync(filepath, "utf-8"))) {
+        if (!existsSync(filepath)) continue; // nothing to clean up — not a skip
+        if (isGenerated(readFileSync(filepath, "utf-8"))) {
           rmSync(filepath);
           updated++;
         } else {

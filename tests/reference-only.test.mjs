@@ -181,3 +181,31 @@ it("skills update: deletes a stale generated command, preserves a user-authored 
     p.cleanup();
   }
 });
+
+it("skills update: a marked skill with no command file is neither updated nor skipped", async () => {
+  const p = project();
+  try {
+    const agent = getAgent("opencode");
+    const skills = await findInstalledSkills(".agents/skills", p.dir);
+    const byName = Object.fromEntries(skills.map((s) => [s.name, s]));
+
+    // Only ref-bool has a stale generated file; ref-str (also marked) has no
+    // file at all — it must not inflate the skipped count.
+    mkdirSync(p.path(".opencode/commands"), { recursive: true });
+    writeFileSync(
+      p.path(".opencode/commands/ref-bool.md"),
+      generateCommand(byName["ref-bool"], agent, { source: "pre-marker" }),
+      "utf-8",
+    );
+
+    const r = await run(["skills", "update", "-a", "opencode"], { cwd: p.dir, env: p.env });
+    assert.equal(r.status, 0, `exit ${r.status}: ${r.stderr || r.stdout}`);
+
+    assert.ok(!p.exists(".opencode/commands/ref-bool.md"), "stale generated command must be deleted");
+    assert.ok(!p.exists(".opencode/commands/ref-str.md"), "absent file must stay absent");
+    // 2 updates (ref-bool deletion + plain-skill generation), 0 skipped.
+    assert.match(r.stdout, /2 updated, 0 user-modified \(skipped\)/);
+  } finally {
+    p.cleanup();
+  }
+});
