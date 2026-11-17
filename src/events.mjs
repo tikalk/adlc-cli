@@ -692,6 +692,7 @@ function generateJsonNested(agentKey, projectRoot, resolvedEvents, skillsDir, ag
 
 function buildJsonNestedHooks(resolvedEvents, skillsDir, agentConfig, agentKey) {
   // Returns { <NativeEvent>: [ { type, command, timeout?, _adlc_skills_cli: true } ] }
+  // or, with agentConfig.matcher_groups, [ { _adlc_skills_cli: true, matcher?, hooks: [ {type, command, timeout?} ] } ]
   const result = {};
   for (const [canonicalEvent, handlers] of Object.entries(resolvedEvents)) {
     const nativeEvent = agentConfig.canonical_to_native[canonicalEvent];
@@ -705,6 +706,16 @@ function buildJsonNestedHooks(resolvedEvents, skillsDir, agentConfig, agentKey) 
       };
       // Include timeout in the agent's native unit (ms for gemini/qwen/tabnine).
       entry.timeout = nativeTimeout(agentConfig, h.timeout || 60);
+      if (agentConfig.matcher_groups) {
+        // Wrap in a matcher group; the marker moves to the group so merge and
+        // teardown (which filter top-level entries by marker) still find it.
+        delete entry[EVENT_MARKER];
+        const group = { [EVENT_MARKER]: true };
+        if (h.matcher) group.matcher = h.matcher;
+        group.hooks = [entry];
+        entries.push(group);
+        continue;
+      }
       if (h.matcher) entry.matcher = h.matcher;
       entries.push(entry);
     }

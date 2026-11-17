@@ -280,13 +280,44 @@ describe("Events: opencode plugin generation", () => {
       const post = settings.hooks.PostToolUse;
       assert.ok(Array.isArray(post), "PostToolUse array exists");
       assert.equal(post.length, 2, "both entries accumulated (regression: assignment overwrote)");
-      const fe = post.find((h) => h.command.includes("file_edited"));
-      assert.ok(fe, "file_edited entry present");
+      // Claude Code schema: each event holds matcher groups { matcher?, hooks: [ {type, command} ] }.
+      for (const g of post) {
+        assert.ok(Array.isArray(g.hooks) && g.hooks.length === 1, "entry is a matcher group with a hooks array");
+        assert.equal(g.command, undefined, "command lives inside hooks[], not on the group");
+        assert.equal(g[EVENT_MARKER], true, "marker on the group");
+      }
+      const feGroup = post.find((g) => g.hooks[0].command.includes("file_edited"));
+      assert.ok(feGroup, "file_edited entry present");
+      const fe = feGroup.hooks[0];
+      assert.equal(fe.type, "command");
       assert.ok(fe.command.endsWith("hookSpecificOutput"), "file_edited uses hookSpecificOutput envelope");
-      assert.equal(fe.matcher, "Edit|Write", "matcher passthrough");
-      const ptu = post.find((h) => h.command.includes("post_tool_use"));
-      assert.ok(ptu, "post_tool_use entry survives");
+      assert.equal(feGroup.matcher, "Edit|Write", "matcher on the group");
+      assert.equal(fe.matcher, undefined, "matcher not on the inner hook");
+      const ptuGroup = post.find((g) => g.hooks[0].command.includes("post_tool_use"));
+      assert.ok(ptuGroup, "post_tool_use entry survives");
+      assert.equal(ptuGroup.matcher, undefined, "no matcher → matches all tools");
+      const ptu = ptuGroup.hooks[0];
       assert.ok(!ptu.command.includes("hookSpecificOutput"), "post_tool_use stays plain (unchanged)");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("claude-code: reinstall migrates legacy flat marker entries to matcher groups", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      mkdirSync(join(projectRoot, ".claude"), { recursive: true });
+      const settingsPath = join(projectRoot, ".claude", "settings.json");
+      writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionStart: [
+        { type: "command", command: "node old session_start", timeout: 60, [EVENT_MARKER]: true },
+        { hooks: [{ type: "command", command: "echo user-hook" }] },
+      ] } }), "utf-8");
+      const agentConfig = getEventAgentConfig("claude-code");
+      installEvents("claude-code", projectRoot, resolveEvents(SAMPLE_MANIFEST, agentConfig), ".agents/skills");
+      const ss = JSON.parse(readFileSync(settingsPath, "utf-8")).hooks.SessionStart;
+      assert.equal(ss.length, 2, "legacy flat entry replaced, user group kept");
+      for (const g of ss) assert.ok(Array.isArray(g.hooks), "every SessionStart entry is a matcher group");
+      assert.ok(!ss.some((g) => g.command), "no flat entries remain");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -769,7 +800,7 @@ describe("Events: surgical teardown", () => {
       // Add a user-created hook manually
       const settingsPath = join(projectRoot, ".claude", "settings.json");
       const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      settings.hooks.SessionStart.push({ type: "command", command: "echo user-hook" });
+      settings.hooks.SessionStart.push({ hooks: [{ type: "command", command: "echo user-hook" }] });
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
 
       // Remove our events
@@ -778,7 +809,7 @@ describe("Events: surgical teardown", () => {
 
       const after = JSON.parse(readFileSync(settingsPath, "utf-8"));
       assert.equal(after.hooks.SessionStart.length, 1, "Only user hook remains");
-      assert.equal(after.hooks.SessionStart[0].command, "echo user-hook");
+      assert.equal(after.hooks.SessionStart[0].hooks[0].command, "echo user-hook");
       assert.equal(after.hooks.UserPromptSubmit, undefined, "Our entries removed");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
