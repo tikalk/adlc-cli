@@ -949,3 +949,18 @@ test("setup --dry-run: branch/ref on a submodule entry is reported as ignored (N
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── review fr-pr90-20261117 (kanfil) nit 1: link report rendered, not dumped ─
+test("setup: link prints a one-line summary, not the raw JSON report", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML);
+  try {
+    git(["init", "-q", "-b", "main"], dir);
+    installWorkspaceScriptStubs(dir);
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.doesNotMatch(r.stdout, /"ERROR_COUNT"/);
+    assert.match(r.stdout, /link: 0 registered, 0 skipped, 0 error\(s\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

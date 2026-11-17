@@ -64,6 +64,8 @@ export function isHttpsUrl(source) {
 
 // ── workspace init/link (deterministic) ─────────────────────────────────
 const GITIGNORE_COMMIT_MSG = "[workspace] Configure .gitignore for workspace conventions";
+// A hung skill script must not hang setup; init/link finish in seconds.
+const WORKSPACE_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
 
 // The workspace skill's bash scripts in the agent's project skills dir, or
 // null when the skill is not installed (or on Windows, where the skill's
@@ -112,9 +114,10 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
     cwd: projectRoot,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "inherit"],
+    timeout: WORKSPACE_SCRIPT_TIMEOUT_MS,
   });
   if (init.status !== 0) {
-    failure(`workspace init script failed (exit ${init.status})`);
+    failure(`workspace init script failed (${init.status === null ? `killed: ${init.signal}` : `exit ${init.status}`})`);
     return init.status || 1;
   }
   let report;
@@ -145,12 +148,14 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
         cwd: projectRoot,
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "inherit"],
+        timeout: WORKSPACE_SCRIPT_TIMEOUT_MS,
       })
     );
     const linkOut = String(res.stdout || "");
-    process.stdout.write(linkOut);
     if (res.status !== 0) {
-      failure(`workspace link script failed (exit ${res.status})`);
+      // On refusal the script's JSON carries the reason; show it raw.
+      process.stdout.write(linkOut);
+      failure(`workspace link script failed (${res.status === null ? `killed: ${res.signal}` : `exit ${res.status}`})`);
       return res.status || 1;
     }
     // workspace.sh exits 0 even when a repo fails to link — the errors are
@@ -162,6 +167,11 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
       failure("workspace link script did not emit JSON");
       return 1;
     }
+    const count = (key) => Number(linkReport[key]) || 0;
+    item(
+      `link: ${count("REGISTERED_COUNT")} registered, ${count("SKIPPED_COUNT")} skipped, ${count("ERROR_COUNT")} error(s)`,
+      { glyph: sym.arrow, color: "gray" }
+    );
     if (Number(linkReport.ERROR_COUNT) > 0) {
       const errors = Array.isArray(linkReport.ERRORS) ? linkReport.ERRORS.join("; ") : "";
       failure(`workspace link reported ${linkReport.ERROR_COUNT} error(s)${errors ? `: ${errors}` : ""}`);
@@ -254,7 +264,7 @@ function isRegisteredSubmodule(projectRoot, path) {
   const want = path.replace(/^\.\//, "").replace(/\/+$/, "");
   return r.stdout
     .split("\n")
-    .some((line) => line.slice(line.indexOf(" ") + 1).trim() === want && line.includes(".path "));
+    .some((line) => line.slice(line.indexOf(" ") + 1).trim() === want);
 }
 
 export function isSafeGitRemote(url) {
