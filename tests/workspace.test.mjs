@@ -742,6 +742,10 @@ workspace:
   link: true
 `;
 
+// The workspace skill's bash scripts run only on POSIX; Windows takes the
+// agent-led fallback (covered by the fallback test below).
+const POSIX_ONLY = { skip: process.platform === "win32" && "workspace skill scripts are bash-only" };
+
 // Stub workspace-skill scripts under opencode's skills_dir (.agents/skills).
 function installWorkspaceScriptStubs(dir, missingRules = [], linkErrors = 0) {
   const bin = join(dir, ".agents", "skills", "workspace", "scripts", "bash");
@@ -768,7 +772,7 @@ function installWorkspaceScriptStubs(dir, missingRules = [], linkErrors = 0) {
   return log;
 }
 
-test("setup: init + link run the workspace skill scripts, not an agent", async () => {
+test("setup: init + link run the workspace skill scripts, not an agent", POSIX_ONLY, async () => {
   const dir = makeTempWorkspace(INIT_LINK_YML);
   const agentLog = join(dir, "mock-agent.log");
   try {
@@ -790,7 +794,7 @@ test("setup: init + link run the workspace skill scripts, not an agent", async (
   }
 });
 
-test("setup: init appends missing .gitignore rules and commits them", async () => {
+test("setup: init appends missing .gitignore rules and commits them", POSIX_ONLY, async () => {
   const dir = makeTempWorkspace(INIT_LINK_YML.replace("link: true", "link: false"));
   try {
     git(["init", "-q", "-b", "main"], dir);
@@ -848,7 +852,7 @@ test("setup: a symlink to an empty dir outside the root is skipped, never cloned
   }
 });
 
-test("setup: link fails when workspace.sh reports per-repo errors (it exits 0)", async () => {
+test("setup: link fails when workspace.sh reports per-repo errors (it exits 0)", POSIX_ONLY, async () => {
   const dir = makeTempWorkspace(INIT_LINK_YML);
   try {
     git(["init", "-q", "-b", "main"], dir);
