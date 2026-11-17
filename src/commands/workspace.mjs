@@ -81,7 +81,7 @@ function resolveWorkspaceScripts(projectRoot, agentKey) {
 // Mirrors the workspace skill's --init/--link contract without an agent:
 // setup-workspace.sh --json, append (never remove) the .gitignore rules it
 // reports missing and commit them, then workspace.sh --json --link.
-async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun) {
+async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, dirtyBefore = null) {
   const linkFlag = link ? " --link" : "";
   sectionHeader(`workspace init${link ? " + link" : ""}`);
   const scripts = resolveWorkspaceScripts(projectRoot, agent);
@@ -136,11 +136,17 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun) {
 
   if (link) {
     item(`$ bash ${relative(projectRoot, scripts.link)} --json --link`, { glyph: sym.arrow, color: "gray" });
-    const res = spawnSync("bash", [scripts.link, "--json", "--link"], {
-      cwd: projectRoot,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "inherit"],
-    });
+    // Before this step, init ran on the clean clone. Now skills install runs
+    // first and rewrites tracked files (.adlc/init-options.json), and
+    // workspace.sh --link refuses on any tracked change — so set aside only
+    // the files setup itself changed, and put them back afterwards.
+    const res = withSetupChangesSetAside(projectRoot, dirtyBefore, () =>
+      spawnSync("bash", [scripts.link, "--json", "--link"], {
+        cwd: projectRoot,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "inherit"],
+      })
+    );
     const linkOut = String(res.stdout || "");
     process.stdout.write(linkOut);
     if (res.status !== 0) {
@@ -165,12 +171,49 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun) {
   return 0;
 }
 
+// Tracked paths (relative to the repo top level) that differ from HEAD,
+// staged or not, plus the top level itself; null outside a git work tree.
+function trackedChanges(projectRoot) {
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: projectRoot, encoding: "utf-8" });
+  if (top.status !== 0) return null;
+  const root = top.stdout.trim();
+  const diff = spawnSync("git", ["diff", "--name-only", "HEAD"], { cwd: root, encoding: "utf-8" });
+  if (diff.status !== 0) return null;
+  return { root, paths: new Set(diff.stdout.split("\n").filter(Boolean)) };
+}
+
+// Runs fn with the tracked files setup changed since `before` restored to
+// HEAD, then writes setup's versions back (also when fn throws).
+function withSetupChangesSetAside(projectRoot, before, fn) {
+  const now = before ? trackedChanges(projectRoot) : null;
+  const changed = now ? [...now.paths].filter((p) => !before.paths.has(p)) : [];
+  if (changed.length === 0) return fn();
+  const saved = changed.map((p) => {
+    const file = join(now.root, p);
+    return { file, content: existsSync(file) ? readFileSync(file) : null };
+  });
+  item(`setting aside setup's own changes for --link: ${changed.join(", ")}`, { glyph: sym.arrow, color: "gray" });
+  spawnSync("git", ["checkout", "HEAD", "--", ...changed], { cwd: now.root, stdio: "inherit" });
+  try {
+    return fn();
+  } finally {
+    for (const { file, content } of saved) {
+      if (content === null) rmSync(file, { force: true });
+      else writeFileSync(file, content);
+    }
+  }
+}
+
 function appendGitignoreRules(projectRoot, rules) {
   const file = join(projectRoot, ".gitignore");
   const current = existsSync(file) ? readFileSync(file, "utf-8") : "";
   const prefix = current === "" || current.endsWith("\n") ? "" : "\n";
   writeFileSync(file, current + prefix + rules.join("\n") + "\n", "utf-8");
   item(`.gitignore: added ${rules.length} rule(s)`, { glyph: sym.arrow, color: "gray" });
+  // The skill commits the rules; outside a git work tree (greenfield, no
+  // `git init` yet) there is nothing to commit to.
+  const inside = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: projectRoot, encoding: "utf-8" });
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") return 0;
   const add = spawnSync("git", ["add", "--", ".gitignore"], { cwd: projectRoot, stdio: "inherit" });
   const commit =
     add.status === 0
@@ -503,8 +546,16 @@ export async function cmdWorkspaceSetup(args, flags) {
       // placeholder: check it out at the superproject's pinned commit instead
       // of skipping it (git clone into an empty dir covers the other case).
       if (existsSync(target) && isRegisteredSubmodule(projectRoot, mod.path)) {
+        // git fetches from the URL in .gitmodules (the trusted superproject's),
+        // not from mod.repo; git's protocol policy applies to it.
         const subArgs = ["submodule", "update", "--init", "--", mod.path];
         item(`$ git ${subArgs.join(" ")}`, { glyph: sym.arrow, color: "gray" });
+        if (mod.branch || mod.ref) {
+          item(`branch/ref ignored for submodule ${mod.path} (the superproject pins its commit)`, {
+            glyph: sym.arrow,
+            color: "gray",
+          });
+        }
         if (!dryRun) {
           const result = spawnSync("git", subArgs, { stdio: "inherit", cwd: projectRoot });
           if (result.status !== 0) {
@@ -578,6 +629,10 @@ export async function cmdWorkspaceSetup(args, flags) {
     }
   }
 
+  // Tracked files already changed before setup installs skills: `--link`
+  // must still refuse on those, but not on files setup itself changes below.
+  const dirtyBeforeSkills = !dryRun && ws.init && ws.link ? trackedChanges(projectRoot) : null;
+
   // 6. skills.sources — deterministic install (no LLM); -y: setup is non-interactive.
   // Runs before init so the workspace skill's scripts exist when init needs them.
   const sources = wsfile.skills && wsfile.skills.sources;
@@ -599,7 +654,7 @@ export async function cmdWorkspaceSetup(args, flags) {
   // scripts, run directly (no LLM). Agent-led only as a fallback when the
   // skill (or bash) is not available.
   if (ws.init) {
-    const code = await runWorkspaceInit(projectRoot, agent, !!ws.link, dryRun, cmdAgentRun);
+    const code = await runWorkspaceInit(projectRoot, agent, !!ws.link, dryRun, cmdAgentRun, dirtyBeforeSkills);
     if (code !== 0) return code;
   }
 

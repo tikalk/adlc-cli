@@ -864,3 +864,88 @@ test("setup: link fails when workspace.sh reports per-repo errors (it exits 0)",
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── review fr-20261117-pr90 iter 1: I1, I2, N1 ──────────────────────────
+
+// A fake `npx` on PATH so `skills add` runs its real bookkeeping (incl. the
+// init-options.json write) without the network.
+function fakeNpxEnv(dir) {
+  const bin = join(dir, ".fakebin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "npx"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+  return { ...GIT_ENV, PATH: `${bin}:${process.env.PATH}` };
+}
+
+test("setup: link still runs when skills install dirtied tracked init-options.json (I1)", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Dirty Link"
+agent: opencode
+workspace:
+  init: true
+  link: true
+skills:
+  sources:
+    - ./skills-src
+`);
+  try {
+    git(["init", "-q", "-b", "main"], dir);
+    writeFileSync(
+      join(dir, ".adlc", "init-options.json"),
+      JSON.stringify({ agent: "opencode", skills_source: "./old-source" }, null, 2) + "\n",
+      "utf-8"
+    );
+    writeFileSync(join(dir, ".gitignore"), ".agents/\n.opencode/\n.fakebin/\nscripts.log\n", "utf-8");
+    git(["add", "-A"], dir);
+    git(["commit", "-q", "-m", "base"], dir);
+    const log = installWorkspaceScriptStubs(dir);
+    // Like the real workspace.sh: refuse --link on any tracked change.
+    writeFileSync(
+      join(dir, ".agents", "skills", "workspace", "scripts", "bash", "workspace.sh"),
+      `#!/usr/bin/env bash
+if ! git diff-index --quiet HEAD --; then
+  echo '{"error": "Parent repository has uncommitted changes outside child repos."}'
+  exit 1
+fi
+echo "workspace.sh $*" >> "${log}"
+echo '{"ERROR_COUNT": 0, "ERRORS": []}'
+`,
+      { mode: 0o755 }
+    );
+    const r = await run(["workspace", "setup"], dir, fakeNpxEnv(dir));
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.match(readFileSync(log, "utf-8"), /workspace\.sh --json --link/);
+    const opts = JSON.parse(readFileSync(join(dir, ".adlc", "init-options.json"), "utf-8"));
+    assert.equal(opts.skills_source, "./skills-src", "setup's own init-options change must survive link");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: init outside a git repo appends .gitignore rules without committing (I2)", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML.replace("link: true", "link: false"));
+  try {
+    installWorkspaceScriptStubs(dir, [".adlc/*"]);
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.equal(readFileSync(join(dir, ".gitignore"), "utf-8"), ".adlc/*\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup --dry-run: branch/ref on a submodule entry is reported as ignored (N1)", async () => {
+  const { root, src, ws } = makeSuperprojectClone();
+  try {
+    writeFileSync(
+      join(ws, ".adlc", "workspace.yml"),
+      GIT_ONLY_YML(src) + "      branch: main\n",
+      "utf-8"
+    );
+    const r = await run(["workspace", "setup", "--dry-run"], ws, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr);
+    assert.match(r.stdout, /git submodule update --init -- child/);
+    assert.match(r.stdout, /branch\/ref ignored for submodule child/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
