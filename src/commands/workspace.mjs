@@ -1,6 +1,7 @@
 // Workspace commands: setup (workspace.yml-driven), init (brownfield), status (audit).
-// Setup separates deterministic steps (git clone, dirs, skills add — no LLM) from
-// agent-led steps (workspace init/link, commands, first-boot goal — via agent run).
+// Setup separates deterministic steps (git clone, dirs, skills add, workspace
+// init/link via the workspace skill's scripts — no LLM) from agent-led steps
+// (`agent run` commands, first-boot goal; init/link only as a fallback).
 // The goal runs only when setup assembled something (clone or dir creation) —
 // AX-faithful first-boot workspace finishing; convergence re-runs skip it.
 
@@ -14,12 +15,14 @@ import {
   chmodSync,
   rmSync,
   readdirSync,
-  statSync,
+  lstatSync,
 } from "node:fs";
 import { join, resolve, relative, isAbsolute, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { parseYaml } from "../utils/yaml.mjs";
 import { readAgent } from "../utils/init-options.mjs";
+import { getAgent } from "../registry.mjs";
+import { expandTilde } from "../source.mjs";
 import {
   out,
   error,
@@ -59,11 +62,137 @@ export function isHttpsUrl(source) {
   return /^https:\/\//i.test(source);
 }
 
-// True when `dir` is a directory with no entries (e.g. an uninitialized
-// submodule placeholder left by a non-recursive clone).
+// ── workspace init/link (deterministic) ─────────────────────────────────
+const GITIGNORE_COMMIT_MSG = "[workspace] Configure .gitignore for workspace conventions";
+
+// The workspace skill's bash scripts in the agent's project skills dir, or
+// null when the skill is not installed (or on Windows, where the skill's
+// PowerShell variant would need an agent to drive it).
+function resolveWorkspaceScripts(projectRoot, agentKey) {
+  if (process.platform === "win32") return null;
+  const agentDef = getAgent(agentKey);
+  if (!agentDef || !agentDef.skills_dir) return null;
+  const dir = resolve(projectRoot, expandTilde(agentDef.skills_dir), "workspace", "scripts", "bash");
+  const init = join(dir, "setup-workspace.sh");
+  const link = join(dir, "workspace.sh");
+  return existsSync(init) && existsSync(link) ? { init, link } : null;
+}
+
+// Mirrors the workspace skill's --init/--link contract without an agent:
+// setup-workspace.sh --json, append (never remove) the .gitignore rules it
+// reports missing and commit them, then workspace.sh --json --link.
+async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun) {
+  const linkFlag = link ? " --link" : "";
+  sectionHeader(`workspace init${link ? " + link" : ""}`);
+  const scripts = resolveWorkspaceScripts(projectRoot, agent);
+  if (dryRun) {
+    const agentDef = getAgent(agent);
+    const base = join((agentDef && agentDef.skills_dir) || "<skills_dir>", "workspace", "scripts", "bash");
+    item(`$ bash ${join(base, "setup-workspace.sh")} --json`, { glyph: sym.arrow, color: "gray" });
+    if (link) item(`$ bash ${join(base, "workspace.sh")} --json --link`, { glyph: sym.arrow, color: "gray" });
+    item(`(fallback when the workspace skill is not installed: agent run -a ${agent} "Run /workspace --init${linkFlag}")`, {
+      glyph: sym.arrow,
+      color: "gray",
+    });
+    return 0;
+  }
+  if (!scripts) {
+    item(`workspace skill scripts not installed — agent-led fallback`, { glyph: sym.arrow, color: "gray" });
+    item(`agent run -a ${agent} "Run /workspace --init${linkFlag}"`, { glyph: sym.arrow, color: "gray" });
+    const code = await cmdAgentRun(["-a", agent, `Run /workspace --init${linkFlag}`]);
+    if (code !== 0) {
+      failure("workspace init failed");
+      return code || 1;
+    }
+    return 0;
+  }
+
+  item(`$ bash ${relative(projectRoot, scripts.init)} --json`, { glyph: sym.arrow, color: "gray" });
+  const init = spawnSync("bash", [scripts.init, "--json"], {
+    cwd: projectRoot,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (init.status !== 0) {
+    failure(`workspace init script failed (exit ${init.status})`);
+    return init.status || 1;
+  }
+  let report;
+  try {
+    // The script prints one JSON object (pretty-printed by jq) on stdout.
+    const initOut = String(init.stdout);
+    report = JSON.parse(initOut.slice(initOut.indexOf("{")));
+  } catch {
+    failure("workspace init script did not emit JSON");
+    return 1;
+  }
+  const missing = Array.isArray(report.GITIGNORE_RULES_MISSING)
+    ? report.GITIGNORE_RULES_MISSING.filter((r) => typeof r === "string" && r !== "" && !r.includes("\n"))
+    : [];
+  if (missing.length > 0) {
+    const code = appendGitignoreRules(projectRoot, missing);
+    if (code !== 0) return code;
+  }
+
+  if (link) {
+    item(`$ bash ${relative(projectRoot, scripts.link)} --json --link`, { glyph: sym.arrow, color: "gray" });
+    const res = spawnSync("bash", [scripts.link, "--json", "--link"], {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const linkOut = String(res.stdout || "");
+    process.stdout.write(linkOut);
+    if (res.status !== 0) {
+      failure(`workspace link script failed (exit ${res.status})`);
+      return res.status || 1;
+    }
+    // workspace.sh exits 0 even when a repo fails to link — the errors are
+    // only in its JSON report, which an agent would have read.
+    let linkReport = null;
+    try {
+      linkReport = JSON.parse(linkOut.slice(linkOut.indexOf("{")));
+    } catch {
+      failure("workspace link script did not emit JSON");
+      return 1;
+    }
+    if (Number(linkReport.ERROR_COUNT) > 0) {
+      const errors = Array.isArray(linkReport.ERRORS) ? linkReport.ERRORS.join("; ") : "";
+      failure(`workspace link reported ${linkReport.ERROR_COUNT} error(s)${errors ? `: ${errors}` : ""}`);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+function appendGitignoreRules(projectRoot, rules) {
+  const file = join(projectRoot, ".gitignore");
+  const current = existsSync(file) ? readFileSync(file, "utf-8") : "";
+  const prefix = current === "" || current.endsWith("\n") ? "" : "\n";
+  writeFileSync(file, current + prefix + rules.join("\n") + "\n", "utf-8");
+  item(`.gitignore: added ${rules.length} rule(s)`, { glyph: sym.arrow, color: "gray" });
+  const add = spawnSync("git", ["add", "--", ".gitignore"], { cwd: projectRoot, stdio: "inherit" });
+  const commit =
+    add.status === 0
+      ? spawnSync("git", ["commit", "-q", "-m", GITIGNORE_COMMIT_MSG, "--", ".gitignore"], {
+          cwd: projectRoot,
+          stdio: "inherit",
+        })
+      : add;
+  if (commit.status !== 0) {
+    failure("could not commit .gitignore rules");
+    return commit.status || 1;
+  }
+  return 0;
+}
+
+// True when `dir` is a real directory (not a symlink) with no entries, e.g.
+// an uninitialized submodule placeholder left by a non-recursive clone. A
+// symlink never counts as empty: cloning into one could write outside the
+// project root.
 function isEmptyDir(dir) {
   try {
-    return statSync(dir).isDirectory() && readdirSync(dir).length === 0;
+    return lstatSync(dir).isDirectory() && readdirSync(dir).length === 0;
   } catch {
     return false;
   }
@@ -449,25 +578,8 @@ export async function cmdWorkspaceSetup(args, flags) {
     }
   }
 
-  // 6. workspace.init / workspace.link — agent-led (workspace skill)
-  if (ws.init) {
-    const linkFlag = ws.link ? " --link" : "";
-    sectionHeader(`workspace init${ws.link ? " + link" : ""} (agent-led)`);
-    if (dryRun) {
-      item(`agent run -a ${agent} "Run /workspace --init${linkFlag}"`, {
-        glyph: sym.arrow,
-        color: "gray",
-      });
-    } else {
-      const code = await cmdAgentRun(["-a", agent, `Run /workspace --init${linkFlag}`]);
-      if (code !== 0) {
-        failure("workspace init failed");
-        return code || 1;
-      }
-    }
-  }
-
-  // 7. skills.sources — deterministic install (no LLM); -y: setup is non-interactive
+  // 6. skills.sources — deterministic install (no LLM); -y: setup is non-interactive.
+  // Runs before init so the workspace skill's scripts exist when init needs them.
   const sources = wsfile.skills && wsfile.skills.sources;
   if (Array.isArray(sources) && sources.length > 0) {
     sectionHeader(`skills.sources (${sources.length} source(s))`);
@@ -481,6 +593,14 @@ export async function cmdWorkspaceSetup(args, flags) {
         }
       }
     }
+  }
+
+  // 7. workspace.init / workspace.link — the installed workspace skill's own
+  // scripts, run directly (no LLM). Agent-led only as a fallback when the
+  // skill (or bash) is not available.
+  if (ws.init) {
+    const code = await runWorkspaceInit(projectRoot, agent, !!ws.link, dryRun, cmdAgentRun);
+    if (code !== 0) return code;
   }
 
   // 8. commands — sequential, stop on first failure

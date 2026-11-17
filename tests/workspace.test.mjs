@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,9 +54,15 @@ test("setup --dry-run prints the full plan without executing", async () => {
     assert.match(r.stdout, /Test Workspace/);
     assert.match(r.stdout, /git clone https:\/\/github\.com\/org\/backend backend --branch main/);
     assert.match(r.stdout, /mkdir -p adlc-team-skills/);
-    assert.match(r.stdout, /workspace init \+ link \(agent-led\)/);
-    assert.match(r.stdout, /Run \/workspace --init --link/);
+    assert.match(r.stdout, /workspace init \+ link\b/);
+    assert.match(r.stdout, /setup-workspace\.sh --json/);
+    assert.match(r.stdout, /workspace\.sh --json --link/);
     assert.match(r.stdout, /skills add tikalk\/adlc-team-skills/);
+    // skills install before init, so the workspace skill's scripts exist
+    assert.ok(
+      r.stdout.indexOf("skills add tikalk/adlc-team-skills") < r.stdout.indexOf("workspace init + link"),
+      "skills.sources must run before workspace init"
+    );
     assert.match(r.stdout, /agent run "Fetch and follow instructions from https:\/\/example\.com\/INSTALL\.md"/);
     assert.match(r.stdout, /Next: adlc-cli agent run/);
     // this fixture has no goal field — no goal step in the plan
@@ -719,6 +725,138 @@ test("setup: empty plain dir (not a submodule) is cloned into", async () => {
     assert.ok(existsSync(join(dir, "child", "CDR.md")), "clone content missing");
   } finally {
     rmSync(root, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── workspace init/link: deterministic via the installed workspace skill ─
+// The skill's own scripts run directly (no agent): setup-workspace.sh --json,
+// then workspace.sh --json --link; missing .gitignore rules are appended and
+// committed. Without the scripts, setup falls back to the agent-led path.
+
+const INIT_LINK_YML = `schema_version: "1.0"
+name: "Init Link"
+agent: opencode
+workspace:
+  init: true
+  link: true
+`;
+
+// Stub workspace-skill scripts under opencode's skills_dir (.agents/skills).
+function installWorkspaceScriptStubs(dir, missingRules = [], linkErrors = 0) {
+  const bin = join(dir, ".agents", "skills", "workspace", "scripts", "bash");
+  mkdirSync(bin, { recursive: true });
+  const log = join(dir, "scripts.log");
+  // Pretty-printed across lines, like the real script's `jq -n` output.
+  const initJson = JSON.stringify({ GITIGNORE_RULES_MISSING: missingRules, CHILD_COUNT: 0 }, null, 2);
+  // workspace.sh exits 0 even when a repo failed to link; errors are in JSON.
+  const linkJson = JSON.stringify(
+    { MODE: "link", ERROR_COUNT: linkErrors, ERRORS: linkErrors ? ["child: not a git repo"] : [] },
+    null,
+    2
+  );
+  writeFileSync(
+    join(bin, "setup-workspace.sh"),
+    `#!/usr/bin/env bash\necho "setup-workspace.sh $*" >> "${log}"\necho '${initJson}'\n`,
+    { mode: 0o755 }
+  );
+  writeFileSync(
+    join(bin, "workspace.sh"),
+    `#!/usr/bin/env bash\necho "workspace.sh $*" >> "${log}"\necho '${linkJson}'\n`,
+    { mode: 0o755 }
+  );
+  return log;
+}
+
+test("setup: init + link run the workspace skill scripts, not an agent", async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML);
+  const agentLog = join(dir, "mock-agent.log");
+  try {
+    git(["init", "-q", "-b", "main"], dir);
+    const log = installWorkspaceScriptStubs(dir);
+    const r = await run(["workspace", "setup"], dir, {
+      ...GIT_ENV,
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: agentLog,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.equal(
+      readFileSync(log, "utf-8"),
+      "setup-workspace.sh --json\nworkspace.sh --json --link\n"
+    );
+    assert.ok(!existsSync(agentLog), "agent must not run when the scripts are installed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: init appends missing .gitignore rules and commits them", async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML.replace("link: true", "link: false"));
+  try {
+    git(["init", "-q", "-b", "main"], dir);
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\n", "utf-8");
+    git(["add", ".gitignore"], dir);
+    git(["commit", "-q", "-m", "base"], dir);
+    installWorkspaceScriptStubs(dir, [".adlc/*", "!.adlc/workspace.yml"]);
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.equal(
+      readFileSync(join(dir, ".gitignore"), "utf-8"),
+      "node_modules/\n.adlc/*\n!.adlc/workspace.yml\n"
+    );
+    assert.equal(
+      git(["log", "-1", "--format=%s"], dir),
+      "[workspace] Configure .gitignore for workspace conventions"
+    );
+    assert.equal(git(["status", "--porcelain", "--", ".gitignore"], dir), "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: init falls back to the agent when the workspace skill is not installed", async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML);
+  const agentLog = join(dir, "mock-agent.log");
+  try {
+    const r = await run(["workspace", "setup"], dir, {
+      ADLC_MOCK_AGENT: "1",
+      ADLC_MOCK_AGENT_FILE: agentLog,
+    });
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.match(readFileSync(agentLog, "utf-8"), /Run \/workspace --init --link/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup: a symlink to an empty dir outside the root is skipped, never cloned into", async () => {
+  const { root, src } = makeSuperprojectClone();
+  const dir = mkdtempSync(join(tmpdir(), "adlc-ws-link-"));
+  const outside = mkdtempSync(join(tmpdir(), "adlc-ws-outside-"));
+  try {
+    mkdirSync(join(dir, ".adlc"));
+    writeFileSync(join(dir, ".adlc", "workspace.yml"), GIT_ONLY_YML(src), "utf-8");
+    symlinkSync(outside, join(dir, "child"));
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /= child \(exists, skipping clone\)/);
+    assert.deepEqual(readdirSync(outside), [], "nothing may be written outside the root");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("setup: link fails when workspace.sh reports per-repo errors (it exits 0)", async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML);
+  try {
+    git(["init", "-q", "-b", "main"], dir);
+    installWorkspaceScriptStubs(dir, [], 1);
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.notEqual(r.code ?? 0, 0, "setup must fail on link errors");
+    assert.match(r.stdout + r.stderr, /child: not a git repo/);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
