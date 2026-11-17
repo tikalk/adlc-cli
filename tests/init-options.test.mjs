@@ -84,11 +84,17 @@ test("writeSkillsSource keeps a single source as a string", () => {
   });
 });
 
-test("writeSkillsSource adds a second source instead of overwriting", () => {
+test("writeSkillsSource replaces the configured source", () => {
   withTmp((tmp) => {
     writeSkillsSource("a/b", tmp);
     writeSkillsSource("https://x/y.git", tmp);
-    writeSkillsSource("a/b", tmp);
+    assert.equal(readInitOptions(tmp).skills_source, "https://x/y.git");
+  });
+});
+
+test("writeSkillsSource records an array of several sources", () => {
+  withTmp((tmp) => {
+    writeSkillsSource(["a/b", "https://x/y.git", "a/b"], tmp);
     assert.deepEqual(readInitOptions(tmp).skills_source, ["a/b", "https://x/y.git"]);
   });
 });

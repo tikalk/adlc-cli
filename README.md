@@ -304,8 +304,8 @@ and `workspace` trees to resolve defaults:
 ```
 
 `agent` and `skills_source` default every later `-a` / re-install
-(`skills_source` may also be an array of sources; `skills add` appends to it and
-`skills update --pull` pulls from each);
+(`skills_source` may also be an array of sources; `workspace setup` records all of
+`skills.sources` and `skills update --pull` pulls from each);
 `team_ai_directives` is where `team update` pulls and `team repair` indexes.
 
 ## `agent run` flags

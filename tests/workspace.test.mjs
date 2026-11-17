@@ -921,6 +921,25 @@ echo '{"ERROR_COUNT": 0, "ERRORS": []}'
   }
 });
 
+test("setup: records every skills.sources entry in init-options.json", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(`schema_version: "1.0"
+name: "Two Sources"
+agent: opencode
+skills:
+  sources:
+    - ./skills-a
+    - ./skills-b
+`);
+  try {
+    const r = await run(["workspace", "setup"], dir, fakeNpxEnv(dir));
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    const opts = JSON.parse(readFileSync(join(dir, ".adlc", "init-options.json"), "utf-8"));
+    assert.deepEqual(opts.skills_source, ["./skills-a", "./skills-b"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("setup: init outside a git repo appends .gitignore rules without committing (I2)", POSIX_ONLY, async () => {
   const dir = makeTempWorkspace(INIT_LINK_YML.replace("link: true", "link: false"));
   try {

@@ -50,14 +50,12 @@ export function readSkillsSource(projectRoot = process.cwd()) {
   return sources.length > 0 ? sources : null;
 }
 
-// Adds `source` to the configured sources (never drops an existing one).
-// A single source stays a plain string so existing files keep their format.
+// Records the skills source(s). Like before, this replaces what was configured;
+// pass an array to record several. A single source stays a plain string so
+// existing files keep their format.
 export function writeSkillsSource(source, projectRoot = process.cwd()) {
-  const merged = normalizeSkillsSources([
-    ...(readSkillsSource(projectRoot) ?? []),
-    ...normalizeSkillsSources(source),
-  ]);
-  return writeInitOptions({ skills_source: merged.length === 1 ? merged[0] : merged }, projectRoot);
+  const sources = normalizeSkillsSources(source);
+  return writeInitOptions({ skills_source: sources.length === 1 ? sources[0] : sources }, projectRoot);
 }
 
 export function readTeamAiDirectives(projectRoot = process.cwd()) {

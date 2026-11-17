@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Several skills sources** — `skills_source` in `.adlc/init-options.json` may be a string or an array of strings. `skills add` now adds a source to the list instead of overwriting it, and `skills update --pull` (and so `team update`) pulls from every listed source. A single string keeps working unchanged.
+- **Several skills sources** — `skills_source` in `.adlc/init-options.json` may be a string or an array of strings. `workspace setup` records every entry of `skills.sources`, and `skills update --pull` (and so `team update`) pulls from every listed source. `skills add` still replaces the recorded source, and a single string keeps working unchanged.
 
 ## [2.12.1] - 2026-11-09
 
