@@ -154,6 +154,13 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
   const missing = report.GITIGNORE_RULES_MISSING.filter(
     (r) => typeof r === "string" && r !== "" && !/[\r\n]/.test(r)
   );
+  const dropped = report.GITIGNORE_RULES_MISSING.length - missing.length;
+  if (dropped > 0) {
+    item(`ignored ${dropped} malformed .gitignore rule(s) from the init report`, {
+      glyph: sym.info,
+      color: "yellow",
+    });
+  }
   if (missing.length > 0) {
     const code = appendGitignoreRules(projectRoot, missing);
     if (code !== 0) return code;
@@ -195,12 +202,12 @@ async function runWorkspaceInit(projectRoot, agent, link, dryRun, cmdAgentRun, d
       failure("workspace link report has no numeric ERROR_COUNT");
       return 1;
     }
-    const count = (key) => Number(linkReport[key]) || 0;
+    const count = (key) => (Number.isInteger(linkReport[key]) ? linkReport[key] : "?");
     item(
-      `link: ${count("REGISTERED_COUNT")} registered, ${count("SKIPPED_COUNT")} skipped, ${count("ERROR_COUNT")} error(s)`,
+      `link: ${count("REGISTERED_COUNT")} registered, ${count("SKIPPED_COUNT")} skipped, ${linkReport.ERROR_COUNT} error(s)`,
       { glyph: sym.arrow, color: "gray" }
     );
-    if (Number(linkReport.ERROR_COUNT) > 0) {
+    if (linkReport.ERROR_COUNT > 0) {
       const errors = Array.isArray(linkReport.ERRORS) ? linkReport.ERRORS.join("; ") : "";
       failure(`workspace link reported ${linkReport.ERROR_COUNT} error(s)${errors ? `: ${errors}` : ""}`);
       return 1;

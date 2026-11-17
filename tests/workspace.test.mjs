@@ -760,10 +760,17 @@ function installWorkspaceScriptStubs(dir, missingRules = [], linkErrors = 0, raw
   // Pretty-printed across lines, like the real script's `jq -n` output.
   const initJson = raw.init ?? JSON.stringify({ GITIGNORE_RULES_MISSING: missingRules, CHILD_COUNT: 0 }, null, 2);
   // workspace.sh exits 0 even when a repo failed to link; errors are in JSON.
+  // The default stub mirrors the real script's display fields.
   const linkJson =
     raw.link ??
     JSON.stringify(
-      { MODE: "link", ERROR_COUNT: linkErrors, ERRORS: linkErrors ? ["child: not a git repo"] : [] },
+      {
+        MODE: "link",
+        REGISTERED_COUNT: 0,
+        SKIPPED_COUNT: 0,
+        ERROR_COUNT: linkErrors,
+        ERRORS: linkErrors ? ["child: not a git repo"] : [],
+      },
       null,
       2
     );
@@ -1029,6 +1036,7 @@ test("setup: .gitignore append skips rules already present and rules with \\r (O
     const r = await run(["workspace", "setup"], dir, GIT_ENV);
     assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
     assert.equal(readFileSync(join(dir, ".gitignore"), "utf-8"), ".adlc/*\ngraphify-out/\n");
+    assert.match(r.stdout, /ignored 1 malformed .gitignore rule\(s\)/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1048,5 +1056,20 @@ test("setup: refuses to write through a symlinked .gitignore (O-N4)", POSIX_ONLY
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("setup: link summary shows ? for non-numeric display counts (N2)", POSIX_ONLY, async () => {
+  const dir = makeTempWorkspace(INIT_LINK_YML);
+  try {
+    git(["init", "-q", "-b", "main"], dir);
+    installWorkspaceScriptStubs(dir, [], 0, {
+      link: JSON.stringify({ MODE: "link", ERROR_COUNT: 0, REGISTERED_COUNT: "bogus", SKIPPED_COUNT: 0 }),
+    });
+    const r = await run(["workspace", "setup"], dir, GIT_ENV);
+    assert.equal(r.code ?? 0, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /link: \? registered, 0 skipped, 0 error\(s\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
