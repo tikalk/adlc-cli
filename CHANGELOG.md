@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.13.0] - 2026-11-18
+
+### Changed
+
+- **Workspace init/link runs from the skill's scripts, not an agent** (#90) — `workspace setup` now runs `skills.sources` before init, then executes the installed `workspace` skill's `setup-workspace.sh --json` and `workspace.sh --json --link` directly. Missing `.gitignore` rules it reports are appended (never removed) and committed. `workspace.sh` exits 0 even when a repo fails to link, so setup reads `ERROR_COUNT` from its JSON and fails on it. Falls back to the agent-led `Run /workspace --init --link` path only when the skill is not installed (or on Windows).
+
+### Fixed
+
+- **Empty submodule folders are populated instead of skipped** (#90) — a non-recursive workspace clone leaves every submodule as an empty folder, and `workspace.git` logged `(exists, skipping clone)` for all of them, so `team setup` failed with every team-ai-directives file `MISSING` unless the agent happened to run `git submodule update`. Only non-empty paths are skipped now: an empty folder registered in `.gitmodules` gets `git submodule update --init -- <path>` at the pinned commit, and any other empty folder is cloned into. `isEmptyDir` uses `lstat`, so a symlink never counts as empty.
+
 ## [2.12.1] - 2026-11-09
 
 ### Fixed
