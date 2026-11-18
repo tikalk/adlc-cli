@@ -54,6 +54,14 @@ function targetAgents(flags) {
   return ALL_AGENTS();
 }
 
+// A marked skill ships no command file (ADR-507). Both marker spellings
+// arrive as the string "true" after frontmatter quote-stripping, but the
+// bare boolean is accepted too.
+function isReferenceOnly(skill) {
+  const marker = skill.frontmatter?.["reference-only"];
+  return marker === true || marker === "true";
+}
+
 // ── add ────────────────────────────────────────────────────────────────
 export async function cmdAdd(args, flags) {
   const source = args[0];
@@ -169,7 +177,12 @@ export async function cmdAdd(args, flags) {
     mkdirSync(absCommandsDir, { recursive: true });
 
     let generated = 0;
+    let referenceSkipped = 0;
     for (const skill of filtered) {
+      if (isReferenceOnly(skill)) {
+        referenceSkipped++;
+        continue;
+      }
       const filename = commandFilename(skill, agent, { prefix });
       const content = generateCommand(skill, agent, { mode, prefix, source });
       const filepath = join(absCommandsDir, filename);
@@ -180,6 +193,12 @@ export async function cmdAdd(args, flags) {
       glyph: sym.success,
       color: "green",
     });
+    if (referenceSkipped > 0) {
+      item(`Skipped ${referenceSkipped} reference-only skill(s) (no command file)`, {
+        glyph: sym.info,
+        color: "gray",
+      });
+    }
 
     const agentEventConfig = getEventAgentConfig(agentKey);
     if (agentEventConfig && !noEvents) {
@@ -322,6 +341,18 @@ export async function cmdUpdate(args, flags) {
     let skipped = 0;
 
     for (const skill of skills) {
+      if (isReferenceOnly(skill)) {
+        const filename = commandFilename(skill, agent, { prefix });
+        const filepath = join(absCommandsDir, filename);
+        if (!existsSync(filepath)) continue; // nothing to clean up — not a skip
+        if (isGenerated(readFileSync(filepath, "utf-8"))) {
+          rmSync(filepath);
+          updated++;
+        } else {
+          skipped++;
+        }
+        continue;
+      }
       const filename = commandFilename(skill, agent, { prefix });
       const filepath = join(absCommandsDir, filename);
 
