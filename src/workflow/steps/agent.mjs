@@ -191,6 +191,8 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
 // Caps: max 3 questions per payload, max 3 pauses per step per run.
 export const MAX_QUESTION_PAUSES = 3;
 export const MAX_QUESTIONS_PER_PAYLOAD = 3;
+// Scheme is case-insensitive (RFC 3986 §3.1): HTTPS:// is as valid as https://.
+const MR_URL = /^https?:\/\/[^\s<>|]{1,2040}$/i;
 
 function questionPath(runEnv) {
   return runEnv.ADLC_STEP_QUESTION ?? null;
@@ -233,6 +235,9 @@ function readQuestionPayload(runEnv, context, config) {
   }
   const payload = { summary: data.summary, questions };
   if (typeof data.resume_hint === "string" && data.resume_hint !== "") payload.resume_hint = data.resume_hint;
+  // The run's draft MR (ADR-531 D6): the runtime links it in the Slack post.
+  // Only a plain http(s) URL is kept; anything else is dropped, never fatal.
+  if (typeof data.mr_url === "string" && MR_URL.test(data.mr_url)) payload.mr_url = data.mr_url;
   return { present: true, valid: true, payload };
 }
 

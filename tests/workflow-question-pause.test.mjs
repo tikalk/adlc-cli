@@ -226,3 +226,25 @@ test("Q1b: paused payload keeps summary and resume_hint", { skip: !POSIX }, asyn
   assert.equal(p.resume_hint, "plan phase");
   assert.deepEqual(p.questions[0].options, ["a", "b"]);
 });
+
+test("Q1c: paused payload keeps an http(s) mr_url and drops anything else", { skip: !POSIX }, async () => {
+  const bin = installFakeAgent();
+  const run = async (mr, id) => {
+    const dir = project();
+    const q = JSON.stringify({ summary: "Gap.", mr_url: mr, questions: [{ id: "q1", text: "Pick?" }] });
+    return withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_QUESTION: q, FAKE_EXIT: "0" }, async () => {
+      const engine = new WorkflowEngine(dir);
+      return engine.execute(await engine.loadWorkflow(workflow(STEP)), {}, id, STEP_REGISTRY);
+    });
+  };
+  const ok = await run("https://gitlab.example/g/p/-/merge_requests/7", "rq1c-a");
+  assert.equal(ok.status, RunStatus.PAUSED);
+  assert.equal(ok.stepResults.ask.output.payload.mr_url, "https://gitlab.example/g/p/-/merge_requests/7");
+  const upper = await run("HTTPS://gitlab.example/g/p/-/merge_requests/8", "rq1c-u");
+  assert.equal(upper.stepResults.ask.output.payload.mr_url, "HTTPS://gitlab.example/g/p/-/merge_requests/8", "scheme is case-insensitive");
+  for (const [bad, id] of [["javascript:alert(1)", "rq1c-b"], ["not a url", "rq1c-c"], [42, "rq1c-d"]]) {
+    const s = await run(bad, id);
+    assert.equal(s.status, RunStatus.PAUSED, "a bad mr_url never blocks the pause");
+    assert.equal("mr_url" in s.stepResults.ask.output.payload, false, String(bad));
+  }
+});
