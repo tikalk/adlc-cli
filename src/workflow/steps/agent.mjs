@@ -9,8 +9,9 @@ import { evaluateExpression } from "../expressions.mjs";
 import { runTask } from "../../run.mjs";
 import { getRunProfile } from "../../registry.mjs";
 import { readAgent } from "../../utils/init-options.mjs";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { currentHeadSha } from "../gate-context.mjs";
 
 const rid = (config) => `'${config.id ?? "?"}'`;
 
@@ -73,6 +74,11 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   // retried step can never surface a stale value.
   const runEnv = runContextEnv(context, config);
   prepareStepOutput(runEnv.ADLC_STEP_OUTPUT);
+  // Question pause (adlc-workspace#148): clear a question file left by an
+  // earlier pause (it was persisted into that pause's step output), so only a
+  // question written during THIS attempt can pause the run; record the resume
+  // answer once.
+  prepareQuestionRun(runEnv, context, config);
 
   // runTask streams lines; collect them as the step's stdout.
   let stdout = "";
@@ -149,7 +155,91 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     });
   }
   Object.assign(output, readStepOutput(runEnv.ADLC_STEP_OUTPUT, rid(config)));
+  // Question payload (adlc-workspace#148): after exit 0, a valid
+  // runs/<run_id>/questions/<step_id>.json pauses the run with kind=question
+  // instead of completing. Invalid payloads keep COMPLETED with a warning.
+  const question = readQuestionPayload(runEnv, context, config);
+  if (question.valid) {
+    const pauseCount = priorPauseCount(context, config) + 1;
+    if (pauseCount > MAX_QUESTION_PAUSES) {
+      return new StepResult({
+        status: StepStatus.FAILED,
+        error: `Agent step ${rid(config)}: blocked: question budget exhausted (max ${MAX_QUESTION_PAUSES} pauses per step per run).`,
+        output: { ...output, pause_count: pauseCount },
+      });
+    }
+    return new StepResult({
+      status: StepStatus.PAUSED,
+      output: {
+        ...output,
+        kind: "question",
+        answer_input: `answer_${config.id}`,
+        payload: question.payload,
+        head_sha: currentHeadSha(context.projectRoot) ?? "unknown",
+        pause_count: pauseCount,
+      },
+    });
+  }
+  if (question.present) {
+    console.error(`[workflow] step ${rid(config)}: question payload ignored (${question.why})`);
+    output.question_warning = `question payload ignored: ${question.why}`;
+  }
   return new StepResult({ status: StepStatus.COMPLETED, output });
+}
+
+// ── question payload (adlc-workspace#148) ─────────────────────────────────
+// Caps: max 3 questions per payload, max 3 pauses per step per run.
+export const MAX_QUESTION_PAUSES = 3;
+export const MAX_QUESTIONS_PER_PAYLOAD = 3;
+
+function questionPath(runEnv) {
+  return runEnv.ADLC_STEP_QUESTION ?? null;
+}
+
+function readQuestionPayload(runEnv, context, config) {
+  const path = questionPath(runEnv);
+  if (!path || !existsSync(path)) return { present: false, valid: false };
+  let raw;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    return { present: true, valid: false, why: `unreadable: ${err.message}` };
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { present: true, valid: false, why: "not JSON" };
+  }
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return { present: true, valid: false, why: "not a JSON object" };
+  }
+  if (typeof data.summary !== "string" || data.summary.trim() === "") {
+    return { present: true, valid: false, why: "missing summary" };
+  }
+  const questions = data.questions;
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return { present: true, valid: false, why: "missing questions array" };
+  }
+  if (questions.length > MAX_QUESTIONS_PER_PAYLOAD) {
+    return { present: true, valid: false, why: `more than ${MAX_QUESTIONS_PER_PAYLOAD} questions` };
+  }
+  for (const q of questions) {
+    if (q === null || typeof q !== "object" || Array.isArray(q) ||
+        typeof q.id !== "string" || q.id === "" ||
+        typeof q.text !== "string" || q.text === "") {
+      return { present: true, valid: false, why: "question needs string id and text" };
+    }
+  }
+  const payload = { summary: data.summary, questions };
+  if (typeof data.resume_hint === "string" && data.resume_hint !== "") payload.resume_hint = data.resume_hint;
+  return { present: true, valid: true, payload };
+}
+
+function priorPauseCount(context, config) {
+  const prev = context.steps?.[config.id]?.output;
+  const n = prev?.pause_count;
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : 0;
 }
 
 // ── run context + structured step output (ADR-444) ─────────────────────────
@@ -171,6 +261,42 @@ export function prepareStepOutput(path) {
   try { mkdirSync(dirname(path), { recursive: true }); } catch {}
 }
 
+// Before each agent attempt (adlc-workspace#148): remove any question file
+// from an earlier pause — its payload already lives in that pause's step
+// output — and make sure the directory exists, so the agent can write a new
+// one with a plain redirect. On resume, record the answer exactly once per
+// pause in runs/<run_id>/answers/<step_id>.json.
+export function prepareQuestionRun(runEnv, context, config) {
+  const qpath = runEnv.ADLC_STEP_QUESTION;
+  if (qpath) {
+    try { rmSync(qpath, { force: true }); } catch {}
+    try { mkdirSync(dirname(qpath), { recursive: true }); } catch {}
+  }
+  const apath = runEnv.ADLC_STEP_ANSWERS;
+  const text = context.inputs?.[`answer_${config.id}`];
+  if (!apath || typeof text !== "string" || text === "") return;
+  const prev = context.steps?.[config.id]?.output;
+  const pause = Number.isInteger(prev?.pause_count) ? prev.pause_count : 0;
+  let entries = [];
+  try {
+    if (existsSync(apath)) {
+      const parsed = JSON.parse(readFileSync(apath, "utf-8"));
+      if (Array.isArray(parsed)) entries = parsed;
+    }
+  } catch {}
+  if (entries.some((e) => e && e.pause === pause)) return; // already recorded (retry)
+  const qs = prev?.payload?.questions;
+  entries.push({
+    question_id: Array.isArray(qs) && qs.length === 1 && typeof qs[0]?.id === "string" ? qs[0].id : null,
+    pause,
+    text,
+    answered_by: process.env.ADLC_ANSWERED_BY ?? "operator",
+    ts: new Date().toISOString(),
+  });
+  try { mkdirSync(dirname(apath), { recursive: true }); } catch {}
+  try { writeFileSync(apath, JSON.stringify(entries)); } catch {}
+}
+
 export function runContextEnv(context, config) {
   const env = {};
   const runId = typeof context.runId === "string" ? context.runId : null;
@@ -180,6 +306,16 @@ export function runContextEnv(context, config) {
   // Path-safe ids only: the file is deleted before the step and read after it.
   if (runId && stepId && SAFE_ID.test(runId) && SAFE_ID.test(stepId) && context.projectRoot) {
     env.ADLC_STEP_OUTPUT = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "steps", `${stepId}.output.json`);
+    // Question payload path (adlc-workspace#148): the agent leaves
+    // runs/<run_id>/questions/<step_id>.json to pause the run with a question.
+    env.ADLC_STEP_QUESTION = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "questions", `${stepId}.json`);
+    // Answers file on resume (append-only list of {question_id, text,
+    // answered_by, ts}): set when the run resumes with answer_<step_id>.
+    const answerKey = `answer_${stepId}`;
+    const answer = context.inputs?.[answerKey];
+    if (typeof answer === "string" && answer !== "") {
+      env.ADLC_STEP_ANSWERS = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "answers", `${stepId}.json`);
+    }
   }
   const issueRef = context.inputs?.issue_ref;
   if (typeof issueRef === "string" && issueRef !== "") env.ADLC_ISSUE_REF = issueRef;

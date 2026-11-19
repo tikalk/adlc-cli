@@ -337,6 +337,12 @@ function validateSteps(steps, seenIds, errors, inputDefs, insideFanOut, registry
 
     if (stepType === "gate") {
       const verdictInput = stepConfig.verdict_input;
+      // answer_* inputs belong to question pauses, never to gates
+      // (adlc-workspace#148): gates answer through verdict inputs bound to
+      // enum-admitting workflow inputs.
+      if (typeof verdictInput === "string" && verdictInput.startsWith("answer_")) {
+        errors.push(`Gate step ${repr(stepId)}: 'verdict_input' must not be an answer_* input (reserved for question pauses).`);
+      }
       if (typeof verdictInput === "string" && verdictInput) {
         if (insideFanOut) {
           errors.push(`Gate step ${repr(stepId)}: 'verdict_input' is not supported inside fan-out templates.`);
@@ -1056,6 +1062,20 @@ export class WorkflowEngine {
             verdict_input: stepConfig.verdict_input ?? null,
             ...manifest,
           });
+        } else if (result.output?.kind === "question") {
+          // Agent-step question pause (adlc-workspace#148): same channel as
+          // gate pauses, tagged kind=question. No permission_request — the
+          // answer arrives as the answer_<step_id> resume input (ADR-416:
+          // the engine makes no Slack/tracker calls).
+          this.emit("gate_paused", {
+            run_id: state.runId,
+            step_id: stepId,
+            kind: "question",
+            message: questionMessage(result.output),
+            answer_input: result.output.answer_input ?? null,
+            payload: result.output.payload ?? null,
+            head_sha: result.output.head_sha ?? null,
+          });
         }
         return;
       }
@@ -1288,6 +1308,15 @@ export class WorkflowEngine {
     if (typeof definition.inputs !== "object" || definition.inputs === null || Array.isArray(definition.inputs)) {
       return {};
     }
+    // answer_* pass-through (adlc-workspace#148): resume answers arrive as
+    // undeclared workflow inputs (answer_<step_id>). Accept them as free
+    // text so resume can always carry an answer, even when the workflow
+    // declares no such input.
+    for (const [name, value] of Object.entries(provided)) {
+      if (name.startsWith("answer_") && !(name in (definition.inputs ?? {}))) {
+        resolved[name] = String(value);
+      }
+    }
     for (const [name, inputDef] of Object.entries(definition.inputs)) {
       if (typeof inputDef !== "object" || inputDef === null || Array.isArray(inputDef)) continue;
       let value;
@@ -1323,7 +1352,8 @@ export class WorkflowEngine {
 
   static coerceInput(name, value, inputDef) {
     const inputType = inputDef.type ?? "string";
-    const enumValues = inputDef.enum ?? null;
+    // answer_* inputs are free text, never enum-coerced (adlc-workspace#148).
+    const enumValues = name.startsWith("answer_") ? null : (inputDef.enum ?? null);
 
     if (enumValues !== null && !Array.isArray(enumValues)) {
       throw new Error(`Input ${repr(name)} has invalid 'enum': must be a list, got ${typeName(enumValues)}.`);
@@ -1387,4 +1417,14 @@ export class WorkflowEngine {
 function looseEqForInput(a, b) {
   if (typeof a === "number" && typeof b === "number") return a === b;
   return a === b;
+}
+
+// One-line human summary of a question payload for the gate_paused event.
+function questionMessage(output) {
+  const questions = output?.payload?.questions;
+  if (Array.isArray(questions) && questions.length > 0) {
+    const first = questions.map((q) => q?.text).find((t) => typeof t === "string" && t !== "");
+    if (first) return `Question from step '${output?.answer_input?.replace(/^answer_/, "") ?? "?"}': ${first}`;
+  }
+  return "Agent step asked a question.";
 }

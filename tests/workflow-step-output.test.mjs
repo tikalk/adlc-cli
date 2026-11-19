@@ -123,6 +123,7 @@ test("O1: agent steps see ADLC_RUN_ID, ADLC_STEP_ID, ADLC_STEP_OUTPUT, ADLC_ISSU
     ADLC_RUN_ID: "r26",
     ADLC_STEP_ID: "intent",
     ADLC_STEP_OUTPUT: OUT_PATH(dir),
+    ADLC_STEP_QUESTION: join(dir, ".adlc", "workflows", "runs", "r26", "questions", "intent.json"),
     ADLC_ISSUE_REF: "g/p#26",
   });
 });
@@ -226,6 +227,7 @@ test("O3: a step id that is not path-safe gets no output file (nothing deleted o
   });
   const seen = JSON.parse(readFileSync(dump, "utf-8"));
   assert.equal("ADLC_STEP_OUTPUT" in seen, false);
+  assert.equal("ADLC_STEP_QUESTION" in seen, false);
   assert.equal(readFileSync(victim, "utf-8"), "keep me");
 });
 
