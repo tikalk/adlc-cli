@@ -11,8 +11,9 @@
 //       merges nothing. A failed step merges nothing.
 //   O3  The file is removed before the step runs (no stale value); a run or
 //       step id that is not path-safe gets no ADLC_STEP_OUTPUT at all.
-//   O4  The bundled `factory` workflow's intent gates link the intent step's
-//       mr_url, and a context gate surfaces it as mr_link.
+//   O4  The 1.0.0 `factory` shape (tests/fixtures/workflows/factory-v1.yml;
+//       the bundled file is 2.0.0 since SF-LANE-05) links the intent step's
+//       mr_url from its gates, and a context gate surfaces it as mr_link.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -25,7 +26,7 @@ import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
 import { fileURLToPath } from "node:url";
 
 const FACTORY_YAML = readFileSync(
-  join(dirname(dirname(fileURLToPath(import.meta.url))), "workflows", "factory", "workflow.yml"),
+  join(dirname(fileURLToPath(import.meta.url)), "fixtures", "workflows", "factory-v1.yml"),
   "utf-8"
 );
 

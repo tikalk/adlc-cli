@@ -32,6 +32,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { WorkflowEngine, RunStatus, WorkflowDefinition, validateWorkflow, headlessGateErrors } from "../src/workflow/engine.mjs";
 import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
@@ -39,6 +40,9 @@ import { StepStatus } from "../src/workflow/base.mjs";
 import { buildGateManifest, renderGateMessage } from "../src/workflow/gate-context.mjs";
 
 const PDR_GLOB = ".adlc/drafts/pdr/*.md";
+// Engine tests use the 1.0.0 `factory` shape as a multi-gate fixture; the
+// bundled `factory` moved to 2.0.0 (SF-LANE-05), see workflow-factory-v2.test.mjs.
+const FACTORY_V1 = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "workflows", "factory-v1.yml");
 
 // ── fixture helpers (same shape as workflow-gate-context-3) ───────────────
 
@@ -453,7 +457,7 @@ for (const [name, value] of [["number", "3"], ["list", "[a, b]"], ["mapping", "{
 
 test("S5: builtin factory declares optional input mr_url and gate-completion context.link", () => {
   const engine = new WorkflowEngine(tempDir("gate-ctx4-builtin-"));
-  const def = engine.loadWorkflow("factory");
+  const def = engine.loadWorkflow(FACTORY_V1);
   const inputs = def.data.inputs ?? {};
   assert.ok(inputs.mr_url, `factory declares input mr_url: ${JSON.stringify(inputs)}`);
   assert.equal(inputs.mr_url.default, "", "mr_url defaults to empty");

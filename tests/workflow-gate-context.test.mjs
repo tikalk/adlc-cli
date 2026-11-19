@@ -41,6 +41,9 @@ import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
 import { StepStatus } from "../src/workflow/base.mjs";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "adlc-cli.mjs");
+// Engine tests use the 1.0.0 `factory` shape as a multi-gate fixture; the
+// bundled `factory` moved to 2.0.0 (SF-LANE-05), see workflow-factory-v2.test.mjs.
+const FACTORY_V1 = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "workflows", "factory-v1.yml");
 const PDR_GLOB = ".adlc/drafts/pdr/*.md";
 
 // ── fixture helpers ───────────────────────────────────────────────────────
@@ -619,7 +622,7 @@ const FACTORY_GATE_RECORDS = {
 
 test("builtin factory: stage gates declare context.records and neutral messages", () => {
   const engine = new WorkflowEngine(tempDir("gate-ctx-builtin-"));
-  const def = engine.loadWorkflow("factory");
+  const def = engine.loadWorkflow(FACTORY_V1);
   for (const [gateId, glob] of Object.entries(FACTORY_GATE_RECORDS)) {
     const step = def.steps.find((s) => s.id === gateId);
     assert.ok(step, gateId);
@@ -635,7 +638,7 @@ test("builtin factory: stage gates declare context.records and neutral messages"
 test("builtin factory: gate-product pauses with the PDR manifest from the run's git repo", async () => {
   const { dir, baseSha } = standardRepo();
   const engine = new WorkflowEngine(dir);
-  const def = engine.loadWorkflow("factory");
+  const def = engine.loadWorkflow(FACTORY_V1);
   const stubDef = new WorkflowDefinition({
     ...def.data,
     steps: def.steps.map((s) => (s.type === "command" ? { id: s.id, type: "shell", run: `echo ${s.id}` } : s)),

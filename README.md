@@ -168,8 +168,10 @@ refs/factory-runs/<run_id>             git-refs Tier-3 (ADR-393)
 adlc-cli workflow run mission --input spec="Fix auth"
 adlc-cli workflow resume <run_id> --input verdict=approve
 
-# The bundled outer loop (stages = command steps + gates)
-adlc-cli workflow run factory --input verdict=approve
+# The bundled outer loop: preflight → intent → plan gate → execute → proof of
+# work → completion gate (fails closed; one verdict input per gate)
+adlc-cli workflow run factory --input issue_ref=group/repo#12
+adlc-cli workflow resume <run_id> --input verdict_intent=approve
 
 # CI: JSONL lifecycle events (run_started/step_*/gate_paused/…/run_completed)
 adlc-cli workflow run factory --format json
@@ -215,7 +217,7 @@ A step can return a few named strings by writing a JSON object to
 
 After a successful exit, these fields are merged into the step output, so a
 later step or gate can read them, for example
-`context.link: "{{ steps.intent-product.output.mr_url }}"`. If any field breaks
+`context.link: "{{ steps.publish-spec.output.mr_url }}"`. If any field breaks
 a rule, the file is ignored with a log line. Stdout is never parsed for
 results.
 
