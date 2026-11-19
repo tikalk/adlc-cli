@@ -33,15 +33,20 @@ test("workflows/factory/autonomous/workflow.yml exists and declares direct execu
   assert.ok(!content.includes("type: gate"), "autonomous workflow must not contain gate steps");
 });
 
-test("workflows/factory/supervised/workflow.yml exists and declares plan, spec-gate, and execute", () => {
+test("workflows/factory/supervised/workflow.yml exists and declares run-branch, plan, publish-spec, spec-gate, run-branch-execute, and execute", () => {
   const wfPath = join(ROOT, "workflows", "factory", "supervised", "workflow.yml");
   assert.ok(existsSync(wfPath), "workflows/factory/supervised/workflow.yml must exist");
   const content = readFileSync(wfPath, "utf-8");
   assert.match(content, /id:\s*factory-supervised/);
+  assert.match(content, /id:\s*run-branch/);
   assert.match(content, /id:\s*plan/);
   assert.match(content, /--plan/);
+  assert.match(content, /id:\s*publish-spec/);
   assert.match(content, /id:\s*gate-spec/);
   assert.match(content, /type:\s*gate/);
+  assert.match(content, /records:\s*\[\s*"\.adlc\/drafts\/adr\/\*\.md"\s*,\s*"\.adlc\/drafts\/pdr\/\*\.md"\s*\]/);
+  assert.match(content, /link:\s*"\{\{\s*steps\.publish-spec\.output\.mr_url\s*\|\s*default\(steps\.plan\.output\.mr_url\)\s*\}\}"/);
+  assert.match(content, /id:\s*run-branch-execute/);
   assert.match(content, /id:\s*execute/);
 });
 
