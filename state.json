@@ -1,0 +1,51 @@
+{
+  "run_id": "6d22f892",
+  "workflow_id": "factory",
+  "installed_workflow_id": null,
+  "installed_registry_root": null,
+  "status": "failed",
+  "current_step_index": 1,
+  "current_step_id": "intent-product",
+  "step_results": {
+    "run-branch": {
+      "type": "shell",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": {},
+      "output": {
+        "exit_code": 0,
+        "stdout": "run-branch: skipped run-branch.sh (factory-mission helpers not installed)\n",
+        "stderr": "run-branch: skipped run-branch.sh (factory-mission helpers not installed)\n",
+        "skipped": "run-branch: skipped run-branch.sh (factory-mission helpers not installed)"
+      },
+      "status": "completed",
+      "error": null
+    },
+    "intent-product": {
+      "type": "command",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": "/factory-product",
+      "output": {
+        "integration": null,
+        "model": null,
+        "mode": null,
+        "input": "/factory-product",
+        "stdout": "",
+        "stderr": "",
+        "exit_code": -1
+      },
+      "status": "failed",
+      "error": "Step 'intent-product': no agent/integration configured. Set step 'integration:', workflow 'workflow.integration:', or .adlc/init-options.json agent."
+    }
+  },
+  "workflow_dir": "/private/tmp/claude-501/-Users-itaior-tikal-adlc-workspace/19d555f3-9c42-47e5-9508-7746530be1ec/scratchpad/cli/workflows/factory",
+  "created_at": "2026-11-19T15:03:02.105Z",
+  "updated_at": "2026-11-19T15:03:04.335Z",
+  "error": "Step 'intent-product': no agent/integration configured. Set step 'integration:', workflow 'workflow.integration:', or .adlc/init-options.json agent.",
+  "run_start_sha": "b77ebb547b45246092b5020e53f2ce0b8f87bea9"
+}
