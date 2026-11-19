@@ -74,6 +74,11 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   // retried step can never surface a stale value.
   const runEnv = runContextEnv(context, config);
   prepareStepOutput(runEnv.ADLC_STEP_OUTPUT);
+  // Question pause (adlc-workspace#148): clear a question file left by an
+  // earlier pause (it was persisted into that pause's step output), so only a
+  // question written during THIS attempt can pause the run; record the resume
+  // answer once.
+  prepareQuestionRun(runEnv, context, config);
 
   // runTask streams lines; collect them as the step's stdout.
   let stdout = "";
@@ -177,6 +182,7 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   }
   if (question.present) {
     console.error(`[workflow] step ${rid(config)}: question payload ignored (${question.why})`);
+    output.question_warning = `question payload ignored: ${question.why}`;
   }
   return new StepResult({ status: StepStatus.COMPLETED, output });
 }
@@ -208,6 +214,9 @@ function readQuestionPayload(runEnv, context, config) {
   if (data === null || typeof data !== "object" || Array.isArray(data)) {
     return { present: true, valid: false, why: "not a JSON object" };
   }
+  if (typeof data.summary !== "string" || data.summary.trim() === "") {
+    return { present: true, valid: false, why: "missing summary" };
+  }
   const questions = data.questions;
   if (!Array.isArray(questions) || questions.length === 0) {
     return { present: true, valid: false, why: "missing questions array" };
@@ -222,7 +231,9 @@ function readQuestionPayload(runEnv, context, config) {
       return { present: true, valid: false, why: "question needs string id and text" };
     }
   }
-  return { present: true, valid: true, payload: { questions } };
+  const payload = { summary: data.summary, questions };
+  if (typeof data.resume_hint === "string" && data.resume_hint !== "") payload.resume_hint = data.resume_hint;
+  return { present: true, valid: true, payload };
 }
 
 function priorPauseCount(context, config) {
@@ -250,32 +261,40 @@ export function prepareStepOutput(path) {
   try { mkdirSync(dirname(path), { recursive: true }); } catch {}
 }
 
-// The question file is NOT removed before the step: it is the pause signal.
-// Only its directory is ensured. Like the step output, path-unsafe ids get
-// no file at all (runContextEnv only sets it for SAFE_ID pairs).
-function prepareQuestionFile(path) {
-  if (!path) return;
-  try { mkdirSync(dirname(path), { recursive: true }); } catch {}
-}
-
-// Append one answer entry to runs/<run_id>/answers/<step_id>.json.
-function appendAnswer(runId, stepId, projectRoot, text) {
-  const path = join(projectRoot, ".adlc", "workflows", "runs", runId, "answers", `${stepId}.json`);
+// Before each agent attempt (adlc-workspace#148): remove any question file
+// from an earlier pause — its payload already lives in that pause's step
+// output — and make sure the directory exists, so the agent can write a new
+// one with a plain redirect. On resume, record the answer exactly once per
+// pause in runs/<run_id>/answers/<step_id>.json.
+export function prepareQuestionRun(runEnv, context, config) {
+  const qpath = runEnv.ADLC_STEP_QUESTION;
+  if (qpath) {
+    try { rmSync(qpath, { force: true }); } catch {}
+    try { mkdirSync(dirname(qpath), { recursive: true }); } catch {}
+  }
+  const apath = runEnv.ADLC_STEP_ANSWERS;
+  const text = context.inputs?.[`answer_${config.id}`];
+  if (!apath || typeof text !== "string" || text === "") return;
+  const prev = context.steps?.[config.id]?.output;
+  const pause = Number.isInteger(prev?.pause_count) ? prev.pause_count : 0;
   let entries = [];
   try {
-    if (existsSync(path)) {
-      const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    if (existsSync(apath)) {
+      const parsed = JSON.parse(readFileSync(apath, "utf-8"));
       if (Array.isArray(parsed)) entries = parsed;
     }
   } catch {}
+  if (entries.some((e) => e && e.pause === pause)) return; // already recorded (retry)
+  const qs = prev?.payload?.questions;
   entries.push({
-    question_id: null,
+    question_id: Array.isArray(qs) && qs.length === 1 && typeof qs[0]?.id === "string" ? qs[0].id : null,
+    pause,
     text,
     answered_by: process.env.ADLC_ANSWERED_BY ?? "operator",
     ts: new Date().toISOString(),
   });
-  try { mkdirSync(dirname(path), { recursive: true }); } catch {}
-  try { writeFileSync(path, JSON.stringify(entries)); } catch {}
+  try { mkdirSync(dirname(apath), { recursive: true }); } catch {}
+  try { writeFileSync(apath, JSON.stringify(entries)); } catch {}
 }
 
 export function runContextEnv(context, config) {
@@ -295,10 +314,8 @@ export function runContextEnv(context, config) {
     const answerKey = `answer_${stepId}`;
     const answer = context.inputs?.[answerKey];
     if (typeof answer === "string" && answer !== "") {
-      appendAnswer(runId, stepId, context.projectRoot, answer);
       env.ADLC_STEP_ANSWERS = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "answers", `${stepId}.json`);
     }
-    prepareQuestionFile(env.ADLC_STEP_QUESTION);
   }
   const issueRef = context.inputs?.issue_ref;
   if (typeof issueRef === "string" && issueRef !== "") env.ADLC_ISSUE_REF = issueRef;

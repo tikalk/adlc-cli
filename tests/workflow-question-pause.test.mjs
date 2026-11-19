@@ -92,6 +92,7 @@ const STEP = `  - id: ask
 `;
 
 const QUESTION = JSON.stringify({
+  summary: "The brief does not name a color.",
   questions: [{ id: "q1", text: "Pick a color?" }],
 });
 
@@ -136,7 +137,7 @@ test("Q5: invalid payload completes the step", { skip: !POSIX }, async () => {
 test("Q5: more than 3 questions completes the step", { skip: !POSIX }, async () => {
   const bin = installFakeAgent();
   const dir = project();
-  const big = JSON.stringify({ questions: [{ id: "a", text: "1" }, { id: "b", text: "2" }, { id: "c", text: "3" }, { id: "d", text: "4" }] });
+  const big = JSON.stringify({ summary: "s", questions: [{ id: "a", text: "1" }, { id: "b", text: "2" }, { id: "c", text: "3" }, { id: "d", text: "4" }] });
   const { state } = await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_QUESTION: big, FAKE_EXIT: "0" }, async () => {
     const engine = new WorkflowEngine(dir);
     const s = await engine.execute(await engine.loadWorkflow(workflow(STEP)), {}, "rq5b", STEP_REGISTRY);
@@ -189,5 +190,39 @@ test("Q2: resume with answer_ask re-runs the step with ADLC_STEP_ANSWERS", { ski
     assert.equal(seen.ADLC_STEP_ANSWERS, join(dir, ".adlc", "workflows", "runs", "rq2", "answers", "ask.json"));
     const answers = JSON.parse(readFileSync(join(dir, ".adlc", "workflows", "runs", "rq2", "answers", "ask.json"), "utf-8"));
     assert.ok(Array.isArray(answers) && answers.some((a) => a.text === "blue"));
+    assert.equal(answers.length, 1);
+    assert.equal(answers[0].question_id, "q1");
+    // The step wrote no new question on the re-run, so the run completes:
+    // the earlier pause's question file must not pause it again.
+    assert.equal(state.status, RunStatus.COMPLETED);
   });
+});
+
+test("Q5: payload without summary completes the step with a warning", { skip: !POSIX }, async () => {
+  const bin = installFakeAgent();
+  const dir = project();
+  const noSummary = JSON.stringify({ questions: [{ id: "q1", text: "Pick?" }] });
+  const { state } = await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_QUESTION: noSummary, FAKE_EXIT: "0" }, async () => {
+    const engine = new WorkflowEngine(dir);
+    const s = await engine.execute(await engine.loadWorkflow(workflow(STEP)), {}, "rq5c", STEP_REGISTRY);
+    return { state: s };
+  });
+  assert.equal(state.status, RunStatus.COMPLETED);
+  assert.match(state.stepResults.ask.output.question_warning, /missing summary/);
+});
+
+test("Q1b: paused payload keeps summary and resume_hint", { skip: !POSIX }, async () => {
+  const bin = installFakeAgent();
+  const dir = project();
+  const q = JSON.stringify({ summary: "Gap.", resume_hint: "plan phase", questions: [{ id: "q1", text: "Pick?", options: ["a", "b"] }] });
+  const { state } = await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_QUESTION: q, FAKE_EXIT: "0" }, async () => {
+    const engine = new WorkflowEngine(dir);
+    const s = await engine.execute(await engine.loadWorkflow(workflow(STEP)), {}, "rq1b", STEP_REGISTRY);
+    return { state: s };
+  });
+  assert.equal(state.status, RunStatus.PAUSED);
+  const p = state.stepResults.ask.output.payload;
+  assert.equal(p.summary, "Gap.");
+  assert.equal(p.resume_hint, "plan phase");
+  assert.deepEqual(p.questions[0].options, ["a", "b"]);
 });
