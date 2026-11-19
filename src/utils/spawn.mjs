@@ -51,7 +51,22 @@ export function spawnNpxSync(args, options = {}) {
 // fall back to the pinned spec — it runs on every supported Node.
 // Pure function of the version string so unit tests can inject versions
 // (no live-network assertions).
-export function resolveSkillsPackageSpec(version = process.version) {
+//
+// ADLC_SKILLS_PACKAGE pins the spec for reproducible installs (CI images, the
+// factory lane): an exact `skills@<major>.<minor>.<patch>` wins over the
+// version logic, so a pod never fetches a `skills` release nobody tested. The
+// pin is taken as given — choose a release that runs on the image's Node.
+// Anything else in the variable is ignored with a warning: a range or tag
+// would quietly defeat the pin.
+const PINNED_SKILLS_SPEC = /^skills@\d+\.\d+\.\d+$/;
+export function resolveSkillsPackageSpec(version = process.version, env = process.env) {
+  const pinned = String(env?.ADLC_SKILLS_PACKAGE ?? "").trim();
+  if (pinned) {
+    if (PINNED_SKILLS_SPEC.test(pinned)) return pinned;
+    process.stderr.write(
+      `[skills] ignoring ADLC_SKILLS_PACKAGE=${JSON.stringify(pinned)}: expected an exact skills@<major>.<minor>.<patch>\n`,
+    );
+  }
   const m = /^v?(\d+)\.(\d+)\.\d+/.exec(String(version || ""));
   if (m) {
     const major = Number(m[1]);

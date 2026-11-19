@@ -368,6 +368,13 @@ adlc-cli skills add <source> -a <agent>
         .opencode/plugins/adlc-skills-events.ts       agent-native hook config
 ```
 
+Step 1 runs `npx --yes <spec>`. By default the spec follows the running Node:
+`skills@latest` on Node >= 22.20, `skills@1.5.18` (the newest release that
+runs there) on older Nodes. Set `ADLC_SKILLS_PACKAGE=skills@<major>.<minor>.<patch>`
+to pin an exact release instead, for example in a CI or runner image, so
+installs never pick up an untested `skills` release. Anything that is not an
+exact version (`skills@latest`, `skills@^1.7.0`, …) is ignored with a warning.
+
 ## Skill flags
 
 | Flag | Description |
