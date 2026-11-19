@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.14.0] - 2026-11-19
+
+### Added
+
+- **Agent steps pause on a question** (#97, adlc-workspace#148) — after exit 0, a valid `runs/<run_id>/questions/<step_id>.json` (`ADLC_STEP_QUESTION`; `summary` plus 1–3 `questions`) makes the step return `PAUSED` with `gate_paused{kind: "question", answer_input: "answer_<step_id>", payload, head_sha}` instead of completing. `workflow resume <run_id> --input answer_<step_id>=…` re-runs the same step with the append-only answers file in `ADLC_STEP_ANSWERS` (and `ADLC_ANSWERED_BY`). `answer_*` inputs are free text: they need no declaration, are never enum-coerced, and a gate may not use one as `verdict_input`. Caps: 3 questions per payload and 3 pauses per step per run, then `blocked: question budget exhausted`. An invalid payload keeps today's `COMPLETED` with a `question_warning`. A stale question file is cleared before each run. The engine still makes no Slack or tracker calls.
+- **Question payload keeps the run's `mr_url`** (#98, adlc-workspace#150) — a plain `http(s)://` URL (case-insensitive scheme, no whitespace or `<>|`, at most ~2 KB) survives into the paused payload so the runtime can link the draft MR; anything else is dropped without blocking the pause.
+- **`factory-supervised` publishes the spec before its gate** (#96) — new `run-branch` and `publish-spec` steps check out the mission branch and open or reuse the early draft MR via the installed `factory-runbook` helpers (clean skip when they are not installed; fail closed on a helper error). `gate-spec` now declares `context.records` (`.adlc/drafts/{adr,pdr}/*.md`, `since: last_approved`) and links the draft MR, so the approval shows what is being approved.
+- **Reference-only skills get no command file** (#89, ADR-507) — `reference-only: true` frontmatter skips command generation in `skills add` (with a `Skipped N reference-only skill(s)` line) and removes a stale generated command on `skills update`; user-authored files are left untouched.
+
 ## [2.13.0] - 2026-11-18
 
 ### Changed
