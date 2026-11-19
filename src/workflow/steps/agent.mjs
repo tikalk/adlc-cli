@@ -191,7 +191,8 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
 // Caps: max 3 questions per payload, max 3 pauses per step per run.
 export const MAX_QUESTION_PAUSES = 3;
 export const MAX_QUESTIONS_PER_PAYLOAD = 3;
-const MR_URL = /^https?:\/\/[^\s<>|]{1,2040}$/;
+// Scheme is case-insensitive (RFC 3986 §3.1): HTTPS:// is as valid as https://.
+const MR_URL = /^https?:\/\/[^\s<>|]{1,2040}$/i;
 
 function questionPath(runEnv) {
   return runEnv.ADLC_STEP_QUESTION ?? null;
