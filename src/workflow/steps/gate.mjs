@@ -63,6 +63,21 @@ export class GateStep extends StepBase {
         error: `Gate step ${rid(config)}: 'verdict_input' must be a non-empty string.`,
       });
     }
+    // answer_* inputs belong to question pauses, never to gates
+    // (adlc-workspace#148) — fail loudly at execute time too.
+    if (hasVerdictInput && typeof verdictInput === "string" && verdictInput.startsWith("answer_")) {
+      return new StepResult({
+        status: StepStatus.FAILED,
+        error: `Gate step ${rid(config)}: 'verdict_input' must not be an answer_* input (reserved for question pauses).`,
+      });
+    }
+    // Gates never read answer_* resume inputs (adlc-workspace#148).
+    if (typeof config.id === "string" && config.id !== "" && typeof context.inputs?.[`answer_${config.id}`] === "string") {
+      return new StepResult({
+        status: StepStatus.FAILED,
+        error: `Gate step ${rid(config)}: gates never read answer_* inputs.`,
+      });
+    }
     if ("context" in config) {
       const contextErrors = validateGateContext(config, rid(config));
       if (contextErrors.length > 0) {
