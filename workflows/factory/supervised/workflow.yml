@@ -36,7 +36,7 @@ steps:
   # Spec Approval Gate (HITL) — links the early draft MR and lists any proposal records
   - id: gate-spec
     type: gate
-    message: "Approve specification and plan before implementation? (If proposed ADR/PDR drafts are listed, promote them via /architect-clarify or /product-clarify on the run branch before approving; otherwise reject.)"
+    message: "Approve specification and plan before implementation? (If status: proposed ADR/PDR drafts are listed, reject this gate, promote them to docs/adlc/memory/ via /architect-clarify + /architect-implement or /product-clarify + /product-implement, and re-run factory-supervised.)"
     context:
       records: [".adlc/drafts/adr/*.md", ".adlc/drafts/pdr/*.md"]
       since: last_approved

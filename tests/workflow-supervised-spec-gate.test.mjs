@@ -128,7 +128,7 @@ test("factory-supervised passes workflow + headless gate validation and wires ga
   const gate = def.steps.find((s) => s.id === "gate-spec");
   assert.equal(
     gate.message,
-    "Approve specification and plan before implementation? (If proposed ADR/PDR drafts are listed, promote them via /architect-clarify or /product-clarify on the run branch before approving; otherwise reject.)",
+    "Approve specification and plan before implementation? (If status: proposed ADR/PDR drafts are listed, reject this gate, promote them to docs/adlc/memory/ via /architect-clarify + /architect-implement or /product-clarify + /product-implement, and re-run factory-supervised.)",
   );
   assert.deepEqual(gate.context.records, [".adlc/drafts/adr/*.md", ".adlc/drafts/pdr/*.md"]);
   assert.equal(gate.context.since, "last_approved");
@@ -459,5 +459,246 @@ if (process.env.ADLC_STEP_ID === "plan" && process.env.CREATE_OPEN_MR_IN_PLAN ==
     assert.equal(state.stepResults["publish-spec"].status, "failed");
     assert.match(state.stepResults["publish-spec"].error, /publish-spec: failed to spawn open-mr\.sh:.*ENOENT/);
     assert.equal(state.stepResults["publish-spec"].output?.skipped, undefined);
+  });
+});
+
+test("factory-supervised: 0-proposal PASS triggers open-mr.sh rev-list empty-branch guard, omits mr_link, and approves cleanly to execute", { skip: !POSIX }, async () => {
+  const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+  const remote = tempDir("sup-empty-remote-");
+  git(remote, ["init", "-q", "--bare", "-b", "main"]);
+
+  const dir = tempDir("sup-empty-repo-");
+  git(dir, ["init", "-q", "-b", "main"]);
+  git(dir, ["config", "user.email", "t@e"]);
+  git(dir, ["config", "user.name", "T"]);
+  git(dir, ["config", "commit.gpgsign", "false"]);
+  writeFileSync(join(dir, "README.md"), "# p\n");
+  git(dir, ["add", "README.md"]);
+  git(dir, ["commit", "-qm", "init"]);
+  git(dir, ["remote", "add", "origin", remote]);
+  git(dir, ["push", "-qu", "origin", "main"]);
+
+  mkdirSync(join(dir, ".adlc"), { recursive: true });
+  writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
+
+  const helperDir = join(dir, ".agents", "skills", "factory-runbook", "scripts", "bash");
+  mkdirSync(helperDir, { recursive: true });
+  writeFileSync(join(helperDir, "run-branch.sh"), REAL_EQUIVALENT_RUN_BRANCH_SH);
+  chmodSync(join(helperDir, "run-branch.sh"), 0o755);
+
+  const openMrWithRevListGuard = `#!/usr/bin/env bash
+set -euo pipefail
+[ "$(git rev-list --count "refs/remotes/origin/main..HEAD")" = 0 ] && exit 0
+git push -q origin HEAD:refs/heads/factory/mission/p-12
+if [ -n "\${ADLC_STEP_OUTPUT:-}" ]; then
+  printf '{"mr_url":"https://gl.test/g/p/-/merge_requests/88"}' > "$ADLC_STEP_OUTPUT"
+fi
+`;
+  writeFileSync(join(helperDir, "open-mr.sh"), openMrWithRevListGuard);
+  chmodSync(join(helperDir, "open-mr.sh"), 0o755);
+
+  const bin = installFakeAgent(`
+const cur = cp.execFileSync("git", ["branch", "--show-current"], { encoding: "utf-8" }).trim();
+if (cur !== "factory/mission/p-12") {
+  console.error("expected factory/mission/p-12, got " + cur);
+  process.exit(1);
+}
+if (process.env.ADLC_STEP_OUTPUT) {
+  fs.mkdirSync(path.dirname(process.env.ADLC_STEP_OUTPUT), { recursive: true });
+  if (process.argv.join(" ").includes("--plan")) {
+    fs.writeFileSync(process.env.ADLC_STEP_OUTPUT, JSON.stringify({ conclusion: "plan-ready" }));
+  } else {
+    fs.writeFileSync(process.env.ADLC_STEP_OUTPUT, JSON.stringify({ conclusion: "done" }));
+  }
+}
+`);
+  const wf = join(ROOT, "workflows", "factory", "supervised", "workflow.yml");
+
+  await withEnv({
+    PATH: `${bin}:${process.env.PATH}`,
+    FAKE_EXIT: "0",
+    FAKE_OUTPUT: undefined,
+  }, async () => {
+    const engine = new WorkflowEngine(dir);
+    const events = [];
+    engine.onEvent = (e) => events.push(e);
+
+    const state = await engine.execute(await engine.loadWorkflow(wf), { issue_ref: "g/p#12", verdict: "" }, "rsup-empty", STEP_REGISTRY);
+    assert.equal(state.status, RunStatus.PAUSED);
+    assert.equal(state.currentStepId, "gate-spec");
+    assert.equal(state.stepResults["run-branch"].status, "completed");
+    assert.equal(state.stepResults.plan.status, "completed");
+    assert.equal(state.stepResults.plan.output.conclusion, "plan-ready");
+    assert.equal(state.stepResults["publish-spec"].status, "completed");
+    assert.equal(state.stepResults["publish-spec"].output.mr_url, undefined);
+
+    const paused = events.find((e) => e.type === "gate_paused");
+    assert.ok(paused, "gate_paused must emit");
+    assert.equal("mr_link" in paused, false);
+    assert.equal(paused.mr_link, undefined);
+    assert.equal(paused.no_changes, true);
+    assert.deepEqual(paused.decisions, []);
+    assert.ok(!paused.message.includes("Merge request:"));
+    assert.ok(!paused.message.includes("· status: proposed"));
+    assert.match(paused.message, /No new or changed decisions since run start @/);
+
+    const resumed = await engine.resume("rsup-empty", { verdict: "approve" }, STEP_REGISTRY);
+    assert.equal(resumed.status, RunStatus.COMPLETED);
+    assert.equal(resumed.stepResults["run-branch-execute"].status, "completed");
+    assert.equal(resumed.stepResults["execute"].status, "completed");
+    assert.equal(resumed.stepResults["execute"].output.conclusion, "done");
+  });
+});
+
+test("factory-supervised: DECISION_RECORDS_CAPTURE_NEEDED reject -> promote to docs/adlc/memory/ -> re-run -> approve -> execute", { skip: !POSIX }, async () => {
+  const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+  const remote = tempDir("sup-prop-remote-");
+  git(remote, ["init", "-q", "--bare", "-b", "main"]);
+
+  const dir = tempDir("sup-prop-repo-");
+  git(dir, ["init", "-q", "-b", "main"]);
+  git(dir, ["config", "user.email", "t@e"]);
+  git(dir, ["config", "user.name", "T"]);
+  git(dir, ["config", "commit.gpgsign", "false"]);
+  writeFileSync(join(dir, "README.md"), "# p\n");
+  git(dir, ["add", "README.md"]);
+  git(dir, ["commit", "-qm", "init"]);
+  git(dir, ["remote", "add", "origin", remote]);
+  git(dir, ["push", "-qu", "origin", "main"]);
+
+  mkdirSync(join(dir, ".adlc"), { recursive: true });
+  writeFileSync(join(dir, ".adlc", "init-options.json"), JSON.stringify({ agent: "opencode" }));
+
+  const helperDir = join(dir, ".agents", "skills", "factory-runbook", "scripts", "bash");
+  mkdirSync(helperDir, { recursive: true });
+  writeFileSync(join(helperDir, "run-branch.sh"), REAL_EQUIVALENT_RUN_BRANCH_SH);
+  chmodSync(join(helperDir, "run-branch.sh"), 0o755);
+
+  const openMrWithRevListGuard = `#!/usr/bin/env bash
+set -euo pipefail
+[ "$(git rev-list --count "refs/remotes/origin/main..HEAD")" = 0 ] && exit 0
+git push -q origin HEAD:refs/heads/factory/mission/p-12
+if [ -n "\${ADLC_STEP_OUTPUT:-}" ]; then
+  printf '{"mr_url":"https://gl.test/g/p/-/merge_requests/99"}' > "$ADLC_STEP_OUTPUT"
+fi
+`;
+  writeFileSync(join(helperDir, "open-mr.sh"), openMrWithRevListGuard);
+  chmodSync(join(helperDir, "open-mr.sh"), 0o755);
+
+  const bin = installFakeAgent(`
+const cur = cp.execFileSync("git", ["branch", "--show-current"], { encoding: "utf-8" }).trim();
+if (cur !== "factory/mission/p-12") {
+  console.error("expected factory/mission/p-12, got " + cur);
+  process.exit(1);
+}
+const adrIndexPath = "docs/adlc/memory/adr/adr.md";
+const hasAcceptedAdr = fs.existsSync(adrIndexPath) && fs.readFileSync(adrIndexPath, "utf-8").includes("ADR-001");
+if (process.argv.join(" ").includes("--plan")) {
+  if (!hasAcceptedAdr) {
+    fs.mkdirSync(".adlc/drafts/adr", { recursive: true });
+    fs.writeFileSync(".adlc/drafts/adr/ADR-001.md", "---\\nid: ADR-001\\ntitle: Spec Gate Proposal\\nstatus: proposed\\n---\\n\\n## Decision Outcome\\n\\nCapture spec gate proposal.\\n");
+    cp.execFileSync("git", ["add", ".adlc/drafts/adr/ADR-001.md"]);
+    cp.execFileSync("git", ["commit", "-qm", "docs(adr): propose ADR-001"]);
+    if (process.env.ADLC_STEP_OUTPUT) {
+      fs.mkdirSync(path.dirname(process.env.ADLC_STEP_OUTPUT), { recursive: true });
+      fs.writeFileSync(process.env.ADLC_STEP_OUTPUT, JSON.stringify({ conclusion: "plan-ready: decision-records-proposed" }));
+    }
+  } else if (process.env.ADLC_STEP_OUTPUT) {
+    fs.mkdirSync(path.dirname(process.env.ADLC_STEP_OUTPUT), { recursive: true });
+    fs.writeFileSync(process.env.ADLC_STEP_OUTPUT, JSON.stringify({ conclusion: "plan-ready" }));
+  }
+} else {
+  if (!hasAcceptedAdr) {
+    console.error("blocked: decision-records (ADR-001 missing from docs/adlc/memory/adr/adr.md)");
+    process.exit(1);
+  }
+  if (process.env.ADLC_STEP_OUTPUT) {
+    fs.mkdirSync(path.dirname(process.env.ADLC_STEP_OUTPUT), { recursive: true });
+    fs.writeFileSync(
+      process.env.ADLC_STEP_OUTPUT,
+      JSON.stringify({ conclusion: "done", mr_url: "https://gl.test/g/p/-/merge_requests/99" }),
+    );
+  }
+}
+`);
+  const wf = join(ROOT, "workflows", "factory", "supervised", "workflow.yml");
+
+  await withEnv({
+    PATH: `${bin}:${process.env.PATH}`,
+    FAKE_EXIT: "0",
+    FAKE_OUTPUT: undefined,
+  }, async () => {
+    // Run 1 (rsup-prop-1): plan commits status: proposed ADR-001 -> gate-spec pauses -> operator rejects -> ABORTED.
+    const engine1 = new WorkflowEngine(dir);
+    const events1 = [];
+    engine1.onEvent = (e) => events1.push(e);
+
+    const state1 = await engine1.execute(await engine1.loadWorkflow(wf), { issue_ref: "g/p#12", verdict: "" }, "rsup-prop-1", STEP_REGISTRY);
+    assert.equal(state1.status, RunStatus.PAUSED);
+    assert.equal(state1.currentStepId, "gate-spec");
+    assert.equal(state1.stepResults.plan.output.conclusion, "plan-ready: decision-records-proposed");
+    assert.equal(state1.stepResults["publish-spec"].output.mr_url, "https://gl.test/g/p/-/merge_requests/99");
+
+    const paused1 = events1.find((e) => e.type === "gate_paused");
+    assert.ok(paused1, "gate_paused must emit on Run 1");
+    assert.equal(paused1.mr_link, "https://gl.test/g/p/-/merge_requests/99");
+    assert.equal(paused1.decisions.length, 1);
+    assert.equal(paused1.decisions[0].id, "ADR-001");
+    assert.equal(paused1.decisions[0].status, "proposed");
+    assert.match(paused1.message, /ADR-001/);
+    assert.match(paused1.message, /· status: proposed/);
+    assert.match(paused1.message, /Merge request: https:\/\/gl\.test\/g\/p\/-\/merge_requests\/99/);
+
+    const resumed1 = await engine1.resume("rsup-prop-1", { verdict: "reject" }, STEP_REGISTRY);
+    assert.equal(resumed1.status, RunStatus.ABORTED);
+    assert.equal(resumed1.stepResults["gate-spec"].output.aborted, true);
+    assert.equal(resumed1.stepResults["execute"], undefined);
+
+    // Promotion (/architect-clarify + /architect-implement) on factory/mission/p-12 pushed to origin.
+    git(dir, ["rm", "-q", ".adlc/drafts/adr/ADR-001.md"]);
+    mkdirSync(join(dir, "docs", "adlc", "memory", "adr"), { recursive: true });
+    writeFileSync(
+      join(dir, "docs", "adlc", "memory", "adr", "ADR-001.md"),
+      "---\nid: ADR-001\ntitle: Spec Gate Proposal\nstatus: accepted\n---\n\n## Decision Outcome\n\nCapture spec gate proposal.\n",
+    );
+    writeFileSync(
+      join(dir, "docs", "adlc", "memory", "adr", "adr.md"),
+      "# Architecture Decision Records\n\n| ID | Sub-System | Decision | Status |\n|---|---|---|---|\n| ADR-001 | factory | Spec Gate Proposal | accepted |\n",
+    );
+    git(dir, ["add", "docs/adlc/memory/adr/ADR-001.md", "docs/adlc/memory/adr/adr.md"]);
+    git(dir, ["commit", "-qm", "docs(adr): promote ADR-001 to accepted memory"]);
+    const promotedSha = git(dir, ["rev-parse", "HEAD"]);
+    git(dir, ["push", "-q", "origin", "HEAD:refs/heads/factory/mission/p-12"]);
+    // Switch back to main so Run 2's run-branch step proves it checks out factory/mission/p-12 at promotedSha.
+    git(dir, ["switch", "-q", "main"]);
+
+    // Run 2 (rsup-prop-2): re-run factory-supervised -> plan sees ADR-001 in memory -> gate-spec binds to promotedSha -> approve -> execute COMPLETED.
+    const engine2 = new WorkflowEngine(dir);
+    const events2 = [];
+    engine2.onEvent = (e) => events2.push(e);
+
+    const state2 = await engine2.execute(await engine2.loadWorkflow(wf), { issue_ref: "g/p#12", verdict: "" }, "rsup-prop-2", STEP_REGISTRY);
+    assert.equal(state2.status, RunStatus.PAUSED);
+    assert.equal(state2.currentStepId, "gate-spec");
+    assert.equal(git(dir, ["rev-parse", "HEAD"]), promotedSha);
+    assert.equal(state2.stepResults.plan.output.conclusion, "plan-ready");
+    assert.equal(state2.stepResults["publish-spec"].output.mr_url, "https://gl.test/g/p/-/merge_requests/99");
+
+    const paused2 = events2.find((e) => e.type === "gate_paused");
+    assert.ok(paused2, "gate_paused must emit on Run 2");
+    assert.equal(paused2.head_sha, promotedSha);
+    assert.equal(paused2.mr_link, "https://gl.test/g/p/-/merge_requests/99");
+    assert.equal(paused2.no_changes, true);
+    assert.deepEqual(paused2.decisions, []);
+    assert.ok(!paused2.message.includes("· status: proposed"));
+    assert.match(paused2.message, /No new or changed decisions since merge-base @/);
+
+    const resumed2 = await engine2.resume("rsup-prop-2", { verdict: "approve" }, STEP_REGISTRY);
+    assert.equal(resumed2.status, RunStatus.COMPLETED);
+    assert.equal(resumed2.lastApprovedSha, promotedSha);
+    assert.equal(resumed2.stepResults["run-branch-execute"].status, "completed");
+    assert.equal(resumed2.stepResults["execute"].status, "completed");
+    assert.equal(resumed2.stepResults["execute"].output.conclusion, "done");
+    assert.equal(resumed2.stepResults["execute"].output.mr_url, "https://gl.test/g/p/-/merge_requests/99");
   });
 });
