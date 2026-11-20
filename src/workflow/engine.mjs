@@ -636,6 +636,21 @@ export class RunState {
   }
 }
 
+// An error thrown while a run was executing, after the run was saved as
+// failed: it carries the run's id and status, so the caller can tell "this
+// run failed" (a terminal state with its own exit code) from "the command
+// could not start" (lease held, run not found, bad usage). Always returns an
+// Error, so `throw markRunFailed(…)` is safe for any thrown value.
+export function markRunFailed(exc, state) {
+  const error = exc instanceof Error ? exc : new Error(String(exc));
+  try {
+    error.adlcRun = { runId: state.runId, status: state.status };
+  } catch {
+    // A frozen error object: the caller falls back to the generic exit code.
+  }
+  return error;
+}
+
 function atomicWriteJson(path, data) {
   // basename() is platform-aware — a manual split("/") leaves the full
   // Windows path (backslashes) in the name and the write fails (CI: win32).
@@ -796,7 +811,7 @@ export class WorkflowEngine {
       await state.appendLog({ event: "workflow_failed", error: state.error });
       await state.save();
       this.finishSession(state, lease);
-      throw exc;
+      throw markRunFailed(exc, state);
     }
 
     if (state.status === RunStatus.RUNNING) {
@@ -921,7 +936,7 @@ export class WorkflowEngine {
       await state.appendLog({ event: "resume_failed", error: state.error });
       await state.save();
       this.finishSession(state, lease);
-      throw exc;
+      throw markRunFailed(exc, state);
     }
 
     if (state.status === RunStatus.RUNNING) {

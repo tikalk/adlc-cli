@@ -146,6 +146,15 @@ The live SSH transport is the default: `--provider coder` provisions or reuses a
 | `workflow validate <source>` | Validate a definition; `--headless` requires gates to declare `verdict_input` |
 | `workflow state …` | LLM-executor helpers: `start/advance/pause/fail/show` (ADR-395) |
 
+Exit codes of `workflow run` and `workflow resume`:
+
+| Code | Meaning | Worth retrying? |
+|------|---------|-----------------|
+| `0` | The run completed | — |
+| `3` | The run is paused at a gate or a question | No: answer it, then resume |
+| `10` | The run failed: a step failed, or the engine hit an error while running a step (for example an unknown template filter) | No: the same run fails the same way |
+| `1` | The command could not start (unknown workflow or run, lease held by another session), a transient system fault (disk full, I/O error), or a gate with `on_reject: abort` was rejected | CI lanes treat it as retryable |
+
 Full JS port of the upstream `github/spec-kit` workflow engine (zero Python —
 ADR-390 + amendments). **Dual-executor architecture (ADR-395):** the same
 `workflow.yml` + `state.json` run either in-session (skills via the `state`
