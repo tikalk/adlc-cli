@@ -22,7 +22,7 @@ const POSIX = process.platform !== "win32";
 // factory-product / factory-architect were removed on 2026-10-25.
 const EXISTING_COMMANDS = new Set(["factory-intent", "factory-mission"]);
 const STEP_IDS = [
-  "preflight", "intent", "gate-intent", "stop-if-plan-rejected",
+  "preflight", "intent", "plan-link", "gate-intent", "stop-if-plan-rejected",
   "execute", "proof-of-work", "gate-completion", "stop-if-result-rejected",
 ];
 const MR = "https://gitlab.example.com/g/p/-/merge_requests/7";
@@ -179,7 +179,7 @@ test("factory 2.0.0: an mr_url that is not a URL (e.g. 'none') fails at proof-of
   }
 });
 
-test("factory 2.0.0: agent-written step output is never run as shell by proof-of-work", { skip: !POSIX }, async () => {
+test("factory 2.0.0: an mr_url carrying $(…) or backticks is refused and never run", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -187,14 +187,118 @@ test("factory 2.0.0: agent-written step output is never run as shell by proof-of
     const { engine, def } = stubbedWorkflow(dir, {
       "factory-mission": executeWrites({
         mr_url: `${MR}?$(touch ${marker})\`touch ${marker}\``,
-        conclusion: `opened "the MR" — ran \`touch ${marker}\` and $(touch ${marker})`,
+        conclusion: "ok",
       }),
     });
     const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0003", STEP_REGISTRY);
+    assert.equal(existsSync(marker), false, "nothing from the step output was executed");
+    assert.equal(state.stepResults["proof-of-work"]?.status, "failed");
+    assert.equal(state.status, RunStatus.FAILED);
+  } finally {
+    cleanup();
+  }
+});
+
+test("factory 2.0.0: a conclusion full of shell syntax is never run; a real MR URL passes", { skip: !POSIX }, async () => {
+  const { dir, cleanup } = project();
+  try {
+    installSkills(dir);
+    const marker = join(dir, "injected");
+    const { engine, def } = stubbedWorkflow(dir, {
+      "factory-mission": executeWrites({
+        mr_url: MR,
+        conclusion: `opened "the MR" — it's done; ran \`touch ${marker}\` and $(touch ${marker})`,
+      }),
+    });
+    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0005", STEP_REGISTRY);
     assert.equal(state.stepResults["proof-of-work"]?.status, "completed");
     assert.equal(existsSync(marker), false, "nothing from the step output was executed");
     assert.equal(state.status, RunStatus.PAUSED);
     assert.equal(state.currentStepId, "gate-completion");
+  } finally {
+    cleanup();
+  }
+});
+
+for (const [what, value] of [
+  ["any web page", "https://example.com"],
+  ["a merge request URL with a query", `${MR}?x=1`],
+  ["Slack control text", `${MR} <!channel>`],
+  ["a disguised Slack link", "https://evil.example/x/-/merge_requests/1|https://gitlab.example.com/g/p/-/merge_requests/7"],
+  ["a URL with user info", "https://user:pw@gitlab.example.com/g/p/-/merge_requests/7"],
+]) {
+  test(`factory 2.0.0: proof-of-work refuses ${what} as the merge request`, { skip: !POSIX }, async () => {
+    const { dir, cleanup } = project();
+    try {
+      installSkills(dir);
+      const { engine, def } = stubbedWorkflow(dir, { "factory-mission": executeWrites({ mr_url: value }) });
+      const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0006", STEP_REGISTRY);
+      assert.equal(state.stepResults["proof-of-work"]?.status, "failed");
+      assert.equal(state.status, RunStatus.FAILED);
+      assert.equal(state.stepResults["gate-completion"], undefined, "the value never reaches the approval message");
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+test("factory 2.0.0: proof-of-work accepts a GitHub pull request URL", { skip: !POSIX }, async () => {
+  const { dir, cleanup } = project();
+  try {
+    installSkills(dir);
+    const pr = "https://github.com/acme/widgets/pull/42";
+    const { engine, def } = stubbedWorkflow(dir, { "factory-mission": executeWrites({ mr_url: pr }) });
+    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0007", STEP_REGISTRY);
+    assert.equal(state.stepResults["proof-of-work"]?.status, "completed");
+    assert.ok(state.stepResults["gate-completion"].output.message.includes(pr));
+  } finally {
+    cleanup();
+  }
+});
+
+// The plan gate's message is posted to Slack as written, so the plan link is
+// checked first (plan-link) and anything that is not an MR URL is left out.
+test("factory 2.0.0: the plan gate shows only a checked merge request link", { skip: !POSIX }, async () => {
+  for (const [id, reported, shown] of [
+    ["fv2g0001", "https://gitlab.example.com/g/p/-/merge_requests/6", "https://gitlab.example.com/g/p/-/merge_requests/6"],
+    ["fv2g0002", "https://gitlab.example.com/g/p/-/merge_requests/6 <!channel> <https://evil.example|click>", "no merge request was opened"],
+    ["fv2g0003", "'; touch injected; echo '", "no merge request was opened"],
+    ["fv2g0004", undefined, "no merge request was opened"],
+  ]) {
+    const { dir, cleanup } = project();
+    try {
+      installSkills(dir);
+      const { engine, def } = stubbedWorkflow(dir, reported === undefined ? {} : { "factory-intent": executeWrites({ mr_url: reported }) });
+      const state = await engine.execute(def, { issue_ref: "g/p#1" }, id, STEP_REGISTRY);
+      assert.equal(state.status, RunStatus.PAUSED, `${id}: the run still reaches the plan gate`);
+      assert.equal(state.currentStepId, "gate-intent");
+      assert.equal(state.stepResults["plan-link"]?.status, "completed", `${id}: plan-link never fails the run`);
+      assert.equal(state.stepResults["gate-intent"].output.message, `Plan drafted for g/p#1: ${shown} — approve before implementation?`);
+      assert.equal(existsSync(join(dir, "injected")), false);
+    } finally {
+      cleanup();
+    }
+  }
+});
+
+// Second review (2026-11-21): a single quote closed the shell string the first
+// version put mr_url in, so the rest of the value ran as a command.
+test("factory 2.0.0: a single quote in mr_url cannot break out into the shell", { skip: !POSIX }, async () => {
+  const { dir, cleanup } = project();
+  try {
+    installSkills(dir);
+    const marker = join(dir, "injected.txt");
+    const { engine, def } = stubbedWorkflow(dir, {
+      "factory-mission": executeWrites({
+        mr_url: `${MR}'; echo INJECTED-BY-STEP-OUTPUT > injected.txt; echo '`,
+        conclusion: "ok",
+      }),
+    });
+    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0004", STEP_REGISTRY);
+    assert.equal(existsSync(marker), false, "nothing from the step output was executed");
+    assert.equal(state.stepResults["proof-of-work"]?.status, "failed", "a value that is not exactly a merge request URL is refused");
+    assert.equal(state.status, RunStatus.FAILED);
+    assert.equal(state.stepResults["gate-completion"], undefined, "the completion gate is never reached");
   } finally {
     cleanup();
   }

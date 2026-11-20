@@ -221,6 +221,27 @@ later step or gate can read them, for example
 a rule, the file is ignored with a log line. Stdout is never parsed for
 results.
 
+**Passing values to a `shell` step: use `env:`, not the script text.** A
+`{{ … }}` expression inside `run` is pasted into the script as text before the
+shell reads it, so a value with a quote, a backtick or `$(…)` becomes shell
+code. Anything an agent or a person wrote (step output, free-text inputs)
+belongs under `env:` instead. Each entry is exported as an environment
+variable and the script reads it as data:
+
+```yaml
+- id: proof-of-work
+  type: shell
+  env:
+    MR_URL: "{{ steps.execute.output.mr_url }}"
+  run: |
+    [ -n "$MR_URL" ] || { echo "no merge request" >&2; exit 1; }
+    echo "merge request: $MR_URL"
+```
+
+- Names must match `^[A-Za-z_][A-Za-z0-9_]*$`; `ADLC_*` names are reserved for the engine.
+- Values are strings, numbers or booleans. A value an earlier step never reported is the empty string.
+- Still quote the variable in the script (`"$MR_URL"`), and check its shape before you show it to a person or pass it to another tool.
+
 ### MCP
 
 | Command | Description |

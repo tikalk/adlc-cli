@@ -55,7 +55,7 @@ test("workflows/factory/workflow.yml exists and declares all required factory st
   assert.ok(existsSync(wfPath), "workflows/factory/workflow.yml must exist");
   const content = readFileSync(wfPath, "utf-8");
   assert.match(content, /id:\s*factory/);
-  for (const id of ["preflight", "intent", "gate-intent", "stop-if-plan-rejected", "execute",
+  for (const id of ["preflight", "intent", "plan-link", "gate-intent", "stop-if-plan-rejected", "execute",
     "proof-of-work", "gate-completion", "stop-if-result-rejected"]) {
     assert.match(content, new RegExp(`id:\\s*${id}\\r?\\n`), `factory declares step ${id}`);
   }
@@ -63,6 +63,13 @@ test("workflows/factory/workflow.yml exists and declares all required factory st
   assert.doesNotMatch(content, /command:\s*factory-(product|architect)\b/);
   // Fails closed: no step reports a missing helper as "skipped" and goes on (SF-LANE-05).
   assert.doesNotMatch(content, /helpers not installed/);
+  // Step output (agent-written) is never templated into shell text: it reaches
+  // a shell step only through `env:` (second review, 2026-11-21).
+  const runBlocks = content.split(/^ {4}run: \|\r?\n/m).slice(1).map((b) => b.split(/^ {2}- id:/m)[0]);
+  assert.ok(runBlocks.length >= 4, "fixture: the shell steps were found");
+  for (const block of runBlocks) {
+    assert.doesNotMatch(block, /\{\{\s*steps\.(intent|execute)\./, "no agent step output inside a `run` script");
+  }
 });
 
 test("package.json files field includes 'workflows/'", () => {

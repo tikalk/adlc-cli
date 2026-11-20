@@ -32,11 +32,31 @@ export class ShellStep extends StepBase {
       });
     }
 
+    // `env:` — values the script needs from inputs or earlier steps, handed
+    // over as environment variables. A templated value placed in `run` becomes
+    // shell source (a quote in it ends the string, and the rest runs as a
+    // command); a value placed here is only ever data: the script reads
+    // "$NAME". Use it for anything an agent or a person wrote.
+    const envError = ShellStep.envError(config);
+    if (envError !== null) {
+      return new StepResult({
+        status: StepStatus.FAILED,
+        error: envError,
+        output: { exit_code: -1, stdout: "", stderr: "invalid env" },
+      });
+    }
+    const stepEnv = {};
+    for (const [name, raw] of Object.entries(config.env ?? {})) {
+      const value = typeof raw === "string" && raw.includes("{{") ? evaluateExpression(raw, context) : raw;
+      stepEnv[name] = envText(value);
+    }
+
     // Run context + structured output (ADR-444 §5), as for agent steps. A file
     // from an earlier attempt is removed first so a retry never surfaces it.
+    // The run context wins over `env:` (ADLC_* names are refused there).
     const runEnv = runContextEnv(context, config);
     prepareStepOutput(runEnv.ADLC_STEP_OUTPUT);
-    const env = { ...process.env, ...runEnv };
+    const env = { ...process.env, ...stepEnv, ...runEnv };
     if (context.workflowDir) {
       env.ADLC_WORKFLOW_DIR = context.workflowDir;
     } else {
@@ -124,8 +144,33 @@ export class ShellStep extends StepBase {
     return null;
   }
 
+  // `env` must be a mapping of plain variable names to scalars. ADLC_* names
+  // belong to the run context the engine sets (ADLC_RUN_ID, ADLC_STEP_OUTPUT,
+  // ADLC_ISSUE_REF, …) and cannot be overridden from a workflow file.
+  static envError(config) {
+    if (!("env" in config) || config.env === null || config.env === undefined) return null;
+    const env = config.env;
+    if (typeof env !== "object" || Array.isArray(env)) {
+      return `Shell step ${reprId(config)}: 'env' must be a mapping of variable names to values, got ${typeName(env)}.`;
+    }
+    for (const [name, value] of Object.entries(env)) {
+      if (!ENV_NAME.test(name)) {
+        return `Shell step ${reprId(config)}: 'env' name ${JSON.stringify(name)} must match ${ENV_NAME.source}.`;
+      }
+      if (/^ADLC_/i.test(name)) {
+        return `Shell step ${reprId(config)}: 'env' name ${JSON.stringify(name)} is reserved (ADLC_* is set by the engine).`;
+      }
+      if (value !== null && !["string", "number", "boolean"].includes(typeof value)) {
+        return `Shell step ${reprId(config)}: 'env' value of ${JSON.stringify(name)} must be a string, number or boolean, got ${typeName(value)}.`;
+      }
+    }
+    return null;
+  }
+
   validate(config) {
     const errors = super.validate(config);
+    const envError = ShellStep.envError(config);
+    if (envError !== null) errors.push(envError);
     if (!("run" in config)) {
       errors.push(`Shell step ${reprId(config)} is missing 'run' field.`);
     } else if (typeof config.run !== "string") {
@@ -143,6 +188,21 @@ export class ShellStep extends StepBase {
 
 function reprId(config) {
   return `'${config.id ?? "?"}'`;
+}
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// An evaluated `env:` value as the text a process environment can hold. A
+// missing value (an earlier step that reported nothing) is the empty string.
+function envText(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 // The last stderr lines of a failed step, for its error message (what logs

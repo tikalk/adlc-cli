@@ -5,10 +5,17 @@ schema_version: "1.0"
 #   preflight               -> fail when the factory skills are not installed
 #                              or the run has no issue
 #   intent                  -> factory-intent drafts the plan for the issue
+#   plan-link               -> keep the plan's MR link only when it is an MR URL
 #   gate-intent             -> a person approves the plan
 #   execute                 -> factory-mission: tests, code, the code MR
 #   proof-of-work           -> fail when execute returned no MR URL
 #   gate-completion         -> a person approves the result (MR link in the message)
+# Agent-written step output never becomes shell text: it reaches a shell step
+# only through `env:`, and reaches a gate message only after one of the two
+# link checks accepted it as a merge/pull request URL.
+# The gates declare no `context` on purpose: a context gate ties the approval
+# to the local HEAD, and a run restored from a park into a fresh clone (on the
+# default branch) would have its approval refused ("head moved").
 # Gates use on_reject: skip plus a stop step, so a reject ends the run FAILED
 # (exit 10, never retried by the Argo lane) instead of ABORTED (exit 1,
 # retried). 1.0.0 called factory-product / factory-architect (removed from
@@ -64,9 +71,27 @@ steps:
     command: factory-intent
     input:
       args: "--issue {{ inputs.issue_ref }}"
+  - id: plan-link
+    type: shell
+    # The plan's merge request, when factory-intent opened one (a plan with no
+    # commits beyond the base has none; the gate then says so). The value the
+    # agent wrote arrives as an environment variable, never as shell text, and
+    # is passed on only when it is a merge/pull request URL, so nothing else
+    # can reach the approval message. Never fails the run.
+    env:
+      MR_URL: "{{ steps.intent.output.mr_url }}"
+    run: |
+      node -e '
+      const url = process.env.MR_URL || "";
+      const ok = /^https?:\/\/[a-z0-9.-]+(:[0-9]+)?\/[a-z0-9._~\/%+-]*\/(merge_requests|pull)\/[0-9]+$/i.test(url);
+      if (url && !ok) console.error("plan-link: intent reported an mr_url that is not a merge request URL; not shown");
+      const out = process.env.ADLC_STEP_OUTPUT;
+      if (out) require("fs").writeFileSync(out, JSON.stringify({ mr_url: ok ? url : "" }));
+      console.log("plan-link: " + (ok ? url : "none"));
+      '
   - id: gate-intent
     type: gate
-    message: "Plan drafted for {{ inputs.issue_ref }}: {{ steps.intent.output.mr_url }} — approve before implementation?"
+    message: "Plan drafted for {{ inputs.issue_ref }}: {{ steps.plan-link.output.mr_url | default('no merge request was opened') }} — approve before implementation?"
     options: [approve, reject]
     on_reject: skip
     verdict_input: verdict_intent
@@ -87,17 +112,23 @@ steps:
   - id: proof-of-work
     type: shell
     # The deliverable is the code MR factory-mission opened (its mr_url step
-    # output, ADR-444). The agent-written value sits in single quotes so it is
-    # never run as shell; its free-text conclusion is not put into the shell.
+    # output, ADR-444). The agent-written value arrives as an environment
+    # variable, never as shell text (a quote in a templated value would end the
+    # string and run the rest), and must be a GitLab merge request or GitHub
+    # pull request URL: letters, digits and . _ ~ / % + - only. The completion
+    # gate below shows the same, checked value. The free-text conclusion is not
+    # used at all.
+    env:
+      MR_URL: "{{ steps.execute.output.mr_url }}"
     run: |
-      mr_url='{{ steps.execute.output.mr_url }}'
-      case "$mr_url" in
-        http://*|https://*) echo "proof-of-work: $mr_url" ;;
-        *)
-          echo "proof-of-work: execute returned no merge request URL (mr_url); see the execute step's conclusion" >&2
-          exit 1
-          ;;
-      esac
+      node -e '
+      const url = process.env.MR_URL || "";
+      if (!/^https?:\/\/[a-z0-9.-]+(:[0-9]+)?\/[a-z0-9._~\/%+-]*\/(merge_requests|pull)\/[0-9]+$/i.test(url)) {
+        console.error("proof-of-work: execute returned no merge request URL (mr_url); see the conclusion of the execute step");
+        process.exit(1);
+      }
+      console.log("proof-of-work: " + url);
+      '
   - id: gate-completion
     type: gate
     message: "Implementation for {{ inputs.issue_ref }} is ready: {{ steps.execute.output.mr_url }} — approve completion?"
