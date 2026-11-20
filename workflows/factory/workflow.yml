@@ -69,6 +69,8 @@ steps:
   - id: intent
     type: command
     command: factory-intent
+    # Time limit in seconds, set on purpose (3600 is also the engine default).
+    timeout: 3600
     input:
       args: "--issue {{ inputs.issue_ref }}"
   - id: plan-link
@@ -107,6 +109,10 @@ steps:
     command: factory-mission
     # The mission is the run's issue (ADR-444 §4); the skill also falls back
     # to ADLC_ISSUE_REF and fails the step when neither is set.
+    # Time limit in seconds. The engine default (3600) killed a real mission
+    # at exactly one hour; the longest clean execute on record took 2831 s.
+    # Keep it below the lane's per-spawn watchdog (WORKFLOW_SPAWN_TIMEOUT_MS).
+    timeout: 7200
     input:
       args: "--issue {{ inputs.issue_ref }}"
   - id: proof-of-work

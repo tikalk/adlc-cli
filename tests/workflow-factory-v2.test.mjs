@@ -49,13 +49,14 @@ function stubbedWorkflow(dir, stubs = {}) {
   const engine = new WorkflowEngine(dir);
   const yaml = engine.loadWorkflow("factory").sourceYaml ?? readFileSync(engine.loadWorkflow("factory").sourcePath, "utf-8");
   const out = yaml.replace(
-    /^( {4})type: command\n {4}command: ([\w-]+)\n(?: {4}#.*\n)*(?: {4}input:\n {6}args: .*\n)?/gm,
+    /^( {4})type: command\n {4}command: ([\w-]+)\n(?: {4}(?:#.*|timeout: \d+)\n)*(?: {4}input:\n {6}args: .*\n)?/gm,
     (_, i, cmd) => {
       const body = (stubs[cmd] ?? `echo ${cmd}`).split("\n").map((l) => `${i}  ${l}`).join("\n");
       return `${i}type: shell\n${i}run: |\n${body}\n`;
     },
   );
   assert.ok(!out.includes("type: command"), "fixture: every command step stubbed");
+  assert.ok(!/^ {4}(input|timeout):/m.test(out), "fixture: the stubs carry no agent-step keys");
   const path = join(dir, "factory-stub.yml");
   writeFileSync(path, out, "utf-8");
   return { engine, def: engine.loadWorkflow(path) };
@@ -99,6 +100,16 @@ test("factory 2.0.0: valid, headless-valid, calls only existing skills, gates ne
       ["gate-intent", "skip", "verdict_intent"],
       ["gate-completion", "skip", "verdict_completion"],
     ]);
+    // No `context` on the gates, on purpose: a context gate binds the approval
+    // to the local HEAD, and a parked run restored into a fresh clone would
+    // have its approval refused ("head moved").
+    for (const g of gates) assert.equal("context" in g, false, `${g.id} declares no context`);
+    // Every agent step sets its time limit on purpose (the engine default,
+    // 3600 s, killed a real mission at exactly one hour).
+    assert.deepEqual(
+      def.steps.filter((x) => x.type === "command").map((s) => [s.id, s.timeout]),
+      [["intent", 3600], ["execute", 7200]],
+    );
   } finally {
     cleanup();
   }
