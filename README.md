@@ -193,6 +193,17 @@ adlc-cli workflow state pause <run_id> --step review      # gate → human
 SIGINT/SIGTERM trigger a clean pause (resumable) rather than a corrupt
 partial state.
 
+**Step time limits.** `command` and `prompt` steps take `timeout: <seconds>`
+(default 3600); `shell` steps default to 300. When an agent step hits its
+limit the agent is killed and the step fails with
+`timeout: step <id> exceeded <n>s`. The run is saved as `failed` (so
+`workflow resume <run_id>` can run the step again) with `timed_out: true`, and
+the command exits **1**, the retryable code, instead of 10: running out of
+time says nothing about the answer being wrong. Set
+`ADLC_WORKFLOW_ON_TIMEOUT=fail` to exit 10 on a time-out as before. Set the
+limit on purpose for long steps, as the bundled workflows do (`execute`:
+7200), and keep it below any outer watchdog that kills the whole command.
+
 Known constraint (inherited upstream): a gate nested inside
 `if`/`switch`/`while` bodies that pauses will re-run the parent control-flow
 step and its nested body on resume. Keep gates at the top level, or bind a

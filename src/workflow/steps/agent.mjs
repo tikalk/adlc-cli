@@ -147,6 +147,19 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
       output,
     });
   }
+  // The step's own time limit killed the agent. That says the step ran out
+  // of time, not that the answer was wrong, so it is reported apart from an
+  // agent failure: the error starts with "timeout:" and the output carries
+  // timed_out, which the engine turns into a retryable exit (exit-codes.mjs).
+  if (timedOut && exit.code !== 0) {
+    output.timed_out = true;
+    output.timeout_seconds = timeoutSec;
+    return new StepResult({
+      status: StepStatus.FAILED,
+      error: `timeout: step ${config.id ?? "?"} exceeded ${timeoutSec}s (the agent was killed; set 'timeout:' on the step to change the limit).`,
+      output,
+    });
+  }
   if (exit.code !== 0) {
     return new StepResult({
       status: StepStatus.FAILED,

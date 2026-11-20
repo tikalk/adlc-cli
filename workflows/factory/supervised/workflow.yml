@@ -2,7 +2,7 @@ schema_version: "1.0"
 workflow:
   id: factory-supervised
   name: Factory Supervised
-  version: "1.0.0"
+  version: "1.0.1"
 inputs:
   verdict:
     type: string
@@ -23,6 +23,8 @@ steps:
   - id: plan
     type: command
     command: factory-mission
+    # Time limit in seconds, set on purpose (3600 is also the engine default).
+    timeout: 3600
     input:
       args: "--issue {{ inputs.issue_ref }} --plan"
 
@@ -56,5 +58,10 @@ steps:
   - id: execute
     type: command
     command: factory-mission
+    # Time limit in seconds. The engine default (3600) killed a real mission
+    # at exactly one hour; the longest clean execute on record took 2831 s.
+    # A step that hits the limit ends the run with the retryable exit code.
+    # Keep it below the lane's per-spawn watchdog (WORKFLOW_SPAWN_TIMEOUT_MS).
+    timeout: 7200
     input:
       args: "--issue {{ inputs.issue_ref }}"
