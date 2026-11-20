@@ -20,8 +20,13 @@ import { basename, dirname } from "node:path";
 // (not gate.mjs) so both modules share it without an import cycle.
 export const CONTROL_CHARS = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/g;
 
-export const CONTEXT_KEYS = Object.freeze(["records", "since", "link"]);
+export const CONTEXT_KEYS = Object.freeze(["records", "since", "link", "on_empty"]);
 export const SINCE_MODES = Object.freeze(["last_approved"]);
+// What a context gate does when its decision list was built and is empty:
+// `ask` (default) pauses for a person as any gate does; `pass` completes the
+// gate by itself, because there is nothing to approve. Opt-in per gate, and
+// only for a gate whose whole subject is the listed records.
+export const ON_EMPTY_MODES = Object.freeze(["ask", "pass"]);
 
 // At most this many decisions are listed; the rest collapse into "…and N more".
 export const MAX_DECISIONS = 10;
@@ -62,7 +67,7 @@ export function validateGateContext(config, rid) {
   const ctx = config.context;
   const errors = [];
   if (typeof ctx !== "object" || ctx === null || Array.isArray(ctx)) {
-    return [`Gate step ${rid}: 'context' must be a mapping with 'records' (and optional 'since', 'link').`];
+    return [`Gate step ${rid}: 'context' must be a mapping with 'records' (and optional 'since', 'link', 'on_empty').`];
   }
   for (const key of Object.keys(ctx)) {
     if (!CONTEXT_KEYS.includes(key)) {
@@ -79,7 +84,23 @@ export function validateGateContext(config, rid) {
   if ("link" in ctx && typeof ctx.link !== "string") {
     errors.push(`Gate step ${rid}: 'context.link' must be a string (may be templated with {{ }}), got ${JSON.stringify(ctx.link)}.`);
   }
+  if ("on_empty" in ctx) {
+    if (!ON_EMPTY_MODES.includes(ctx.on_empty)) {
+      errors.push(`Gate step ${rid}: 'context.on_empty' must be one of ${ON_EMPTY_MODES.join(", ")}, got ${JSON.stringify(ctx.on_empty)}.`);
+    } else if (ctx.on_empty === "pass" && autoPassChoice(config.options ?? ["approve", "reject"]) === null) {
+      // The gate completes with the choice `approve`, so later steps that read
+      // `steps.<gate>.output.choice` see the same value a person would give.
+      errors.push(`Gate step ${rid}: 'context.on_empty: pass' needs an 'approve' option to complete with.`);
+    }
+  }
   return errors;
+}
+
+// The option an auto-passed gate completes with: the gate's own spelling of
+// `approve`, or null when it has none.
+export function autoPassChoice(options) {
+  if (!Array.isArray(options)) return null;
+  return options.find((o) => typeof o === "string" && o.toLowerCase() === "approve") ?? null;
 }
 
 // Longest merge-request link accepted (T3).
