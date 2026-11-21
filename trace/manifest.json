@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_id": "c988ddb9",
+  "workflow_id": "factory",
+  "issue_ref": null,
+  "repository": {
+    "remote": "git@github.com:tikalk/adlc-cli.git",
+    "branch": "fix/pr111-rebase-onto-2.0.0",
+    "run_start_sha": "e37d64274ac481f29466079a3e362e5d79df2338",
+    "head_sha": "e37d64274ac481f29466079a3e362e5d79df2338"
+  },
+  "agent": {
+    "id": null,
+    "session_id": null,
+    "parent_session_id": null
+  },
+  "model": {
+    "name": null,
+    "route": null
+  },
+  "container": {
+    "image_digest": null
+  },
+  "config": {
+    "skill_lock_hash": null,
+    "mcp_config_hash": null
+  },
+  "created_at": "2026-11-21T18:07:20.617Z",
+  "updated_at": "2026-11-21T18:07:23.421Z",
+  "finished_at": "2026-11-21T18:07:23.427Z",
+  "outcome": "failed",
+  "gateway_cost": null,
+  "retention_class": "full",
+  "workload_class": "unknown",
+  "trace_pruned": false
+}
