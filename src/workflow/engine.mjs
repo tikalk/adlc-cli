@@ -473,6 +473,11 @@ export class RunState {
     // run_failed event). It is a label for whoever reads the run: the status
     // stays "failed" and the exit code stays 10 (not retried).
     this.timedOut = false;
+    // True when the run failed because an agent step exited non-zero within
+    // the fast-failure threshold of spawn (ADR-542; persisted as
+    // `fast_failure` only when set). The CLI exits with the retryable code
+    // for such a run; the status stays "failed".
+    this.fastFailure = false;
     // Async mutex serializing save()/appendLog file writes — the JS analogue
     // of upstream's _lock/_log_lock pair (single-threaded JS needs it only
     // across await points during concurrent fan-out).
@@ -523,6 +528,7 @@ export class RunState {
       if (this.runStartSha !== null) stateData.run_start_sha = this.runStartSha;
       if (this.lastApprovedSha !== null) stateData.last_approved_sha = this.lastApprovedSha;
       if (this.timedOut === true) stateData.timed_out = true;
+      if (this.fastFailure === true) stateData.fast_failure = true;
       atomicWriteJson(join(this.runsDir, "state.json"), stateData);
       atomicWriteJson(join(this.runsDir, "inputs.json"), { inputs: this.inputs });
     });
@@ -625,6 +631,8 @@ export class RunState {
     state.runStartSha = typeof stateData.run_start_sha === "string" ? stateData.run_start_sha : null;
     state.lastApprovedSha = typeof stateData.last_approved_sha === "string" ? stateData.last_approved_sha : null;
     state.timedOut = stateData.timed_out === true;
+    // Absent in state files written before ADR-542 existed.
+    state.fastFailure = stateData.fast_failure === true;
 
     const inputsPath = join(runsDir, "inputs.json");
     if (existsSync(inputsPath)) {
@@ -847,6 +855,7 @@ export class WorkflowEngine {
         error: state.error,
         status: state.status,
         ...(state.timedOut === true ? { timed_out: true } : {}),
+        ...(state.fastFailure === true ? { fast_failure: true } : {}),
       });
     }
     try {
@@ -924,6 +933,7 @@ export class WorkflowEngine {
 
     state.error = null;
     state.timedOut = false;
+    state.fastFailure = false;
     state.status = RunStatus.RUNNING;
     await state.save();
     // Trace: resume keeps the original manifest identity and appends a marker.
@@ -1173,6 +1183,10 @@ export class WorkflowEngine {
         if (state.timedOut) {
           await state.appendLog({ event: "step_timed_out", step_id: stepId, timeout_seconds: result.output?.timeout_seconds ?? null });
         }
+        // ADR-542: a fast agent failure marks the whole run retryable; the
+        // flag persists so the command boundary can classify after the
+        // engine process context is gone.
+        if (result.output?.fast_failure === true) state.fastFailure = true;
         await state.appendLog({ event: "step_failed", step_id: stepId, error: result.error });
         await state.save();
         if (this.onStepComplete !== null) {

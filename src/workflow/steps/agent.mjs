@@ -15,6 +15,15 @@ import { currentHeadSha } from "../gate-context.mjs";
 
 const rid = (config) => `'${config.id ?? "?"}'`;
 
+// ADR-542: an agent that exits non-zero within this many seconds of spawn is
+// an infrastructure failure (retryable), not a logical one. The env override
+// is a test seam (kept out of README on purpose); production stays at 60.
+// Read lazily so tests can set the override after module load.
+export function fastFailureThresholdSeconds() {
+  const raw = Number(process.env.ADLC_FAST_FAILURE_THRESHOLD_SECONDS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60;
+}
+
 // Resolve the agent key: step > workflow default (context) > project default
 // (.adlc/init-options.json). Returns null when nothing resolves — the step
 // then fails with a clear message.
@@ -107,6 +116,9 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     });
   }
   const { promise, kill } = taskHandle;
+  // ADR-542: the fast-failure clock starts at spawn, so a cold-pod crash or
+  // gateway blip at start-up is told apart from a wrong answer later on.
+  const spawnedAt = process.hrtime.bigint();
 
   if (timeoutSec && Number.isFinite(timeoutSec) && timeoutSec > 0) {
     timer = setTimeout(() => {
@@ -154,6 +166,11 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   if (timedOut && exit.code !== 0) {
     output.timed_out = true;
     output.timeout_seconds = timeoutSec;
+    // Elapsed is still recorded (F6 pins it): a timeout is a hung agent, not
+    // a cold-pod crash, so the run stays a logical failure (exit 10) with
+    // elapsed but no fast_failure mark.
+    const agentElapsedSeconds = Number(process.hrtime.bigint() - spawnedAt) / 1e9;
+    output.agent_elapsed_seconds = Math.round(agentElapsedSeconds * 10) / 10;
     return new StepResult({
       status: StepStatus.FAILED,
       error:
@@ -163,9 +180,23 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     });
   }
   if (exit.code !== 0) {
+    // ADR-542: non-zero exit within the threshold of spawn is classified as
+    // an infrastructure failure; the engine persists it on the run state so
+    // the command boundary exits with the retryable code. A kill by the
+    // step's own timeout is the opposite signal (a hung agent, not a cold
+    // pod) — it stays a logical failure, so the dead `timedOut` flag gates
+    // the mark here.
+    const agentElapsedSeconds = Number(process.hrtime.bigint() - spawnedAt) / 1e9;
+    const fastFailure = !timedOut && agentElapsedSeconds < fastFailureThresholdSeconds();
+    output.agent_elapsed_seconds = Math.round(agentElapsedSeconds * 10) / 10;
+    if (fastFailure) output.fast_failure = true;
     return new StepResult({
       status: StepStatus.FAILED,
-      error: `Agent step ${rid(config)} exited with code ${exit.code ?? "signal " + exit.signal}.`,
+      error:
+        `Agent step ${rid(config)} exited with code ${exit.code ?? "signal " + exit.signal}.` +
+        (fastFailure
+          ? ` The agent failed ${Math.round(agentElapsedSeconds)}s after start — classified as an infrastructure failure (retryable; ADR-542), not a wrong answer.`
+          : ""),
       output,
     });
   }
