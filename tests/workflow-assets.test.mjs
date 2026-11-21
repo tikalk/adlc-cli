@@ -40,8 +40,11 @@ test("workflows/factory/supervised/workflow.yml exists and declares plan, spec-g
   assert.match(content, /id:\s*factory-supervised/);
   assert.match(content, /id:\s*plan/);
   assert.match(content, /--plan/);
+  assert.match(content, /id:\s*publish-spec/);
+  assert.match(content, /mr_url/);
   assert.match(content, /id:\s*gate-spec/);
   assert.match(content, /type:\s*gate/);
+  assert.match(content, /steps\.publish-spec\.output\.mr_url/);
   assert.match(content, /id:\s*execute/);
 });
 

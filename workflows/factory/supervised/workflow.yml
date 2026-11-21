@@ -18,10 +18,22 @@ steps:
     input:
       args: "--issue {{ inputs.issue_ref }} --plan"
 
+  # Publish the spec/plan draft MR from the plan step's branch (ADR-521 +
+  # ADR-431-amendment §3a), so gate-spec links a reviewed SHA. Idempotent:
+  # open-mr opens nothing for an empty run; plan already wrote mr_url.
+  - id: publish-spec
+    type: shell
+    run: |-
+      node -e "const fs=require('fs'),cp=require('child_process');const fl=['.agents/skills/factory-mission/scripts/bash/run-branch.sh','.agents/skills/factory-mission/scripts/bash/open-mr.sh'];const miss=[];for(const f of fl){const n=f.split('/').pop();if(!fs.existsSync(f)){miss.push(n);continue}const r=cp.spawnSync('bash',[f],{stdio:'inherit'});if(r.error){miss.push(n+' ('+r.error.message+')');continue}if(r.status!==0)process.exit(r.status===null?1:r.status)}if(miss.length){const m='publish-spec: skipped '+miss.join(', ')+' (factory-mission helpers not installed)';console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"
+
   # Spec Approval Gate (HITL)
   - id: gate-spec
     type: gate
     message: "Approve specification and plan before implementation?"
+    context:
+      records: [".adlc/drafts/adr/*.md", ".adlc/drafts/pdr/*.md"]
+      since: last_approved
+      link: "{{ steps.publish-spec.output.mr_url }}"
     options: [approve, reject]
     on_reject: abort
     verdict_input: verdict
