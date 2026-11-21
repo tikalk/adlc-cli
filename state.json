@@ -1,0 +1,31 @@
+{
+  "run_id": "7e0ab1b1",
+  "workflow_id": "factory",
+  "installed_workflow_id": null,
+  "installed_registry_root": null,
+  "status": "failed",
+  "current_step_index": 0,
+  "current_step_id": "preflight",
+  "step_results": {
+    "preflight": {
+      "type": "shell",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": {},
+      "output": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input\n"
+      },
+      "status": "failed",
+      "error": "Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input"
+    }
+  },
+  "workflow_dir": "/tmp/opencode/resolve-111/workflows/factory",
+  "created_at": "2026-11-21T20:55:54.568Z",
+  "updated_at": "2026-11-21T20:55:57.781Z",
+  "error": "Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input",
+  "run_start_sha": "d426a22ef21cfea002ca78756fee5bb95685c7a8"
+}
