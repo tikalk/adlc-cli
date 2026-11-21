@@ -28,7 +28,7 @@ import {
 import { parkRun, restoreRun } from "../workflow/refs.mjs";
 import { buildBoardIndex } from "../workflow/board.mjs";
 import { printWorkflowHelp } from "../help.mjs";
-import { classifyWorkflowStatus } from "../exit-codes.mjs";
+import { classifyWorkflowError, classifyWorkflowStatus } from "../exit-codes.mjs";
 import { StepStatus } from "../workflow/base.mjs";
 import {
   out,
@@ -262,7 +262,9 @@ async function cmdWorkflowRun(rest, rawArgv) {
     return classifyWorkflowStatus(state.status).exitCode;
   } catch (exc) {
     error(exc.message);
-    return 1;
+    // The engine saved the run as failed before it threw: exit with the
+    // "failed" code (never retried by the lane), not the generic 1.
+    return classifyWorkflowError(exc).exitCode;
   } finally {
     removeHandlers();
   }
@@ -320,7 +322,10 @@ async function cmdWorkflowResume(rest, rawArgv) {
       return 1;
     }
     error(exc.message);
-    return 1;
+    // A resume that threw after the run was saved as failed exits with the
+    // "failed" code; one that never started (run not found, wrong status)
+    // keeps the generic 1.
+    return classifyWorkflowError(exc).exitCode;
   } finally {
     removeHandlers();
   }

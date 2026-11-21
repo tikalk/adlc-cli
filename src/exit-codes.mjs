@@ -3,6 +3,7 @@
 // Pure classifiers — no side effects, no imports. Callers:
 //   - src/commands/agent.mjs    → classifyAgentExit (post-spawn child result)
 //   - src/commands/workflow.mjs → classifyWorkflowStatus (terminal run status)
+//   - src/commands/workflow.mjs → classifyWorkflowError (run|resume threw)
 
 export function classifyAgentExit({ code, signal } = {}) {
   if (signal) return { exitCode: 130 };
@@ -32,4 +33,28 @@ export function classifyWorkflowStatus(status) {
     default:
       return { exitCode: 1 };
   }
+}
+
+// Operating-system faults that a new pod may well not hit again: disk full or
+// over quota, I/O error, out of file handles or memory, resource busy, timed
+// out. A run that threw one of these keeps the generic exit code 1 (retried).
+const TRANSIENT_SYSTEM_ERRORS = new Set([
+  "ENOSPC", "EDQUOT", "EIO", "EMFILE", "ENFILE", "ENOMEM", "EAGAIN", "EBUSY", "ETIMEDOUT",
+]);
+
+// Exit code for an error thrown by `workflow run|resume`.
+//
+// When the engine threw while the run was executing, it first saved the run
+// as failed and tagged the error with `adlcRun` (engine.mjs markRunFailed).
+// Such an error is deterministic in almost every case (an unknown template
+// filter, a malformed expression, an invalid step at run time): running it
+// again gives the same result, so it exits with the "failed" code and the
+// lane does not retry it. An error without the tag (lease held by another
+// session, run not found, bad usage) keeps exit 1, as does a transient
+// operating-system fault.
+export function classifyWorkflowError(error) {
+  const status = error?.adlcRun?.status;
+  if (status !== "failed") return { exitCode: 1 };
+  if (typeof error?.code === "string" && TRANSIENT_SYSTEM_ERRORS.has(error.code)) return { exitCode: 1 };
+  return classifyWorkflowStatus(status);
 }
