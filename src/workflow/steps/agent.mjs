@@ -166,6 +166,11 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   if (timedOut && exit.code !== 0) {
     output.timed_out = true;
     output.timeout_seconds = timeoutSec;
+    // Elapsed is still recorded (F6 pins it): a timeout is a hung agent, not
+    // a cold-pod crash, so the run stays a logical failure (exit 10) with
+    // elapsed but no fast_failure mark.
+    const agentElapsedSeconds = Number(process.hrtime.bigint() - spawnedAt) / 1e9;
+    output.agent_elapsed_seconds = Math.round(agentElapsedSeconds * 10) / 10;
     return new StepResult({
       status: StepStatus.FAILED,
       error:
@@ -177,9 +182,12 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   if (exit.code !== 0) {
     // ADR-542: non-zero exit within the threshold of spawn is classified as
     // an infrastructure failure; the engine persists it on the run state so
-    // the command boundary exits with the retryable code.
+    // the command boundary exits with the retryable code. A kill by the
+    // step's own timeout is the opposite signal (a hung agent, not a cold
+    // pod) — it stays a logical failure, so the dead `timedOut` flag gates
+    // the mark here.
     const agentElapsedSeconds = Number(process.hrtime.bigint() - spawnedAt) / 1e9;
-    const fastFailure = agentElapsedSeconds < fastFailureThresholdSeconds();
+    const fastFailure = !timedOut && agentElapsedSeconds < fastFailureThresholdSeconds();
     output.agent_elapsed_seconds = Math.round(agentElapsedSeconds * 10) / 10;
     if (fastFailure) output.fast_failure = true;
     return new StepResult({

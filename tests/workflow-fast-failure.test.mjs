@@ -158,6 +158,50 @@ test("F2: failure past the threshold stays a logical failure", { skip: !POSIX },
   assert.equal(classifyWorkflowStatus(state.status, { fastFailure: state.fastFailure === true }).exitCode, 10);
 });
 
+test("F6: a step killed by its own timeout is NOT a fast failure", { skip: !POSIX }, async () => {
+  // I1: the engine's own timeout SIGKILLs the agent. That is the strongest
+  // signal of a hung agent, not a cold-pod crash — the run must stay a
+  // logical failure (exit 10), with elapsed recorded but no fast_failure mark.
+  const bin = installFakeAgent();
+  const dir = project();
+  const stepsYaml = `  - id: work
+    type: command
+    command: factory-product
+    timeout: 1
+`;
+  const path = join(tempDir("fast-failure-wf-"), "workflow.yml");
+  writeFileSync(path, `schema_version: "1.0"
+workflow:
+  id: ff-wf
+  name: Fast Failure
+  version: "1.0.0"
+  integration: opencode
+steps:
+${stepsYaml}`);
+  const events = [];
+  const env = {
+    PATH: `${bin}:${process.env.PATH}`,
+    FAKE_EXIT: "3",
+    FAKE_SLEEP_MS: "5000",
+  };
+  const state = await withEnv(env, async () => {
+    const engine = new WorkflowEngine(dir);
+    engine.onEvent = (ev) => events.push(ev);
+    return engine.execute(engine.loadWorkflow(path), {}, "r6", STEP_REGISTRY);
+  });
+  assert.equal(state.status, RunStatus.FAILED);
+  assert.equal(state.fastFailure, false);
+  assert.doesNotMatch(state.error, /infrastructure failure/);
+  const persisted = stateJson(dir, "r6");
+  assert.equal("fast_failure" in persisted, false);
+  const stepOut = state.stepResults.work?.output ?? {};
+  assert.equal("fast_failure" in stepOut, false);
+  assert.equal(typeof stepOut.agent_elapsed_seconds, "number");
+  const runFailed = events.find((e) => e.type === "run_failed");
+  assert.equal(runFailed && "fast_failure" in runFailed, false);
+  assert.equal(classifyWorkflowStatus(state.status, { fastFailure: state.fastFailure === true }).exitCode, 10);
+});
+
 test("F3: resume after a fast failure clears the mark", { skip: !POSIX }, async () => {
   const bin = installFakeAgent();
   const dir = project();
