@@ -1,0 +1,30 @@
+{
+  "run_id": "68f74260",
+  "workflow_id": "factory",
+  "installed_workflow_id": null,
+  "installed_registry_root": null,
+  "status": "failed",
+  "current_step_index": 0,
+  "current_step_id": "preflight",
+  "step_results": {
+    "preflight": {
+      "type": "shell",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": {},
+      "output": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input\n"
+      },
+      "status": "failed",
+      "error": "Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input"
+    }
+  },
+  "workflow_dir": "/Users/runner/work/adlc-cli/adlc-cli/workflows/factory",
+  "created_at": "2026-11-21T18:04:52.157Z",
+  "updated_at": "2026-11-21T18:04:53.970Z",
+  "error": "Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input"
+}
