@@ -104,11 +104,11 @@ test("factory 2.0.0: valid, headless-valid, calls only existing skills, gates ne
     // to the local HEAD, and a parked run restored into a fresh clone would
     // have its approval refused ("head moved").
     for (const g of gates) assert.equal("context" in g, false, `${g.id} declares no context`);
-    // Every agent step sets its time limit on purpose (the engine default,
-    // 3600 s, killed a real mission at exactly one hour).
+    // Every agent step names its time limit, and each is one hour (also the
+    // engine default): no bundled step runs longer than that.
     assert.deepEqual(
       def.steps.filter((x) => x.type === "command").map((s) => [s.id, s.timeout]),
-      [["intent", 3600], ["execute", 7200]],
+      [["intent", 3600], ["execute", 3600]],
     );
   } finally {
     cleanup();

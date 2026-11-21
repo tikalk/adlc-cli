@@ -147,6 +147,21 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
       output,
     });
   }
+  // The step's own time limit killed the agent. It is still a failed step
+  // (the run fails and exits 10, as before), but it is reported apart from an
+  // agent that failed by itself: the error starts with "timeout:", names the
+  // step and the limit, and the output carries timed_out / timeout_seconds.
+  if (timedOut && exit.code !== 0) {
+    output.timed_out = true;
+    output.timeout_seconds = timeoutSec;
+    return new StepResult({
+      status: StepStatus.FAILED,
+      error:
+        `timeout: step ${config.id ?? "?"} exceeded ${timeoutSec}s: the agent was killed by the step's time limit, ` +
+        `it did not fail by itself (set 'timeout:' on the step to change the limit).`,
+      output,
+    });
+  }
   if (exit.code !== 0) {
     return new StepResult({
       status: StepStatus.FAILED,
