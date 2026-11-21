@@ -2,7 +2,7 @@ schema_version: "1.0"
 workflow:
   id: factory-autonomous
   name: Factory Autonomous
-  version: "1.0.0"
+  version: "1.0.1"
 inputs:
   issue_ref:
     type: string
@@ -11,5 +11,8 @@ steps:
   - id: execute
     type: command
     command: factory-mission
+    # Time limit in seconds (engine default: 3600). A step that hits the limit
+    # ends the run with the retryable exit code, not "logical failure".
+    timeout: 7200
     input:
       args: "--issue {{ inputs.issue_ref }}"

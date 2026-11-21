@@ -20,14 +20,19 @@ export function classifyAgentExit({ code, signal } = {}) {
 // classifyWorkflowStatus("completed") returned exitCode 1, not 0, breaking
 // the Argo retry-gate contract documented in workflow.mjs
 // (`asInt(lastRetry.exitCode) != 10 && != 3` was always true).
-export function classifyWorkflowStatus(status) {
+//
+// `timedOut` (optional): the run failed because a step was killed by its own
+// time limit. A time-out says nothing about the answer being wrong, so it
+// exits 1 (infra-class: the lane retries it) instead of 10 (logical failure:
+// never retried). The run itself stays "failed", so it can still be resumed.
+export function classifyWorkflowStatus(status, { timedOut = false } = {}) {
   switch (status) {
     case "completed":
       return { exitCode: 0 };
     case "paused":
       return { exitCode: 3 };
     case "failed":
-      return { exitCode: 10 };
+      return { exitCode: timedOut === true ? 1 : 10 };
     case "aborted":
       return { exitCode: 1 };
     default:

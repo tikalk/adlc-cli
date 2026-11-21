@@ -468,6 +468,10 @@ export class RunState {
     // Persisted only when set, so runs without context gates are unchanged.
     this.runStartSha = null;
     this.lastApprovedSha = null;
+    // True when the run failed because a step was killed by its own time
+    // limit (persisted as `timed_out` only when set). The CLI exits with the
+    // retryable code for such a run; the status stays "failed".
+    this.timedOut = false;
     // Async mutex serializing save()/appendLog file writes — the JS analogue
     // of upstream's _lock/_log_lock pair (single-threaded JS needs it only
     // across await points during concurrent fan-out).
@@ -517,6 +521,7 @@ export class RunState {
       };
       if (this.runStartSha !== null) stateData.run_start_sha = this.runStartSha;
       if (this.lastApprovedSha !== null) stateData.last_approved_sha = this.lastApprovedSha;
+      if (this.timedOut === true) stateData.timed_out = true;
       atomicWriteJson(join(this.runsDir, "state.json"), stateData);
       atomicWriteJson(join(this.runsDir, "inputs.json"), { inputs: this.inputs });
     });
@@ -618,6 +623,7 @@ export class RunState {
     // Optional (absent in state files written before context gates existed).
     state.runStartSha = typeof stateData.run_start_sha === "string" ? stateData.run_start_sha : null;
     state.lastApprovedSha = typeof stateData.last_approved_sha === "string" ? stateData.last_approved_sha : null;
+    state.timedOut = stateData.timed_out === true;
 
     const inputsPath = join(runsDir, "inputs.json");
     if (existsSync(inputsPath)) {
@@ -835,7 +841,12 @@ export class WorkflowEngine {
     } else if (state.status === RunStatus.COMPLETED) {
       this.emit("run_completed", { run_id: state.runId });
     } else if (state.status === RunStatus.FAILED || state.status === RunStatus.ABORTED) {
-      this.emit("run_failed", { run_id: state.runId, error: state.error, status: state.status });
+      this.emit("run_failed", {
+        run_id: state.runId,
+        error: state.error,
+        status: state.status,
+        ...(state.timedOut === true ? { timed_out: true } : {}),
+      });
     }
     try {
       // Trace: close the bundle (retention) before the ref is pushed, so a
@@ -911,6 +922,7 @@ export class WorkflowEngine {
     }
 
     state.error = null;
+    state.timedOut = false;
     state.status = RunStatus.RUNNING;
     await state.save();
     // Trace: resume keeps the original manifest identity and appends a marker.
@@ -1134,6 +1146,12 @@ export class WorkflowEngine {
 
         state.status = RunStatus.FAILED;
         state.error = result.error;
+        // A step killed by its own time limit: the run is marked so the CLI
+        // exits with the retryable code instead of "logical failure".
+        state.timedOut = result.output.timed_out === true;
+        if (state.timedOut) {
+          await state.appendLog({ event: "step_timed_out", step_id: stepId, timeout_seconds: result.output.timeout_seconds ?? null });
+        }
         await state.appendLog({ event: "step_failed", step_id: stepId, error: result.error });
         await state.save();
         if (this.onStepComplete !== null) {
@@ -1326,6 +1344,8 @@ export class WorkflowEngine {
       const haltRec = context.steps[itemId(haltedAt)];
       if (haltRec && typeof haltRec === "object") {
         state.error = haltRec.error ?? null;
+        // The halting item decides, not whichever item failed last in time.
+        state.timedOut = haltedStatus === RunStatus.FAILED && haltRec.output?.timed_out === true;
       }
       return slots.slice(0, haltedAt + 1);
     }

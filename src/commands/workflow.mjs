@@ -180,6 +180,14 @@ function makeEngine(projectRoot, rawArgv) {
   return engine;
 }
 
+// Exit code of a finished run. A run that failed because a step hit its time
+// limit exits 1 (retried by the lane) rather than 10; ADLC_WORKFLOW_ON_TIMEOUT=fail
+// keeps the old behaviour (a time-out is a plain failure, exit 10).
+function runExitCode(state) {
+  const retryTimeouts = (process.env.ADLC_WORKFLOW_ON_TIMEOUT ?? "").trim().toLowerCase() !== "fail";
+  return classifyWorkflowStatus(state.status, { timedOut: retryTimeouts && state.timedOut === true }).exitCode;
+}
+
 function printRunSummary(state, tracker = null) {
   const rows = [["Status:", state.status]];
   if (state.currentStepId) rows.push(["Current:", state.currentStepId]);
@@ -259,7 +267,7 @@ async function cmdWorkflowRun(rest, rawArgv) {
     // Lane contract: PAUSED exits 3 so the Argo expression
     // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
     // excludes it from retries.
-    return classifyWorkflowStatus(state.status).exitCode;
+    return runExitCode(state);
   } catch (exc) {
     error(exc.message);
     // The engine saved the run as failed before it threw: exit with the
@@ -315,7 +323,7 @@ async function cmdWorkflowResume(rest, rawArgv) {
     // Lane contract: PAUSED exits 3 so the Argo expression
     // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
     // excludes it from retries.
-    return classifyWorkflowStatus(state.status).exitCode;
+    return runExitCode(state);
   } catch (exc) {
     if (exc instanceof LeaseHeldError) {
       error(exc.message);
