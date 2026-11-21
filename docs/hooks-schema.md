@@ -1,13 +1,15 @@
-# `.events.json` Schema
+# `.hooks.json` Schema
 
-A `.events.json` file at the root of a skills repo declares which skills should auto-trigger on agent lifecycle events. When `adlc-skills-cli add` installs skills from a repo, it reads this manifest and generates per-agent native hook configurations.
+> `.events.json` with an `events` key still reads as a deprecated alias until v3.
 
-Repos without `.events.json` are handled gracefully — commands are generated, events are skipped silently.
+A `.hooks.json` file at the root of a skills repo declares which skills should auto-trigger on agent lifecycle hooks. When `adlc-skills-cli add` installs skills from a repo, it reads this manifest and generates per-agent native hook configurations.
+
+Repos without `.hooks.json` are handled gracefully — commands are generated, hooks are skipped silently.
 
 ## opencode 1.x + 2.x hybrid plugin
 
-The opencode event target is a single hybrid TypeScript plugin
-(`.opencode/plugins/adlc-skills-events.ts`, id `adlc-skills-events`): it
+The opencode hook target is a single hybrid TypeScript plugin
+(`.opencode/plugins/adlc-skills-hooks.ts`, id `adlc-skills-hooks`): it
 default-exports `{ ...Plugin.define({ id, setup }), server }`. OpenCode 1.x
 (>= 1.18.29, which added object entrypoints) calls `server()` and uses the
 V1 hook keys (`experimental.chat.messages.transform`, `chat.message`,
@@ -18,14 +20,14 @@ calls `setup()` and registers the mapped domain hooks (`session.hook("context")`
 (`.agents/dispatcher.mjs`), so skill behavior is identical. The generated file
 imports from `@opencode/plugin` — the project needs that package installed
 where opencode resolves plugin imports (e.g. `.opencode/package.json`).
-OpenCode 1.x older than 1.18.29 cannot load the hybrid file; upgrade to use events.
+OpenCode 1.x older than 1.18.29 cannot load the hybrid file; upgrade to use hooks.
 
 ## Schema
 
 ```json
 {
-  "events": {
-    "<canonical_event>": [
+  "hooks": {
+    "<canonical_hook>": [
       {
         "skill": "<skill-name>",
         "description": "<human-readable description>",
@@ -42,13 +44,13 @@ OpenCode 1.x older than 1.18.29 cannot load the hybrid file; upgrade to use even
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
 | `skill` | yes | string | Skill name (must match `SKILL.md` frontmatter `name`) |
-| `description` | no | string | Human-readable description of what the event does |
+| `description` | no | string | Human-readable description of what the hook does |
 | `timeout` | no | number | Timeout in seconds (converted to ms for gemini/qwen/tabnine). Default: 60 |
-| `matcher` | no | string | Tool-name regex for `pre_tool_use`/`post_tool_use` events. Default: `*` (all tools) |
+| `matcher` | no | string | Tool-name regex for `pre_tool_use`/`post_tool_use` hooks. Default: `*` (all tools) |
 
-### Canonical events
+### Canonical hooks
 
-| Event | Fires when | Payload (stdin) | Body path |
+| Hook | Fires when | Payload (stdin) | Body path |
 |-------|-----------|-----------------|-----------|
 | `session_start` | Agent session begins | `{}` | yes |
 | `session_compact` | Harness compacts/summarizes history (post-compaction re-injection) | `{}` | yes |
@@ -96,7 +98,7 @@ OpenCode 1.x older than 1.18.29 cannot load the hybrid file; upgrade to use even
 
 Each skill gets its own native hook entry — both fire on session start.
 
-## Example: tool events with matchers
+## Example: tool hooks with matchers
 
 ```json
 {
@@ -113,7 +115,7 @@ Each skill gets its own native hook entry — both fire on session start.
 
 When a native hook fires, it calls:
 ```
-node .agents/dispatcher.mjs <event> <skill> <skills_dir> <timeout>
+node .agents/dispatcher.mjs <hook> <skill> <skills_dir> <timeout>
 ```
 
 The dispatcher:
@@ -125,9 +127,9 @@ The dispatcher:
 
 The stdout is captured by the agent's native hook and injected as session context.
 
-## Adding `.events.json` to your skills repo
+## Adding `.hooks.json` to your skills repo
 
-1. Create `.events.json` at the repo root
-2. Declare events mapping to skill names (skills must exist in the repo's `skills/` directory)
+1. Create `.hooks.json` at the repo root
+2. Declare hooks mapping to skill names (skills must exist in the repo's `skills/` directory)
 3. Optionally add `scripts:` blocks to skills that need deterministic execution
-4. When users run `adlc-skills-cli add <your-repo> -a <agent>`, events are auto-wired
+4. When users run `adlc-skills-cli add <your-repo> -a <agent>`, hooks are auto-wired

@@ -335,6 +335,11 @@ export function getEventAgents() {
     .map(([key, a]) => ({ key, ...a }));
 }
 
+/** Alias kept for symmetry with the hook renames (same AGENTS.events filter). */
+export function getHookAgents() {
+  return getEventAgents();
+}
+
 export function getCommandAgents() {
   return Object.entries(AGENTS)
     .filter(([key]) => key !== "generic")
@@ -433,11 +438,13 @@ export function getRunProfile(key) {
   return profile;
 }
 
-// ── Events ─────────────────────────────────────────────────────────────
-// Canonical event names (snake_case). The dispatcher and .events.json use
+// ── Hooks (canonical) / Events (deprecated alias) ────────────────────────
+// Canonical hook names (snake_case). The dispatcher and .hooks.json use
 // these. Each agent adapter translates them to the agent's native casing.
+// `.events.json` / `manifest.events` / EVENT_* names remain as deprecated
+// aliases until v3.
 
-export const CANONICAL_EVENTS = [
+export const CANONICAL_HOOKS = [
   "session_start",
   "session_compact",
   "pre_tool_use",
@@ -448,9 +455,16 @@ export const CANONICAL_EVENTS = [
   "stop",
 ];
 
-// Events where the body-injection path (superpowers model) applies.
-// Script path (spec-kit model) applies to ALL events.
-export const BODY_INJECTION_EVENTS = new Set(["session_start", "session_compact", "user_prompt_submit"]);
+// Deprecated alias: same reference so both names stay in sync.
+/** @deprecated Use CANONICAL_HOOKS. */
+export const CANONICAL_EVENTS = CANONICAL_HOOKS;
+
+// Hooks where the body-injection path (superpowers model) applies.
+// Script path (spec-kit model) applies to ALL hooks.
+/** Canonical. */
+export const BODY_INJECTION_HOOKS = new Set(["session_start", "session_compact", "user_prompt_submit"]);
+/** @deprecated Use BODY_INJECTION_HOOKS. */
+export const BODY_INJECTION_EVENTS = BODY_INJECTION_HOOKS;
 
 // Context-injection envelope for hook stdout, per agent + canonical event.
 //
@@ -492,12 +506,13 @@ export function resolveEnvelope(agentConfig, canonicalEvent) {
   return map["*"];
 }
 
-// Per-agent event configuration metadata. Agents that support native hooks
+// Per-agent hook configuration metadata. Agents that support native hooks
 // declare: config_file (where native hooks live), format (how to merge),
-// canonical_to_native (event name translation), timeout_unit (s or ms).
-export const EVENT_AGENTS = {
+// canonical_to_native (hook name translation), timeout_unit (s or ms).
+/** Canonical. */
+export const HOOK_AGENTS = {
   opencode: {
-    config_file: ".opencode/plugins/adlc-skills-events.ts",
+    config_file: ".opencode/plugins/adlc-skills-hooks.ts",
     format: "ts-plugin",
     // Hybrid opencode 1.x (>=1.18.29 object entrypoints) + 2.x plugin: the
     // generated file default-exports { ...Plugin.define({ id, setup }), server }.
@@ -718,6 +733,9 @@ export const EVENT_AGENTS = {
   },
 };
 
+/** @deprecated Use HOOK_AGENTS. */
+export const EVENT_AGENTS = HOOK_AGENTS;
+
 // ── MCP install ────────────────────────────────────────────────────────
 // Per-agent metadata for `adlc-cli mcp install`: .mcp.json is the single
 // standard declaration of MCP servers; each row describes how to materialise
@@ -776,17 +794,30 @@ export function getMcpAgent(key) {
   return Object.hasOwn(MCP_AGENTS, normalized) ? MCP_AGENTS[normalized] : null;
 }
 
-export function getEventAgentConfig(agentKey) {
-  return EVENT_AGENTS[agentKey] || null;
+export function getHookAgentConfig(agentKey) {
+  return HOOK_AGENTS[agentKey] || null;
 }
 
+/** @deprecated Use getHookAgentConfig. */
+export function getEventAgentConfig(agentKey) {
+  return getHookAgentConfig(agentKey);
+}
+
+export function getHookCapableAgents() {
+  return Object.keys(HOOK_AGENTS);
+}
+
+/** @deprecated Use getHookCapableAgents. */
 export function getEventCapableAgents() {
-  return Object.keys(EVENT_AGENTS);
+  return getHookCapableAgents();
 }
 
 // Marker injected into every native hook entry we generate, so idempotent
 // merge and surgical teardown can identify our entries without a manifest DB.
-export const EVENT_MARKER = "_adlc_skills_cli";
+/** Canonical. */
+export const HOOK_MARKER = "_adlc_skills_cli";
+/** @deprecated Use HOOK_MARKER. */
+export const EVENT_MARKER = HOOK_MARKER;
 
 // Path where the generic dispatcher is shipped inside a project.
 export const DISPATCHER_REL = ".agents/dispatcher.mjs";

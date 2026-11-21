@@ -13,8 +13,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { installEvents, resolveEvents } from "../../../src/events.mjs";
-import { getEventAgentConfig } from "../../../src/registry.mjs";
+import { installHooks, resolveHooks } from "../../../src/hooks.mjs";
+import { getHookAgentConfig } from "../../../src/registry.mjs";
 import { gradeSessionEnd } from "../graders/check_session_end.mjs";
 
 const MANIFEST = { events: { session_end: [{ skill: "team-levelup", timeout: 120 }] } };
@@ -28,9 +28,9 @@ const COMBINED_MANIFEST = {
 function buildPlugin(manifest) {
   const projectRoot = mkdtempSync(join(tmpdir(), "adlc-eval-"));
   try {
-    const resolved = resolveEvents(manifest, getEventAgentConfig("opencode"));
-    installEvents("opencode", projectRoot, resolved, ".agents/skills");
-    const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+    const resolved = resolveHooks(manifest, getHookAgentConfig("opencode"));
+    installHooks("opencode", projectRoot, resolved, ".agents/skills");
+    const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
     return { resolved, content };
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
@@ -39,7 +39,7 @@ function buildPlugin(manifest) {
 
 describe("EVAL-001 grader: goldset training cases", () => {
   it("PASS-1: session_end-only manifest resolves with native fallback", () => {
-    const resolved = resolveEvents(MANIFEST, getEventAgentConfig("opencode"));
+    const resolved = resolveHooks(MANIFEST, getHookAgentConfig("opencode"));
     const { content } = buildPlugin(MANIFEST);
     const result = gradeSessionEnd({ resolved, pluginContent: content });
     assert.equal(result.score, 1.0, `expected pass, failures: ${result.failures.join("; ")}`);

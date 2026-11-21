@@ -3,21 +3,21 @@
 
 import { writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, copyFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { AGENTS, resolveNpxAgent, getAgent, getEventAgentConfig } from "../registry.mjs";
+import { AGENTS, resolveNpxAgent, getAgent, getHookAgentConfig } from "../registry.mjs";
 import { findInstalledSkills, detectAdlc, expandTilde } from "../source.mjs";
 import { spawnNpxSync, resolveSkillsPackageSpec } from "../utils/spawn.mjs";
 import { normalizePs1Scripts } from "../utils/encoding.mjs";
 import { generateCommand, commandFilename, isGenerated, removeGeneratedCommands } from "../convert.mjs";
 import {
   installDispatcher,
-  installEvents,
-  removeEvents,
-  fetchEventsManifest,
+  installHooks,
+  removeHooks,
+  fetchHooksManifest,
   fetchSkillsDeps,
   expandSkillSelection,
-  readLocalEventsManifest,
-  resolveEvents,
-} from "../events.mjs";
+  readLocalHooksManifest,
+  resolveHooks,
+} from "../hooks.mjs";
 import { writeAgent, writeSkillsSource, readSkillsSource } from "../utils/init-options.mjs";
 import { describeSpawnError } from "../utils/spawn.mjs";
 import {
@@ -78,7 +78,7 @@ export async function cmdAdd(args, flags) {
 
   const projectRoot = process.cwd();
   const isGlobal = flags.global || false;
-  const noEvents = flags.noEvents || false;
+  const noHooks = flags.noHooks || flags.noEvents || false; // --no-events is a deprecated alias
   const prefix = flags.prefix || null;
   const mode = flags.mode || null;
   const skillFilter = flags.skill || null;
@@ -200,23 +200,37 @@ export async function cmdAdd(args, flags) {
       });
     }
 
-    const agentEventConfig = getEventAgentConfig(agentKey);
-    if (agentEventConfig && !noEvents) {
-      const manifest = await fetchEventsManifest(source);
-      if (manifest && manifest.events) {
-        const targetEventsPath = join(projectRoot, ".events.json");
+    const agentEventConfig = getHookAgentConfig(agentKey);
+    if (agentEventConfig && !noHooks) {
+      const manifest = await fetchHooksManifest(source);
+      if (manifest && manifest.hooks) {
+        const targetEventsPath = join(projectRoot, ".hooks.json");
+        const legacyEventsPath = join(projectRoot, ".events.json");
         // Persist the manifest to the project root so later commands
-        // (update/remove) can re-resolve events without re-fetching.
+        // (update/remove) can re-resolve hooks without re-fetching.
         // Local sources: copy the file (preserves comments/ordering).
         // Remote sources: write the fetched manifest (resolve() on a
         // repo-id was never a valid path — the copy silently never ran).
+        // Legacy `.events.json` sources copy to `.hooks.json` (canonical).
+        const sourceHooksPath = resolve(source, ".hooks.json");
         const sourceEventsPath = resolve(source, ".events.json");
-        if (source !== "." && existsSync(sourceEventsPath)) {
-          copyFileSync(sourceEventsPath, targetEventsPath);
-        } else if (!existsSync(targetEventsPath)) {
+        const sourceManifestPath =
+          source !== "." && existsSync(sourceHooksPath)
+            ? sourceHooksPath
+            : source !== "." && existsSync(sourceEventsPath)
+              ? sourceEventsPath
+              : null;
+        if (sourceManifestPath && !existsSync(targetEventsPath)) {
+          copyFileSync(sourceManifestPath, targetEventsPath);
+        }
+        // Legacy `.events.json` in the project root still reads; `.hooks.json` wins.
+        if (!existsSync(targetEventsPath) && existsSync(legacyEventsPath)) {
+          copyFileSync(legacyEventsPath, targetEventsPath);
+        }
+        if (!existsSync(targetEventsPath)) {
           writeFileSync(targetEventsPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
         }
-        const resolvedEvents = resolveEvents(manifest, agentEventConfig);
+        const resolvedEvents = resolveHooks(manifest, agentEventConfig);
         const eventCount = Object.keys(resolvedEvents).length;
         if (eventCount > 0) {
           const dispatcherPath = installDispatcher(projectRoot);
@@ -225,7 +239,7 @@ export async function cmdAdd(args, flags) {
             color: "green",
           });
           const skillsDir2 = isGlobal ? agent.global_skills_dir : agent.skills_dir;
-          const eventResult = installEvents(agentKey, projectRoot, resolvedEvents, skillsDir2);
+          const eventResult = installHooks(agentKey, projectRoot, resolvedEvents, skillsDir2);
           if (eventResult) {
             const tag = eventResult.merged ? " (merged)" : " (created)";
             const errTag = eventResult.error ? ` [${eventResult.error}]` : "";
@@ -233,19 +247,19 @@ export async function cmdAdd(args, flags) {
               glyph: sym.success,
               color: "green",
             });
-            item(`Events: ${eventCount} (${Object.keys(resolvedEvents).join(", ")})`, {
+            item(`Hooks: ${eventCount} (${Object.keys(resolvedEvents).join(", ")})`, {
               glyph: sym.success,
               color: "green",
             });
           }
         } else {
-          item(`Events: none applicable for ${agentKey} in .events.json`, {
+          item(`Hooks: none applicable for ${agentKey} in .hooks.json`, {
             glyph: sym.info,
             color: "yellow",
           });
         }
       } else {
-        item(`Events: skipped (no .events.json found in source)`, {
+        item(`Hooks: skipped (no .hooks.json found in source)`, {
           glyph: sym.info,
           color: "gray",
         });
@@ -379,17 +393,17 @@ export async function cmdUpdate(args, flags) {
       color: "green",
     });
 
-    const agentEventConfig = getEventAgentConfig(agentKey);
+    const agentEventConfig = getHookAgentConfig(agentKey);
     if (agentEventConfig) {
-      const localManifest = readLocalEventsManifest(projectRoot);
-      if (localManifest && localManifest.events) {
-        const resolvedEvents = resolveEvents(localManifest, agentEventConfig);
+      const localManifest = readLocalHooksManifest(projectRoot);
+      if (localManifest && localManifest.hooks) {
+        const resolvedEvents = resolveHooks(localManifest, agentEventConfig);
         const eventCount = Object.keys(resolvedEvents).length;
         if (eventCount > 0) {
           installDispatcher(projectRoot);
           const skillsDir2 = isGlobal ? agent.global_skills_dir : agent.skills_dir;
-          installEvents(agentKey, projectRoot, resolvedEvents, skillsDir2);
-          item(`events re-generated (${eventCount})`, { glyph: sym.success, color: "green" });
+          installHooks(agentKey, projectRoot, resolvedEvents, skillsDir2);
+          item(`hooks re-generated (${eventCount})`, { glyph: sym.success, color: "green" });
         }
       }
     }
@@ -419,8 +433,8 @@ export async function cmdRemove(args, flags) {
       item(`removed ${removed} command file(s)`, { glyph: sym.success, color: "green" });
     }
 
-    if (getEventAgentConfig(agentKey)) {
-      const eventResult = removeEvents(agentKey, projectRoot);
+    if (getHookAgentConfig(agentKey)) {
+      const eventResult = removeHooks(agentKey, projectRoot);
       if (eventResult) {
         if (eventResult.action === "deleted") {
           const path = join(projectRoot, eventResult.path);
@@ -448,6 +462,12 @@ export async function cmdRemove(args, flags) {
     item(`Removed dispatcher: .agents/dispatcher.mjs`, { glyph: sym.success, color: "green" });
   }
 
+  const hooksPath = join(projectRoot, ".hooks.json");
+  if (existsSync(hooksPath)) {
+    rmSync(hooksPath);
+    item(`Removed .hooks.json`, { glyph: sym.success, color: "green" });
+  }
+  // Legacy manifest: still cleaned up on remove when present.
   const eventsPath = join(projectRoot, ".events.json");
   if (existsSync(eventsPath)) {
     rmSync(eventsPath);
@@ -502,11 +522,11 @@ export async function cmdStatus(args, flags) {
       }
     }
 
-    const agentEventConfig = getEventAgentConfig(agentKey);
-    let eventStatus = "n/a";
-    if (agentEventConfig) {
-      const configPath = join(projectRoot, agentEventConfig.config_file);
-      eventStatus = existsSync(configPath) ? "installed" : "eligible";
+    const agentHookConfig = getHookAgentConfig(agentKey);
+    let hookStatus = "n/a";
+    if (agentHookConfig) {
+      const configPath = join(projectRoot, agentHookConfig.config_file);
+      hookStatus = existsSync(configPath) ? "installed" : "eligible";
     }
 
     rows.push([
@@ -514,7 +534,7 @@ export async function cmdStatus(args, flags) {
       String(skills.length),
       String(commandCount),
       `${generatedCount} generated`,
-      eventStatus,
+      hookStatus,
     ]);
   }
 
@@ -527,7 +547,7 @@ export async function cmdStatus(args, flags) {
         { header: "Skills", justify: "right" },
         { header: "Commands", justify: "right" },
         { header: "Generated", optional: true },
-        { header: "Events" },
+        { header: "Hooks" },
       ],
       rows,
     }),

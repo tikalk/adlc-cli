@@ -295,8 +295,9 @@ export function parseArgs(argv) {
       flags.agents.push(rest[++i]);
     } else if (arg === "-g" || arg === "--global") {
       flags.global = true;
-    } else if (arg === "--no-events") {
-      flags.noEvents = true;
+    } else if (arg === "--no-hooks" || arg === "--no-events") {
+      flags.noHooks = true;
+      flags.noEvents = true; // deprecated alias
     } else if (arg === "--prefix") {
       flags.prefix = rest[++i];
     } else if (arg === "--mode") {
