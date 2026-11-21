@@ -126,6 +126,10 @@ steps:
         echo "stopped: plan rejected at gate-intent" >&2
         exit 1
       fi
+      if [ "{{ steps.gate-intent-decisions.output.choice }}" != "approve" ]; then
+        echo "stopped: plan rejected at gate-intent-decisions" >&2
+        exit 1
+      fi
   # Check out the mission run branch again after the plan gates: a parked run
   # restored into a fresh clone starts on the base branch and resume skips
   # prior steps. Mirrors supervised's run-branch-execute (F3) — without it,

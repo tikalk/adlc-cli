@@ -474,3 +474,33 @@ for (const [gate, inputs, stop] of [
     }
   });
 }
+
+test("factory 2.1.0: a reject at gate-intent-decisions stops the run before execute (F4)", { skip: !POSIX }, async () => {
+  // F4 (PR #111 review F1): the two plan gates share verdict_intent across
+  // two resumes, so a split verdict is possible — approve the plan, reject
+  // the records. stop-if-plan-rejected must catch the record-gate reject;
+  // execute must never run on rejected records.
+  const { dir, cleanup } = project();
+  try {
+    installSkills(dir);
+    const { engine, def } = stubbedWorkflow(dir, {
+      "factory-mission": executeWrites({ mr_url: MR, conclusion: "ok" }),
+    });
+    const runId = "fv2f4001";
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, runId, STEP_REGISTRY);
+    assert.equal(state.status, RunStatus.PAUSED);
+    // First resume: approve at gate-intent -> pauses at the record gate.
+    state = await engine.resume(runId, { verdict_intent: "approve" }, STEP_REGISTRY);
+    assert.equal(state.status, RunStatus.PAUSED);
+    assert.equal(state.currentStepId, "gate-intent-decisions");
+    // Second resume: reject the records -> the stop step fails the run.
+    state = await engine.resume(runId, { verdict_intent: "reject" }, STEP_REGISTRY);
+    assert.equal(state.status, RunStatus.FAILED);
+    assert.equal(classifyWorkflowStatus(state.status).exitCode, 10);
+    assert.equal(state.stepResults["gate-intent-decisions"].output.choice, "reject");
+    assert.equal(state.stepResults["stop-if-plan-rejected"]?.status, "failed");
+    assert.equal(state.stepResults.execute, undefined, "a rejected record is never implemented");
+  } finally {
+    cleanup();
+  }
+});
