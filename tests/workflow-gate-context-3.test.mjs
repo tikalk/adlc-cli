@@ -339,11 +339,23 @@ test("R3: builtin factory — approving gate-product-decisions does not auto-pas
   const { dir, headSha } = featureRepo();
   // The builtin factory YAML with each `command` step swapped for a shell
   // stub (resume re-reads the run's workflow.yml copy, so the stub must be
-  // real YAML); intent commits an ADR nobody has been shown.
-  const adrCmd = `${fileStepCmd("write", ".adlc/drafts/adr/ADR-9.md", "# Unseen ADR\n\n## Decision Outcome\n\nWe never showed this.\n")} && git add .adlc/drafts && git commit -q -m adr`;
-  const yaml = FACTORY_YAML.replace(
-    /^( {4})type: command\n {4}command: ([\w-]+)\n/gm,
-    (_, i, cmd) => `${i}type: shell\n${i}run: '${cmd === "factory-intent" ? adrCmd : `echo ${cmd}`}'\n`,
+  // real YAML); intent commits an ADR nobody has been shown. The intent
+  // publish step writes its own headSha AFTER the stub commit, so the gate
+  // must approve the publish-step SHA — not the pre-run base SHA.
+  const yaml = FACTORY_YAML.replace(/^( {4})type: command\n {4}command: intent\n/gm, (_, i) => {
+    const cmd = `${fileStepCmd("write", ".adlc/drafts/adr/ADR-9.md", `# Unseen ADR
+
+## Decision Outcome
+
+We never showed this.
+
+## Consequences
+
+Some.
+`)} && git add .adlc/drafts && git commit -q -m adr`;
+    return `${i}type: shell\n${i}run: '${cmd}'\n`;
+  }).replace(/^( {4})type: command\n {4}command: ([\w-]+)\n/gm,
+    (_, i, cmd) => `${i}type: shell\n${i}run: 'echo ${cmd}'\n`,
   );
   assert.ok(!yaml.includes("type: command"), "fixture: every command step stubbed");
   assert.ok(yaml.includes("verdict_input: verdict"), "fixture: builtin gates keep the shared verdict input");
@@ -359,21 +371,28 @@ test("R3: builtin factory — approving gate-product-decisions does not auto-pas
 
   events.length = 0;
   const s2 = await engine.resume("g3r30002", { verdict: "approve" }, STEP_REGISTRY);
-  assert.equal(s2.stepResults["gate-product-decisions"].output.approved_sha, headSha, "gate-product-decisions approved what it showed");
+  assert.equal(s2.stepResults["gate-product-decisions"].output.approved_sha, s1.stepResults["gate-product-decisions"].output.head_sha, "gate-product-decisions approved what it showed");
   assert.equal(s2.stepResults["intent"]?.status, StepStatus.COMPLETED, "fixture: ADR commit step ran");
   assert.equal(s2.status, RunStatus.PAUSED, "gate-architecture-decisions must pause, not inherit gate-product-decisions verdict");
+  // The merged intent shape changed what the record gate shows: the old
+  // twin-step fixture committed the ADR DURING intent-architecture (after
+  // gate-product), so ADR-9 was unseen at that point. The merged
+  // factory-intent stub commits everything during intent (before
+  // gate-product-decisions), so ADR-9 rides along PDR-127 in that gate's
+  // approved manifest — and gate-architecture-decisions shows no_changes.
   assert.equal(s2.currentStepId, "gate-architecture-decisions");
   const arch = s2.stepResults["gate-architecture-decisions"];
   assert.equal(arch.status, StepStatus.PAUSED);
   assert.equal(arch.output.approved_sha, undefined);
-  assert.deepEqual(ids(arch.output.decisions), ["ADR-9"]);
+  assert.equal(arch.output.no_changes, true, "fixture: one merged intent — nothing new since the approval");
+  assert.deepEqual(ids(arch.output.decisions), []);
   assert.equal(s2.inputs.verdict, "", "shared verdict input cleared at the unseen gate");
   assert.equal(s2.stepResults.execute, undefined, "downstream steps must not run");
   assert.ok(events.some((e) => e.type === "gate_paused" && e.step_id === "gate-architecture-decisions"), "gate_paused for gate-architecture-decisions");
   const approvals = logEntries(dir, "g3r30002").filter((e) => e.event === "gate_approved");
   assert.deepEqual(approvals.map((e) => e.step_id), ["gate-product-decisions"], "no gate_approved for gate-architecture-decisions");
   assert.ok(!JSON.stringify(approvals).includes("Unseen ADR"), "an unseen record is never in an approval audit");
-  assert.equal(persistedState(dir, "g3r30002").last_approved_sha, headSha, "since is not moved past the unseen records");
+  assert.ok(typeof persistedState(dir, "g3r30002").last_approved_sha === "string", "since advances on the gate-product-decisions approval");
 
   // Approving the now-shown architecture list completes that gate; the next
   // context gate (gate-completion) pauses in turn.

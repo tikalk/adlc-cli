@@ -178,12 +178,14 @@ test("built-in factory: loads, validates, headless-valid", async () => {
     assert.deepEqual(validateWorkflow(def, STEP_REGISTRY), []);
     assert.deepEqual(headlessGateErrors(def), []);
     // Every gate declares verdict_input; stages are command steps, plus the
-    // engine's shell steps: run-branch before each intent stage
-    // (ADR-431-amendment §1, §3a) and one publish step after each.
+    // engine's shell steps: one run-branch before the intent stage
+    // (ADR-431-amendment §1, §3a) and one publish-intent step after it.
+    // (The merged factory-intent DAG owns its own worktree branch internally;
+    // the bundled workflow no longer re-checks-out between gates.)
     const gates = def.steps.filter((s) => s.type === "gate");
     const commands = def.steps.filter((s) => s.type !== "gate" && s.type !== "shell");
     const shells = def.steps.filter((s) => s.type === "shell");
-    assert.equal(gates.length, 4);
+    assert.equal(gates.length, 3);  // gate-product-decisions, gate-architecture-decisions, gate-completion
     assert.ok(gates.every((g) => g.verdict_input === "verdict"));
     assert.ok(commands.every((c) => c.type === "command" && typeof c.command === "string"));
     assert.deepEqual(shells.map((s) => s.id), ["run-branch", "publish-intent"]);

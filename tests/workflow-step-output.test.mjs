@@ -433,9 +433,12 @@ test("O8: a missing run-branch helper is skipped and reported; open-mr still fai
   assert.match(state.stepResults["publish-intent"].error, /not on an intent run branch/);
 });
 
-test("O8: a resumed run checks out the run branch again before intent", { skip: !POSIX }, async () => {
+test("O8: a resumed run does not check out the run branch again (merged intent owns its branch)", { skip: !POSIX }, async () => {
   // A parked run restored into a fresh clone starts on the base branch; resume
-  // continues after gate-product-decisions and never re-runs the first run-branch step.
+  // continues after gate-product-decisions and never re-runs the first
+  // run-branch step. The merged factory-intent DAG owns its worktree branch
+  // internally (ADR-435), so the bundled workflow keeps that single engine
+  // checkout — there is no second run-branch step to re-run.
   let base;
   const { state, resumed, dir } = await runFactory({
     helper: STRICT_OPEN_MR,
@@ -450,7 +453,9 @@ test("O8: a resumed run checks out the run branch again before intent", { skip: 
   const ids = Object.keys(resumed.stepResults);
   assert.ok(ids.indexOf("intent") < ids.indexOf("publish-intent"));
   assert.equal(resumed.stepResults["publish-intent"].status, "completed");
-  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir }).toString().trim(), "factory/intent/p-12");
+  // No second checkout: detached HEAD from the fresh-clone restore is left to
+  // the merged intent DAG, which works through its own worktree (ADR-435).
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir }).toString().trim(), "HEAD");
 });
 
 test("O7: a failed shell step's persisted state holds no raw credential", { skip: !POSIX }, async () => {
