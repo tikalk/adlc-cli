@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_id": "a095354f",
+  "workflow_id": "factory",
+  "issue_ref": null,
+  "repository": {
+    "remote": "https://github.com/tikalk/adlc-cli",
+    "branch": "main",
+    "run_start_sha": "4235a5a118d7c8d06abb22bdd5931c6013c001a8",
+    "head_sha": "4235a5a118d7c8d06abb22bdd5931c6013c001a8"
+  },
+  "agent": {
+    "id": null,
+    "session_id": null,
+    "parent_session_id": null
+  },
+  "model": {
+    "name": null,
+    "route": null
+  },
+  "container": {
+    "image_digest": null
+  },
+  "config": {
+    "skill_lock_hash": null,
+    "mcp_config_hash": null
+  },
+  "created_at": "2026-11-21T16:54:54.305Z",
+  "updated_at": "2026-11-21T16:54:55.534Z",
+  "finished_at": "2026-11-21T16:54:55.539Z",
+  "outcome": "failed",
+  "gateway_cost": null,
+  "retention_class": "full",
+  "workload_class": "unknown",
+  "trace_pruned": false
+}
