@@ -1,4 +1,4 @@
-// Bundled `factory` 2.0.0 (SF-LANE-05): it calls only skills that exist in
+// Bundled `factory` 2.1.0 (SF-LANE-05 + ADR-522 record gates): it calls only skills that exist in
 // adlc-team-skills and fails closed. A run with no factory skills, no issue,
 // or no merge request ends FAILED (CLI exit 10, never retried by the Argo
 // lane) instead of "completed" with nothing done; a human reject ends FAILED,
@@ -22,7 +22,8 @@ const POSIX = process.platform !== "win32";
 // factory-product / factory-architect were removed on 2026-10-25.
 const EXISTING_COMMANDS = new Set(["factory-intent", "factory-mission"]);
 const STEP_IDS = [
-  "preflight", "intent", "plan-link", "gate-intent", "stop-if-plan-rejected",
+  "preflight", "intent", "plan-link", "gate-intent", "gate-product-decisions",
+  "gate-architecture-decisions", "stop-if-plan-rejected",
   "execute", "proof-of-work", "gate-completion", "stop-if-result-rejected",
 ];
 const MR = "https://gitlab.example.com/g/p/-/merge_requests/7";
@@ -30,6 +31,23 @@ const MR = "https://gitlab.example.com/g/p/-/merge_requests/7";
 function project() {
   const dir = mkdtempSync(join(tmpdir(), "wf-factory-v2-"));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+
+// Approve the plan gate plus both record gates in a non-git fixture project
+// (the record gates see "Decision list unavailable: not in a git work tree"
+// and approve cleanly without a list, S1/T2). Returns the paused-or-finished
+// state after the final resume.
+async function approvePlanGates(engine, runId, extraInputs = {}) {
+  let state = await engine.resume(runId, { verdict_intent: "approve" }, STEP_REGISTRY);
+  let guard = 0;
+  while (state.status === RunStatus.PAUSED && guard < 4) {
+    guard++;
+    const id = state.currentStepId;
+    if (id !== "gate-intent" && id !== "gate-product-decisions" && id !== "gate-architecture-decisions") break;
+    state = await engine.resume(runId, { verdict_intent: "approve" }, STEP_REGISTRY);
+  }
+  return state;
 }
 
 function installSkills(dir) {
@@ -81,29 +99,41 @@ function withoutIssueEnv(fn) {
   };
 }
 
-test("factory 2.0.0: valid, headless-valid, calls only existing skills, gates never abort", () => {
+test("factory 2.1.0: valid, headless-valid, calls only existing skills, gates never abort", () => {
   const { dir, cleanup } = project();
   try {
     const def = new WorkflowEngine(dir).loadWorkflow("factory");
     assert.equal(def.id, "factory");
-    assert.equal(def.version, "2.0.0");
+    assert.equal(def.version, "2.1.0");
     assert.deepEqual(validateWorkflow(def, STEP_REGISTRY), []);
     assert.deepEqual(headlessGateErrors(def), []);
     assert.deepEqual(def.steps.map((s) => s.id), STEP_IDS);
     for (const s of def.steps.filter((x) => x.type === "command")) {
       assert.ok(EXISTING_COMMANDS.has(s.command), `step ${s.id} calls ${s.command}, which adlc-team-skills does not ship`);
     }
-    // A reject must end FAILED (exit 10), never ABORTED (exit 1, retried by
-    // the lane); each gate has its own verdict input.
+    // A plan-gate reject ends FAILED (exit 10), never ABORTED (exit 1,
+    // retried by the lane). The two record gates are scope-pinned context
+    // gates (ADR-522): they share verdict_intent with gate-intent so one
+    // human plan approval covers all three, and they skip (not abort) like
+    // the other plan gates — a rejected record never reaches execute via
+    // stop-if-plan-rejected.
     const gates = def.steps.filter((x) => x.type === "gate");
     assert.deepEqual(gates.map((g) => [g.id, g.on_reject, g.verdict_input]), [
       ["gate-intent", "skip", "verdict_intent"],
+      ["gate-product-decisions", "skip", "verdict_intent"],
+      ["gate-architecture-decisions", "skip", "verdict_intent"],
       ["gate-completion", "skip", "verdict_completion"],
     ]);
-    // No `context` on the gates, on purpose: a context gate binds the approval
-    // to the local HEAD, and a parked run restored into a fresh clone would
-    // have its approval refused ("head moved").
-    for (const g of gates) assert.equal("context" in g, false, `${g.id} declares no context`);
+    // Only the record gates declare `context`, on purpose: a context gate
+    // binds the approval to the local HEAD, and the plan/completion gates
+    // must survive a park-restore into a fresh clone ("head moved").
+    for (const g of gates) {
+      if (g.id === "gate-product-decisions" || g.id === "gate-architecture-decisions") {
+        assert.ok("context" in g, `${g.id} declares context`);
+      } else {
+        assert.equal("context" in g, false, `${g.id} declares no context`);
+      }
+    }
     // Every agent step sets its time limit on purpose (the engine default,
     // 3600 s, killed a real mission at exactly one hour).
     assert.deepEqual(
@@ -115,7 +145,7 @@ test("factory 2.0.0: valid, headless-valid, calls only existing skills, gates ne
   }
 });
 
-test("factory 2.0.0: a workspace without the factory skills fails at preflight, before any agent step", { skip: !POSIX }, async () => {
+test("factory 2.1.0: a workspace without the factory skills fails at preflight, before any agent step", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     const { engine, def } = stubbedWorkflow(dir);
@@ -130,7 +160,7 @@ test("factory 2.0.0: a workspace without the factory skills fails at preflight, 
   }
 });
 
-test("factory 2.0.0: skills without the factory-runbook helpers fail at preflight", { skip: !POSIX }, async () => {
+test("factory 2.1.0: skills without the factory-runbook helpers fail at preflight", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -144,7 +174,7 @@ test("factory 2.0.0: skills without the factory-runbook helpers fail at prefligh
   }
 });
 
-test("factory 2.0.0: a run without an issue fails at preflight", { skip: !POSIX }, withoutIssueEnv(async () => {
+test("factory 2.1.0: a run without an issue fails at preflight", { skip: !POSIX }, withoutIssueEnv(async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -158,12 +188,13 @@ test("factory 2.0.0: a run without an issue fails at preflight", { skip: !POSIX 
   }
 }));
 
-test("factory 2.0.0: an approved plan whose execute reports no mr_url fails at proof-of-work", { skip: !POSIX }, async () => {
+test("factory 2.1.0: an approved plan whose execute reports no mr_url fails at proof-of-work", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
     const { engine, def } = stubbedWorkflow(dir);
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0001", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0001", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0001");
     assert.equal(state.status, RunStatus.FAILED);
     assert.equal(classifyWorkflowStatus(state.status).exitCode, 10);
     assert.equal(state.stepResults.execute?.status, "completed");
@@ -175,14 +206,15 @@ test("factory 2.0.0: an approved plan whose execute reports no mr_url fails at p
   }
 });
 
-test("factory 2.0.0: an mr_url that is not a URL (e.g. 'none') fails at proof-of-work", { skip: !POSIX }, async () => {
+test("factory 2.1.0: an mr_url that is not a URL (e.g. 'none') fails at proof-of-work", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
     const { engine, def } = stubbedWorkflow(dir, {
       "factory-mission": executeWrites({ mr_url: "none", conclusion: "could not open the MR" }),
     });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0002", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0002", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0002");
     assert.equal(state.status, RunStatus.FAILED);
     assert.equal(state.stepResults["proof-of-work"]?.status, "failed");
   } finally {
@@ -190,7 +222,7 @@ test("factory 2.0.0: an mr_url that is not a URL (e.g. 'none') fails at proof-of
   }
 });
 
-test("factory 2.0.0: an mr_url carrying $(…) or backticks is refused and never run", { skip: !POSIX }, async () => {
+test("factory 2.1.0: an mr_url carrying $(…) or backticks is refused and never run", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -201,7 +233,8 @@ test("factory 2.0.0: an mr_url carrying $(…) or backticks is refused and never
         conclusion: "ok",
       }),
     });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0003", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0003", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0003");
     assert.equal(existsSync(marker), false, "nothing from the step output was executed");
     assert.equal(state.stepResults["proof-of-work"]?.status, "failed");
     assert.equal(state.status, RunStatus.FAILED);
@@ -210,7 +243,7 @@ test("factory 2.0.0: an mr_url carrying $(…) or backticks is refused and never
   }
 });
 
-test("factory 2.0.0: a conclusion full of shell syntax is never run; a real MR URL passes", { skip: !POSIX }, async () => {
+test("factory 2.1.0: a conclusion full of shell syntax is never run; a real MR URL passes", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -221,7 +254,8 @@ test("factory 2.0.0: a conclusion full of shell syntax is never run; a real MR U
         conclusion: `opened "the MR" — it's done; ran \`touch ${marker}\` and $(touch ${marker})`,
       }),
     });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0005", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0005", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0005");
     assert.equal(state.stepResults["proof-of-work"]?.status, "completed");
     assert.equal(existsSync(marker), false, "nothing from the step output was executed");
     assert.equal(state.status, RunStatus.PAUSED);
@@ -238,12 +272,13 @@ for (const [what, value] of [
   ["a disguised Slack link", "https://evil.example/x/-/merge_requests/1|https://gitlab.example.com/g/p/-/merge_requests/7"],
   ["a URL with user info", "https://user:pw@gitlab.example.com/g/p/-/merge_requests/7"],
 ]) {
-  test(`factory 2.0.0: proof-of-work refuses ${what} as the merge request`, { skip: !POSIX }, async () => {
+  test(`factory 2.1.0: proof-of-work refuses ${what} as the merge request`, { skip: !POSIX }, async () => {
     const { dir, cleanup } = project();
     try {
       installSkills(dir);
       const { engine, def } = stubbedWorkflow(dir, { "factory-mission": executeWrites({ mr_url: value }) });
-      const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0006", STEP_REGISTRY);
+      let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0006", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0006");
       assert.equal(state.stepResults["proof-of-work"]?.status, "failed");
       assert.equal(state.status, RunStatus.FAILED);
       assert.equal(state.stepResults["gate-completion"], undefined, "the value never reaches the approval message");
@@ -253,13 +288,14 @@ for (const [what, value] of [
   });
 }
 
-test("factory 2.0.0: proof-of-work accepts a GitHub pull request URL", { skip: !POSIX }, async () => {
+test("factory 2.1.0: proof-of-work accepts a GitHub pull request URL", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
     const pr = "https://github.com/acme/widgets/pull/42";
     const { engine, def } = stubbedWorkflow(dir, { "factory-mission": executeWrites({ mr_url: pr }) });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0007", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0007", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0007");
     assert.equal(state.stepResults["proof-of-work"]?.status, "completed");
     assert.ok(state.stepResults["gate-completion"].output.message.includes(pr));
   } finally {
@@ -269,7 +305,7 @@ test("factory 2.0.0: proof-of-work accepts a GitHub pull request URL", { skip: !
 
 // The plan gate's message is posted to Slack as written, so the plan link is
 // checked first (plan-link) and anything that is not an MR URL is left out.
-test("factory 2.0.0: the plan gate shows only a checked merge request link", { skip: !POSIX }, async () => {
+test("factory 2.1.0: the plan gate shows only a checked merge request link", { skip: !POSIX }, async () => {
   for (const [id, reported, shown] of [
     ["fv2g0001", "https://gitlab.example.com/g/p/-/merge_requests/6", "https://gitlab.example.com/g/p/-/merge_requests/6"],
     ["fv2g0002", "https://gitlab.example.com/g/p/-/merge_requests/6 <!channel> <https://evil.example|click>", "no merge request was opened"],
@@ -294,7 +330,7 @@ test("factory 2.0.0: the plan gate shows only a checked merge request link", { s
 
 // Second review (2026-11-21): a single quote closed the shell string the first
 // version put mr_url in, so the rest of the value ran as a command.
-test("factory 2.0.0: a single quote in mr_url cannot break out into the shell", { skip: !POSIX }, async () => {
+test("factory 2.1.0: a single quote in mr_url cannot break out into the shell", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -305,7 +341,8 @@ test("factory 2.0.0: a single quote in mr_url cannot break out into the shell", 
         conclusion: "ok",
       }),
     });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0004", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0004", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0004");
     assert.equal(existsSync(marker), false, "nothing from the step output was executed");
     assert.equal(state.stepResults["proof-of-work"]?.status, "failed", "a value that is not exactly a merge request URL is refused");
     assert.equal(state.status, RunStatus.FAILED);
@@ -315,7 +352,7 @@ test("factory 2.0.0: a single quote in mr_url cannot break out into the shell", 
   }
 });
 
-test("factory 2.0.0: approve, MR, approve completes; the completion gate links the MR", { skip: !POSIX }, async () => {
+test("factory 2.1.0: approve, MR, approve completes; the completion gate links the MR", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -329,7 +366,7 @@ test("factory 2.0.0: approve, MR, approve completes; the completion gate links t
     assert.match(s1.stepResults["gate-intent"].output.message, /Plan drafted for g\/p#1: https:\/\/gitlab\.example\.com\/g\/p\/-\/merge_requests\/6/);
     assert.equal(s1.stepResults.execute, undefined, "nothing is implemented before the plan is approved");
 
-    const s2 = await engine.resume("fv2d0001", { verdict_intent: "approve" }, STEP_REGISTRY);
+    const s2 = await approvePlanGates(engine, "fv2d0001");
     assert.equal(s2.status, RunStatus.PAUSED);
     assert.equal(s2.currentStepId, "gate-completion", "approving the plan does not pre-answer the completion gate");
     assert.equal(s2.stepResults["proof-of-work"]?.status, "completed");
@@ -345,16 +382,21 @@ test("factory 2.0.0: approve, MR, approve completes; the completion gate links t
 
 for (const [gate, inputs, stop] of [
   ["gate-intent", { verdict_intent: "reject" }, "stop-if-plan-rejected"],
-  ["gate-completion", { verdict_intent: "approve", verdict_completion: "reject" }, "stop-if-result-rejected"],
+  ["gate-completion", { verdict_completion: "reject" }, "stop-if-result-rejected"],
 ]) {
-  test(`factory 2.0.0: a reject at ${gate} ends FAILED (exit 10), never ABORTED (exit 1, retried)`, { skip: !POSIX }, async () => {
+  test(`factory 2.1.0: a reject at ${gate} ends FAILED (exit 10), never ABORTED (exit 1, retried)`, { skip: !POSIX }, async () => {
     const { dir, cleanup } = project();
     try {
       installSkills(dir);
       const { engine, def } = stubbedWorkflow(dir, {
         "factory-mission": executeWrites({ mr_url: MR, conclusion: "ok" }),
       });
-      const state = await engine.execute(def, { issue_ref: "g/p#1", ...inputs }, `fv2e${gate === "gate-intent" ? "0001" : "0002"}`, STEP_REGISTRY);
+      const runId = `fv2e${gate === "gate-intent" ? "0001" : "0002"}`;
+      let state = await engine.execute(def, { issue_ref: "g/p#1" }, runId, STEP_REGISTRY);
+      if (gate === "gate-completion") {
+        state = await approvePlanGates(engine, runId);
+        state = await engine.resume(runId, inputs, STEP_REGISTRY);
+      } else state = await engine.resume(runId, inputs, STEP_REGISTRY);
       assert.equal(state.status, RunStatus.FAILED);
       assert.equal(classifyWorkflowStatus(state.status).exitCode, 10);
       assert.equal(state.stepResults[gate].output.choice, "reject");
