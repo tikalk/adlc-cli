@@ -183,10 +183,10 @@ test("built-in factory: loads, validates, headless-valid", async () => {
     const gates = def.steps.filter((s) => s.type === "gate");
     const commands = def.steps.filter((s) => s.type !== "gate" && s.type !== "shell");
     const shells = def.steps.filter((s) => s.type === "shell");
-    assert.equal(gates.length, 3);
+    assert.equal(gates.length, 4);
     assert.ok(gates.every((g) => g.verdict_input === "verdict"));
     assert.ok(commands.every((c) => c.type === "command" && typeof c.command === "string"));
-    assert.deepEqual(shells.map((s) => s.id), ["run-branch", "publish-product", "run-branch-architecture", "publish-architecture"]);
+    assert.deepEqual(shells.map((s) => s.id), ["run-branch", "publish-intent"]);
     assert.equal(def.steps[0].id, "run-branch");
   } finally {
     cleanup();
@@ -213,14 +213,14 @@ test("built-in factory: run copies sourceYaml verbatim into the run dir", async 
     eng.onEvent = (event) => events.push(event);
     const state = await eng.execute(stubDef, { verdict: "" }, "ee000003", STEP_REGISTRY);
     assert.equal(state.status, RunStatus.PAUSED);
-    assert.equal(state.currentStepId, "gate-product");
+    assert.equal(state.currentStepId, "gate-product-decisions");
 
     const runCopy = join(dir, ".adlc", "workflows", "runs", "ee000003", "workflow.yml");
     assert.equal(readFileSync(runCopy, "utf-8"), FACTORY_YAML);
 
     // gate_paused fired for the factory stage gate.
     const gate = events.find((e) => e.type === "gate_paused");
-    assert.equal(gate.step_id, "gate-product");
+    assert.equal(gate.step_id, "gate-product-decisions");
     assert.equal(gate.verdict_input, "verdict");
   } finally {
     cleanup();

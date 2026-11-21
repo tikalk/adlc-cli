@@ -335,15 +335,15 @@ test("R3: verdict preset at a context gate's first execution → pauses (verdict
   assert.deepEqual(ids(audit[0].decisions), ["PDR-127"]);
 });
 
-test("R3: builtin factory — approving gate-product does not auto-pass gate-architecture (shared verdict input)", async () => {
+test("R3: builtin factory — approving gate-product-decisions does not auto-pass gate-architecture-decisions (shared verdict input)", async () => {
   const { dir, headSha } = featureRepo();
   // The builtin factory YAML with each `command` step swapped for a shell
   // stub (resume re-reads the run's workflow.yml copy, so the stub must be
-  // real YAML); intent-architecture commits an ADR nobody has been shown.
+  // real YAML); intent commits an ADR nobody has been shown.
   const adrCmd = `${fileStepCmd("write", ".adlc/drafts/adr/ADR-9.md", "# Unseen ADR\n\n## Decision Outcome\n\nWe never showed this.\n")} && git add .adlc/drafts && git commit -q -m adr`;
   const yaml = FACTORY_YAML.replace(
     /^( {4})type: command\n {4}command: ([\w-]+)\n/gm,
-    (_, i, cmd) => `${i}type: shell\n${i}run: '${cmd === "factory-architect" ? adrCmd : `echo ${cmd}`}'\n`,
+    (_, i, cmd) => `${i}type: shell\n${i}run: '${cmd === "factory-intent" ? adrCmd : `echo ${cmd}`}'\n`,
   );
   assert.ok(!yaml.includes("type: command"), "fixture: every command step stubbed");
   assert.ok(yaml.includes("verdict_input: verdict"), "fixture: builtin gates keep the shared verdict input");
@@ -355,23 +355,23 @@ test("R3: builtin factory — approving gate-product does not auto-pass gate-arc
   engine.onEvent = (e) => events.push(e);
   const s1 = await engine.execute(stubDef, { verdict: "" }, "g3r30002", STEP_REGISTRY);
   assert.equal(s1.status, RunStatus.PAUSED);
-  assert.equal(s1.currentStepId, "gate-product");
+  assert.equal(s1.currentStepId, "gate-product-decisions");
 
   events.length = 0;
   const s2 = await engine.resume("g3r30002", { verdict: "approve" }, STEP_REGISTRY);
-  assert.equal(s2.stepResults["gate-product"].output.approved_sha, headSha, "gate-product approved what it showed");
-  assert.equal(s2.stepResults["intent-architecture"]?.status, StepStatus.COMPLETED, "fixture: ADR commit step ran");
-  assert.equal(s2.status, RunStatus.PAUSED, "gate-architecture must pause, not inherit gate-product's verdict");
-  assert.equal(s2.currentStepId, "gate-architecture");
-  const arch = s2.stepResults["gate-architecture"];
+  assert.equal(s2.stepResults["gate-product-decisions"].output.approved_sha, headSha, "gate-product-decisions approved what it showed");
+  assert.equal(s2.stepResults["intent"]?.status, StepStatus.COMPLETED, "fixture: ADR commit step ran");
+  assert.equal(s2.status, RunStatus.PAUSED, "gate-architecture-decisions must pause, not inherit gate-product-decisions verdict");
+  assert.equal(s2.currentStepId, "gate-architecture-decisions");
+  const arch = s2.stepResults["gate-architecture-decisions"];
   assert.equal(arch.status, StepStatus.PAUSED);
   assert.equal(arch.output.approved_sha, undefined);
   assert.deepEqual(ids(arch.output.decisions), ["ADR-9"]);
   assert.equal(s2.inputs.verdict, "", "shared verdict input cleared at the unseen gate");
   assert.equal(s2.stepResults.execute, undefined, "downstream steps must not run");
-  assert.ok(events.some((e) => e.type === "gate_paused" && e.step_id === "gate-architecture"), "gate_paused for gate-architecture");
+  assert.ok(events.some((e) => e.type === "gate_paused" && e.step_id === "gate-architecture-decisions"), "gate_paused for gate-architecture-decisions");
   const approvals = logEntries(dir, "g3r30002").filter((e) => e.event === "gate_approved");
-  assert.deepEqual(approvals.map((e) => e.step_id), ["gate-product"], "no gate_approved for gate-architecture");
+  assert.deepEqual(approvals.map((e) => e.step_id), ["gate-product-decisions"], "no gate_approved for gate-architecture-decisions");
   assert.ok(!JSON.stringify(approvals).includes("Unseen ADR"), "an unseen record is never in an approval audit");
   assert.equal(persistedState(dir, "g3r30002").last_approved_sha, headSha, "since is not moved past the unseen records");
 
@@ -379,12 +379,12 @@ test("R3: builtin factory — approving gate-product does not auto-pass gate-arc
   // context gate (gate-completion) pauses in turn.
   const archHead = git(dir, "rev-parse", "HEAD");
   const s3 = await engine.resume("g3r30002", { verdict: "approve" }, STEP_REGISTRY);
-  assert.equal(s3.stepResults["gate-architecture"].output.approved_sha, archHead);
+  assert.equal(s3.stepResults["gate-architecture-decisions"].output.approved_sha, archHead);
   assert.equal(s3.status, RunStatus.PAUSED);
   assert.equal(s3.currentStepId, "gate-completion");
   assert.equal(s3.stepResults["gate-completion"].output.approved_sha, undefined);
   const approvals3 = logEntries(dir, "g3r30002").filter((e) => e.event === "gate_approved");
-  assert.deepEqual(approvals3.map((e) => e.step_id), ["gate-product", "gate-architecture"]);
+  assert.deepEqual(approvals3.map((e) => e.step_id), ["gate-product-decisions", "gate-architecture-decisions"]);
 });
 
 test("R3 (refined by S1, iteration 4): 'Decision list unavailable' pause (head_sha null) + approve, still unavailable → completes without an approval sha", async () => {

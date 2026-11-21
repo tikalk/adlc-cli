@@ -612,8 +612,8 @@ steps:
 // ── Builtins: factory gates declare context, neutral wording ──────────────
 
 const FACTORY_GATE_RECORDS = {
-  "gate-product": ".adlc/drafts/pdr/*.md",
-  "gate-architecture": ".adlc/drafts/adr/*.md",
+  "gate-product-decisions": ".adlc/drafts/pdr/*.md",
+  "gate-architecture-decisions": ".adlc/drafts/adr/*.md",
   "gate-completion": ".adlc/drafts/chdr/*.md",
 };
 
@@ -632,7 +632,7 @@ test("builtin factory: stage gates declare context.records and neutral messages"
   assert.deepEqual(headlessGateErrors(def), []);
 });
 
-test("builtin factory: gate-product pauses with the PDR manifest from the run's git repo", async () => {
+test("builtin factory: gate-product-decisions pauses with the PDR manifest from the run's git repo", async () => {
   const { dir, baseSha } = standardRepo();
   const engine = new WorkflowEngine(dir);
   const def = engine.loadWorkflow("factory");
@@ -644,13 +644,13 @@ test("builtin factory: gate-product pauses with the PDR manifest from the run's 
   engine.onEvent = (e) => events.push(e);
   const state = await engine.execute(stubDef, { verdict: "" }, "gc000014", STEP_REGISTRY);
   assert.equal(state.status, RunStatus.PAUSED);
-  assert.equal(state.currentStepId, "gate-product");
-  const out = state.stepResults["gate-product"].output;
-  assert.ok(Array.isArray(out.decisions), "gate-product output.decisions");
+  assert.equal(state.currentStepId, "gate-product-decisions");
+  const out = state.stepResults["gate-product-decisions"].output;
+  assert.ok(Array.isArray(out.decisions), "gate-product-decisions output.decisions");
   assert.deepEqual(byId(out.decisions).map((d) => [d.id, d.change]), [["PDR-125", "changed"], ["PDR-127", "new"]]);
   assert.equal(out.since_sha, baseSha);
   assert.ok(!out.message.includes("drafted"));
   const gp = events.find((e) => e.type === "gate_paused");
-  assert.equal(gp.step_id, "gate-product");
+  assert.equal(gp.step_id, "gate-product-decisions");
   assert.equal(gp.message, out.message);
 });

@@ -96,7 +96,7 @@ ${stepsYaml}`);
 
 const INTENT = `  - id: intent
     type: command
-    command: factory-product
+    command: factory-intent
 `;
 
 async function runIntent({ output, exit = 0, inputs = { issue_ref: "g/p#26" }, pre } = {}) {
@@ -177,8 +177,8 @@ test("O3: a stale output file is removed before the step runs", { skip: !POSIX }
 
 test("O4: the factory workflow publishes after each intent step and its gates link the publish step's mr_url", () => {
   const yaml = FACTORY_YAML;
-  assert.match(yaml, /- id: intent-product[\s\S]*?- id: publish-product\n\s+type: shell[\s\S]*?- id: gate-product[\s\S]*?link: "\{\{ steps\.publish-product\.output\.mr_url \}\}"/);
-  assert.match(yaml, /- id: intent-architecture[\s\S]*?- id: publish-architecture\n\s+type: shell[\s\S]*?- id: gate-architecture[\s\S]*?link: "\{\{ steps\.publish-architecture\.output\.mr_url \}\}"/);
+  assert.match(yaml, /- id: intent[\s\S]*?- id: publish-intent\n\s+type: shell[\s\S]*?- id: gate-product-decisions[\s\S]*?link: "\{\{ steps\.publish-intent\.output\.mr_url \}\}"/);
+  assert.match(yaml, /- id: publish-intent[\s\S]*?- id: gate-architecture-decisions[\s\S]*?link: "\{\{ steps\.publish-intent\.output\.mr_url \}\}"/);
 });
 
 test("O4: a context gate surfaces the intent step's mr_url as mr_link", { skip: !POSIX }, async () => {
@@ -218,7 +218,7 @@ test("O3: a step id that is not path-safe gets no output file (nothing deleted o
   writeFileSync(victim, "keep me");
   const steps = `  - id: "../../victim"
     type: command
-    command: factory-product
+    command: factory-intent
 `;
   await withEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_DUMP: dump, FAKE_EXIT: "0", FAKE_OUTPUT: JSON.stringify({ mr_url: "u" }) }, async () => {
     const engine = new WorkflowEngine(dir);
@@ -250,7 +250,7 @@ test("O5: the factory workflow declares issue_ref and dispatch, so its intent st
     assert.equal(state.inputs.dispatch, "supervised");
     const seen = JSON.parse(readFileSync(dump, "utf-8"));
     assert.equal(seen.ADLC_ISSUE_REF, "g/p#12");
-    assert.equal(seen.ADLC_STEP_ID, "intent-product");
+    assert.equal(seen.ADLC_STEP_ID, "intent");
   });
 });
 
@@ -366,21 +366,21 @@ async function runFactory({ helper, runBranch = RUN_BRANCH_HELPER, beforeResume 
 test("O7: the factory workflow links the MR even when the orchestrator never calls open-mr", { skip: !POSIX }, async () => {
   // The fake agent writes no step output; only the engine's publish step runs open-mr.
   const helper = `#!/usr/bin/env bash
-[ -n "$ADLC_RUN_ID" ] && [ "$ADLC_STEP_ID" = publish-product ] || exit 9
+[ -n "$ADLC_RUN_ID" ] && [ "$ADLC_STEP_ID" = publish-intent ] || exit 9
 printf '{"mr_url":"https://gl.test/g/p/-/merge_requests/45"}' > "$ADLC_STEP_OUTPUT"
 echo https://gl.test/g/p/-/merge_requests/45
 `;
   const { state, paused } = await runFactory({ helper });
   assert.equal(state.status, RunStatus.PAUSED);
-  assert.equal(state.stepResults["publish-product"].output.mr_url, "https://gl.test/g/p/-/merge_requests/45");
+  assert.equal(state.stepResults["publish-intent"].output.mr_url, "https://gl.test/g/p/-/merge_requests/45");
   assert.equal(paused.mr_link, "https://gl.test/g/p/-/merge_requests/45");
 });
 
 test("O7: without the open-mr helper the publish step is skipped and the gate has no link", { skip: !POSIX }, async () => {
   const { state, paused } = await runFactory({});
   assert.equal(state.status, RunStatus.PAUSED);
-  assert.equal(state.stepResults["publish-product"].status, "completed");
-  assert.match(state.stepResults["publish-product"].output.skipped, /publish: skipped run-branch\.sh, open-mr\.sh/);
+  assert.equal(state.stepResults["publish-intent"].status, "completed");
+  assert.match(state.stepResults["publish-intent"].output.skipped, /publish-intent: skipped run-branch\.sh, open-mr\.sh/);
   assert.ok(!paused.mr_link);
 });
 
@@ -391,7 +391,7 @@ test("O7: a refusing open-mr fails the run (fail-closed)", { skip: !POSIX }, asy
 
 test("O7: a refusing open-mr's stderr is in the step error", { skip: !POSIX }, async () => {
   const { state } = await runFactory({ helper: "#!/usr/bin/env bash\necho 'open-mr: tracker token lacks the api scope' >&2\nexit 2\n" });
-  assert.match(state.stepResults["publish-product"].error, /exited with code 2\. stderr: open-mr: tracker token lacks the api scope/);
+  assert.match(state.stepResults["publish-intent"].error, /exited with code 2\. stderr: open-mr: tracker token lacks the api scope/);
 });
 
 // ── the engine owns the run branch (ADR-431-amendment §1) ───────────────────
@@ -408,7 +408,7 @@ test("O8: the factory workflow checks out the run branch before the first agent 
   const ids = Object.keys(state.stepResults);
   assert.equal(ids[0], "run-branch");
   assert.equal(state.stepResults["run-branch"].status, "completed");
-  assert.ok(ids.indexOf("run-branch") < ids.indexOf("intent-product"));
+  assert.ok(ids.indexOf("run-branch") < ids.indexOf("intent"));
   assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir }).toString().trim(), "factory/intent/p-12");
 });
 
@@ -421,7 +421,7 @@ if [ "$ADLC_STEP_ID" = run-branch ]; then git switch -q -c factory/intent/p-12 &
 git switch -q factory/intent/p-12
 `;
   const { state, paused } = await runFactory({ helper: STRICT_OPEN_MR, runBranch });
-  assert.equal(state.stepResults["publish-product"].status, "completed");
+  assert.equal(state.stepResults["publish-intent"].status, "completed");
   assert.equal(paused.mr_link, "https://gl.test/g/p/-/merge_requests/45");
 });
 
@@ -429,13 +429,13 @@ test("O8: a missing run-branch helper is skipped and reported; open-mr still fai
   const { state } = await runFactory({ helper: STRICT_OPEN_MR, runBranch: null });
   assert.equal(state.stepResults["run-branch"].status, "completed");
   assert.match(state.stepResults["run-branch"].output.skipped, /run-branch: skipped run-branch\.sh/);
-  assert.equal(state.stepResults["publish-product"].status, "failed");
-  assert.match(state.stepResults["publish-product"].error, /not on an intent run branch/);
+  assert.equal(state.stepResults["publish-intent"].status, "failed");
+  assert.match(state.stepResults["publish-intent"].error, /not on an intent run branch/);
 });
 
-test("O8: a resumed run checks out the run branch again before intent-architecture", { skip: !POSIX }, async () => {
+test("O8: a resumed run checks out the run branch again before intent", { skip: !POSIX }, async () => {
   // A parked run restored into a fresh clone starts on the base branch; resume
-  // continues after gate-product and never re-runs the first run-branch step.
+  // continues after gate-product-decisions and never re-runs the first run-branch step.
   let base;
   const { state, resumed, dir } = await runFactory({
     helper: STRICT_OPEN_MR,
@@ -446,10 +446,10 @@ test("O8: a resumed run checks out the run branch again before intent-architectu
   });
   assert.equal(state.status, RunStatus.PAUSED);
   assert.ok(base);
-  assert.equal(resumed.stepResults["run-branch-architecture"].status, "completed");
+  assert.equal(resumed.stepResults["intent"].status, "completed");
   const ids = Object.keys(resumed.stepResults);
-  assert.ok(ids.indexOf("run-branch-architecture") < ids.indexOf("intent-architecture"));
-  assert.equal(resumed.stepResults["publish-architecture"].status, "completed");
+  assert.ok(ids.indexOf("intent") < ids.indexOf("publish-intent"));
+  assert.equal(resumed.stepResults["publish-intent"].status, "completed");
   assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir }).toString().trim(), "factory/intent/p-12");
 });
 
@@ -457,7 +457,7 @@ test("O7: a failed shell step's persisted state holds no raw credential", { skip
   // state.json is what parkRun pushes to refs/factory-runs/<run_id> on the remote.
   const helper = "#!/usr/bin/env bash\necho 'fatal: token glpat-EXAMPLE1234567890 rejected' >&2\necho 'out glpat-EXAMPLE1234567890'\nexit 2\n";
   const { state, dir } = await runFactory({ helper });
-  const r = state.stepResults["publish-product"];
+  const r = state.stepResults["publish-intent"];
   assert.doesNotMatch(r.output.stderr, /glpat-/);
   assert.doesNotMatch(r.output.stdout, /glpat-/);
   const raw = readFileSync(join(dir, ".adlc", "workflows", "runs", "r12", "state.json"), "utf8");
@@ -473,7 +473,7 @@ echo "PRIVATE-TOKEN: glpat-zyxwvutsrq0987654321" >&2
 exit 2
 `;
   const { state } = await withEnv({ FAKE_SECRET_TOKEN: "s3cr3t-value-123456" }, () => runFactory({ helper }));
-  const err = state.stepResults["publish-product"].error;
+  const err = state.stepResults["publish-intent"].error;
   assert.match(err, /exited with code 2\. stderr: /);
   assert.doesNotMatch(err, /glpat-|s3cr3t-value-123456|oauth2:/);
   assert.match(err, /https:\/\/\*\*\*@gl\.test/);
@@ -540,9 +540,9 @@ test("O9: execute runs factory-mission with the run's issue, and gate-completion
     const inputs = { issue_ref: "g/p#12", verdict: "" };
     const e1 = new WorkflowEngine(dir);
     const s1 = await e1.execute(e1.loadWorkflow(wf), inputs, "r9", STEP_REGISTRY);
-    assert.equal(s1.currentStepId, "gate-product");
+    assert.equal(s1.currentStepId, "gate-product-decisions");
     const s2 = await new WorkflowEngine(dir).resume("r9", { verdict: "approve" }, STEP_REGISTRY);
-    assert.equal(s2.currentStepId, "gate-architecture");
+    assert.equal(s2.currentStepId, "gate-architecture-decisions");
     const e3 = new WorkflowEngine(dir);
     const events = [];
     e3.onEvent = (ev) => events.push(ev);
