@@ -126,6 +126,15 @@ steps:
         echo "stopped: plan rejected at gate-intent" >&2
         exit 1
       fi
+  # Check out the mission run branch again after the plan gates: a parked run
+  # restored into a fresh clone starts on the base branch and resume skips
+  # prior steps. Mirrors supervised's run-branch-execute (F3) — without it,
+  # execute would run detached on the base branch instead of on
+  # factory/mission/<repo>-<iid> (--kind code).
+  - id: run-branch-execute
+    type: shell
+    run: |-
+      node -e "const fs=require('fs'),cp=require('child_process');const dirs=['.agents/skills/factory-runbook/scripts/bash','.agents/skills/factory-mission/scripts/bash'];const names=['run-branch.sh'];const miss=[];for(const n of names){const f=dirs.map((d)=>d+'/'+n).find((p)=>fs.existsSync(p));if(!f){miss.push(n);continue}const r=cp.spawnSync('bash',[f,'--kind','code'],{stdio:'inherit'});if(r.error){console.error('run-branch-execute: failed to spawn '+n+': '+r.error.message);process.exit(1)}if(r.status!==0)process.exit(r.status===null?1:r.status)}if(miss.length){const m='run-branch-execute: skipped '+miss.join(', ')+' (factory-runbook helpers not installed)';console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"
   - id: execute
     type: command
     command: factory-mission

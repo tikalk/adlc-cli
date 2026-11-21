@@ -177,8 +177,9 @@ refs/factory-runs/<run_id>             git-refs Tier-3 (ADR-393)
 adlc-cli workflow run mission --input spec="Fix auth"
 adlc-cli workflow resume <run_id> --input verdict=approve
 
-# The bundled outer loop: preflight → intent → plan gate → execute → proof of
-# work → completion gate (fails closed; one verdict input per gate)
+# The bundled outer loop: preflight → intent → plan gates → run-branch
+# (mission branch) → execute → proof of work → completion gate
+# (fails closed; one verdict input per gate)
 adlc-cli workflow run factory --input issue_ref=group/repo#12
 adlc-cli workflow resume <run_id> --input verdict_intent=approve
 
