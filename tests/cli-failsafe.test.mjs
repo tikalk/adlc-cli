@@ -111,6 +111,26 @@ test("M2: classifyWorkflowStatus maps FAILED to 10", async () => {
   assert.equal(classifyWorkflowStatus("failed").exitCode, 10);
 });
 
+// ADR-542: a run failed by a fast agent failure (non-zero exit within 60 s
+// of spawn) is an infrastructure failure — the lane may retry it.
+test("M2: classifyWorkflowStatus maps FAILED with fastFailure to 1", async () => {
+  const { classifyWorkflowStatus } = await loadExitCodes();
+  assert.equal(classifyWorkflowStatus("failed", { fastFailure: true }).exitCode, 1);
+});
+
+test("M2: classifyWorkflowStatus keeps FAILED at 10 when fastFailure is absent or false", async () => {
+  const { classifyWorkflowStatus } = await loadExitCodes();
+  assert.equal(classifyWorkflowStatus("failed", {}).exitCode, 10);
+  assert.equal(classifyWorkflowStatus("failed", { fastFailure: false }).exitCode, 10);
+});
+
+test("M2: fastFailure does not change non-failed statuses", async () => {
+  const { classifyWorkflowStatus } = await loadExitCodes();
+  assert.equal(classifyWorkflowStatus("completed", { fastFailure: true }).exitCode, 0);
+  assert.equal(classifyWorkflowStatus("paused", { fastFailure: true }).exitCode, 3);
+  assert.equal(classifyWorkflowStatus("aborted", { fastFailure: true }).exitCode, 1);
+});
+
 test("M2: classifyWorkflowStatus maps ABORTED to 1", async () => {
   const { classifyWorkflowStatus } = await loadExitCodes();
   assert.equal(classifyWorkflowStatus("aborted").exitCode, 1);
