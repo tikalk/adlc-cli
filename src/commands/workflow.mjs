@@ -259,7 +259,7 @@ async function cmdWorkflowRun(rest, rawArgv) {
     // Lane contract: PAUSED exits 3 so the Argo expression
     // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
     // excludes it from retries.
-    return classifyWorkflowStatus(state.status).exitCode;
+    return classifyWorkflowStatus(state.status, { fastFailure: state.fastFailure === true }).exitCode;
   } catch (exc) {
     error(exc.message);
     // The engine saved the run as failed before it threw: exit with the
@@ -315,7 +315,7 @@ async function cmdWorkflowResume(rest, rawArgv) {
     // Lane contract: PAUSED exits 3 so the Argo expression
     // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
     // excludes it from retries.
-    return classifyWorkflowStatus(state.status).exitCode;
+    return classifyWorkflowStatus(state.status, { fastFailure: state.fastFailure === true }).exitCode;
   } catch (exc) {
     if (exc instanceof LeaseHeldError) {
       error(exc.message);
