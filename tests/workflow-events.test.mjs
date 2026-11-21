@@ -19,10 +19,10 @@ import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const FACTORY_YAML = readFileSync(
-  join(dirname(dirname(fileURLToPath(import.meta.url))), "workflows", "factory", "workflow.yml"),
-  "utf-8"
-);
+// Engine tests use the 1.0.0 `factory` shape as a multi-gate fixture; the
+// bundled `factory` moved to 2.0.0 (SF-LANE-05), see workflow-factory-v2.test.mjs.
+const FACTORY_V1 = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "workflows", "factory-v1.yml");
+const FACTORY_YAML = readFileSync(FACTORY_V1, "utf-8");
 
 function makeProject({ git = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "wf-events-"));
@@ -172,7 +172,7 @@ test("built-in factory: loads, validates, headless-valid", async () => {
   const { dir, cleanup } = makeProject();
   try {
     const engine = new WorkflowEngine(dir);
-    const def = await engine.loadWorkflow("factory");
+    const def = await engine.loadWorkflow(FACTORY_V1);
     assert.equal(def.id, "factory");
     assert.equal(def.sourceYaml, FACTORY_YAML);
     assert.deepEqual(validateWorkflow(def, STEP_REGISTRY), []);
@@ -197,7 +197,7 @@ test("built-in factory: run copies sourceYaml verbatim into the run dir", async 
   const { dir, cleanup } = makeProject();
   try {
     const engine = new WorkflowEngine(dir);
-    const def = await engine.loadWorkflow("factory");
+    const def = await engine.loadWorkflow(FACTORY_V1);
     // Execute with a stub registry so command steps don't spawn agents:
     // replace command steps with a no-op shell to reach the first gate.
     const stubDef = new WorkflowDefinition({
