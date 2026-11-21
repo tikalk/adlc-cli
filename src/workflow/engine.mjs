@@ -680,6 +680,9 @@ export class WorkflowEngine {
     // Set by the CLI on SIGINT/SIGTERM: the engine pauses cleanly at the
     // next boundary (JS analogue of upstream's KeyboardInterrupt handler).
     this.interrupted = false;
+    // Set when a gate step completes: the next step's start is pushed to the
+    // remote run ref without the ADLC_WORKFLOW_PUSH_INTERVAL throttle.
+    this.pushNextStepStart = false;
   }
 
   // Emit a lifecycle event when a sink is installed (no-op otherwise).
@@ -966,8 +969,15 @@ export class WorkflowEngine {
       }
       await state.save();
       // Step-boundary durability: throttled remote sync bounds the crash
-      // window to ADLC_WORKFLOW_PUSH_INTERVAL (ADR-475).
-      syncRunRef(this.projectRoot, state.runId, state.runsDir);
+      // window to ADLC_WORKFLOW_PUSH_INTERVAL (ADR-475). The step that
+      // follows a completed gate is the exception and is pushed at once: a
+      // gate completes in milliseconds, so the throttle would otherwise leave
+      // the remote saying "at the gate" for the whole next step (often the
+      // longest one), and a restore after a lost pod would go back to a gate
+      // that was already answered.
+      const afterGate = this.pushNextStepStart === true;
+      this.pushNextStepStart = false;
+      syncRunRef(this.projectRoot, state.runId, state.runsDir, afterGate ? { minIntervalSeconds: 0 } : {});
       if (lease) lease.renew();
       this.emit("step_started", { run_id: state.runId, step_id: stepId, step_type: stepType });
 
@@ -988,6 +998,10 @@ export class WorkflowEngine {
       }
 
       const result = await stepImpl.execute(stepConfig, context);
+      // An answered gate must reach the remote with the next step's start.
+      if (stepType === "gate" && result.status === StepStatus.COMPLETED) {
+        this.pushNextStepStart = true;
+      }
 
       const stepData = {
         type: stepType,

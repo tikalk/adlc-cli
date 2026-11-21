@@ -197,6 +197,7 @@ adlc-cli workflow state pause <run_id> --step review      # gate → human
 | `ADLC_WORKFLOW_SESSION` | Session id — makes the run lease persist across sequential CLI invocations instead of per-command |
 | `ADLC_WORKFLOW_RUN_ID` | Set for step processes so nested commands address their own run |
 | `ADLC_WORKFLOW_LEASE_TTL` | Lease TTL in seconds (default 900) |
+| `ADLC_WORKFLOW_PUSH_INTERVAL` | Minimum seconds between pushes of the run ref (`refs/factory-runs/<run_id>`) at step starts (default 60; `0` = every step start; an invalid or negative value means the default). Pauses, run ends and the step right after an answered gate are always pushed at once |
 | `ADLC_WORKSPACE_FILE` | Workspace file path override for `workspace setup` |
 
 SIGINT/SIGTERM trigger a clean pause (resumable) rather than a corrupt
