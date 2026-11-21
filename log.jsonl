@@ -1,0 +1,4 @@
+{"event":"step_started","step_id":"preflight","type":"shell","timestamp":"2026-11-21T20:24:08.257Z"}
+{"event":"step_completed","step_id":"preflight","status":"failed","timestamp":"2026-11-21T20:24:08.277Z"}
+{"event":"step_failed","step_id":"preflight","error":"Shell command exited with code 1. stderr: 'missing' is not recognized as an internal or external command,\r\noperable program or batch file.","timestamp":"2026-11-21T20:24:08.279Z"}
+{"event":"workflow_finished","status":"failed","timestamp":"2026-11-21T20:24:08.282Z"}
