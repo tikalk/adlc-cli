@@ -210,6 +210,28 @@ Known constraint (inherited upstream): a gate nested inside
 step and its nested body on resume. Keep gates at the top level, or bind a
 `verdict_input` on the gate.
 
+**Decision gates with nothing to approve (`context.on_empty`).** A gate that
+declares `context.records` lists the decision records that changed and asks a
+person to approve them. By default it asks even when the list is empty ("No
+new or changed … decisions"). A gate whose *only* subject is that list can opt
+out of asking about nothing:
+
+```yaml
+- id: gate-product
+  type: gate
+  message: "Approve PDRs before architecture?"
+  options: [approve, reject]
+  verdict_input: verdict_product
+  context:
+    records: [".adlc/drafts/pdr/*.md"]
+    since: last_approved
+    on_empty: pass        # default: ask
+```
+
+- `pass` completes the gate with `choice: approve` and `auto_passed: true` only when the list was built and is empty. The run log and the event stream record `gate_auto_passed` ("gate gate-product auto-passed: nothing to approve").
+- A list that could not be built ("Decision list unavailable"), a non-empty list, and a `reject` verdict behave as before.
+- Do not set it on a gate whose real subject is something else (a plan, a merge request): an empty record list would then skip the approval. No bundled workflow sets it.
+
 **Agent-step run context and output (ADR-444).** `command` and `prompt` steps
 run the agent with these environment variables:
 

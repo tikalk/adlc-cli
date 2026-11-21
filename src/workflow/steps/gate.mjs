@@ -10,6 +10,7 @@ import { evaluateExpression } from "../expressions.mjs";
 import {
   CONTROL_CHARS,
   PERMANENT_UNAVAILABLE,
+  autoPassChoice,
   buildGateManifest,
   currentHeadSha,
   renderGateMessage,
@@ -117,6 +118,9 @@ export class GateStep extends StepBase {
     let shownUnavailableKind = null;
     let unavailableReason = null;
     let unavailableKind = null;
+    // True only when this execution built the list itself and found nothing
+    // in it; never for a reused paused manifest or an unavailable list.
+    let builtEmpty = false;
     if ("context" in config) {
       // The list comes from git history, so drafts not committed yet could
       // never be shown, and an approval would not cover them: halt instead
@@ -143,6 +147,7 @@ export class GateStep extends StepBase {
         });
         unavailableReason = built.unavailable;
         unavailableKind = built.unavailable ? built.unavailable_kind : null;
+        builtEmpty = built.unavailable === null && built.no_changes === true;
         const mrLink = gateMrLink(config.context, context);
         manifest = {
           message: renderGateMessage(message, built, mrLink),
@@ -181,6 +186,28 @@ export class GateStep extends StepBase {
         }
         boundVerdictInput = verdictInput;
       }
+    }
+
+    // Nothing to approve (`context.on_empty: pass`, opt-in): the list was
+    // built just now, at this HEAD, and holds no new or changed record, so
+    // there is nothing a person could decide on — complete instead of asking.
+    // Never taken when the list could not be built (that still pauses), when
+    // this gate already paused with a list (a person was shown something: the
+    // head-moved halt and the re-pause below still apply), or when a
+    // rejection was given (a "no" is always honoured). No approved_sha is
+    // pinned: nobody approved anything, and the next gate's list is the same
+    // with or without it.
+    if (
+      builtEmpty &&
+      shownManifest === null &&
+      config.context.on_empty === "pass" &&
+      !isRejection(choice ?? "") &&
+      autoPassChoice(options) !== null
+    ) {
+      output.choice = autoPassChoice(options);
+      output.auto_passed = true;
+      output.auto_pass_reason = "nothing to approve";
+      return new StepResult({ status: StepStatus.COMPLETED, output });
     }
 
     // A context gate's headless approval covers exactly the manifest shown at

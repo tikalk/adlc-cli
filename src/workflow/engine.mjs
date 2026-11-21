@@ -1044,6 +1044,25 @@ export class WorkflowEngine {
           decisions: [],
         });
       }
+      if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.auto_passed === true) {
+        // `context.on_empty: pass`: the gate completed without asking because
+        // its decision list was empty. Audited and announced, so the run's
+        // readers see that no person was asked, and why.
+        await state.appendLog({
+          event: "gate_auto_passed",
+          step_id: stepId,
+          reason: result.output.auto_pass_reason ?? null,
+          head_sha: result.output.head_sha ?? null,
+          since_sha: result.output.since_sha ?? null,
+        });
+        this.emit("gate_auto_passed", {
+          run_id: state.runId,
+          step_id: stepId,
+          message: `gate ${stepId} auto-passed: ${result.output.auto_pass_reason ?? "nothing to approve"}`,
+          head_sha: result.output.head_sha ?? null,
+          since_sha: result.output.since_sha ?? null,
+        });
+      }
       this.emit("step_completed", { run_id: state.runId, step_id: stepId, step_type: stepType, status: result.status });
       if (this.onStepComplete !== null) {
         this.onStepComplete(stepId, label, result.status, result.error);
