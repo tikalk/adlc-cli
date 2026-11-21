@@ -529,6 +529,9 @@ export const EVENT_AGENTS = {
     config_file: ".claude/settings.json",
     format: "json-nested",
     merge_key: "hooks",
+    // Claude Code schema: hooks.<Event> = [ { matcher?, hooks: [ {type, command, timeout} ] } ].
+    // Flat {type, command} entries are rejected ("hooks must be an array") and silently skipped.
+    matcher_groups: true,
     canonical_to_native: {
       session_start: "SessionStart",
       session_compact: null, // unmatched SessionStart fires on ALL sources incl. compact — a compact-matched second entry would double-inject
