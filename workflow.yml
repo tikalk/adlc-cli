@@ -1,0 +1,150 @@
+schema_version: "1.0"
+# Factory outer loop 2.0.0 (SF-LANE-05). Calls only skills that exist in
+# adlc-team-skills (factory-intent, factory-mission; both publish through
+# factory-runbook) and fails closed:
+#   preflight               -> fail when the factory skills are not installed
+#                              or the run has no issue
+#   intent                  -> factory-intent drafts the plan for the issue
+#   plan-link               -> keep the plan's MR link only when it is an MR URL
+#   gate-intent             -> a person approves the plan
+#   execute                 -> factory-mission: tests, code, the code MR
+#   proof-of-work           -> fail when execute returned no MR URL
+#   gate-completion         -> a person approves the result (MR link in the message)
+# Agent-written step output never becomes shell text: it reaches a shell step
+# only through `env:`, and reaches a gate message only after one of the two
+# link checks accepted it as a merge/pull request URL.
+# The gates declare no `context` on purpose: a context gate ties the approval
+# to the local HEAD, and a run restored from a park into a fresh clone (on the
+# default branch) would have its approval refused ("head moved").
+# Gates use on_reject: skip plus a stop step, so a reject ends the run FAILED
+# (exit 10, never retried by the Argo lane) instead of ABORTED (exit 1,
+# retried). 1.0.0 called factory-product / factory-architect (removed from
+# adlc-team-skills on 2026-10-25) and "skipped" missing helpers, so a run
+# could pass every gate and open nothing. The 1.0.0 file is kept as an engine
+# test fixture: tests/fixtures/workflows/factory-v1.yml.
+workflow:
+  id: factory
+  name: Factory Outer Loop
+  version: "2.0.0"
+inputs:
+  # One verdict input per gate, so approving the plan never pre-answers the
+  # completion gate.
+  verdict_intent:
+    type: string
+    enum: ["", approve, reject]
+  verdict_completion:
+    type: string
+    enum: ["", approve, reject]
+  # Set by the dispatching runtime. issue_ref becomes the steps'
+  # ADLC_ISSUE_REF (ADR-444) and is checked on restore; undeclared inputs are
+  # dropped, so all three must be declared here.
+  issue_ref:
+    type: string
+    default: ""
+  run_id:
+    type: string
+    default: ""
+  dispatch:
+    type: string
+    default: ""
+steps:
+  - id: preflight
+    type: shell
+    # Nothing is templated into this script: the engine exports the
+    # issue_ref input as ADLC_ISSUE_REF.
+    run: |
+      missing=""
+      for s in factory-intent factory-mission factory-runbook; do
+        [ -f ".agents/skills/$s/SKILL.md" ] || missing="$missing $s"
+      done
+      for h in run-branch.sh open-mr.sh; do
+        [ -f ".agents/skills/factory-runbook/scripts/bash/$h" ] || missing="$missing factory-runbook/scripts/bash/$h"
+      done
+      [ -n "${ADLC_ISSUE_REF:-}" ] || missing="$missing issue_ref-input"
+      if [ -n "$missing" ]; then
+        echo "preflight: missing:$missing" >&2
+        exit 1
+      fi
+      echo "preflight: ok"
+  - id: intent
+    type: command
+    command: factory-intent
+    # Time limit in seconds, set on purpose (3600 is also the engine default).
+    timeout: 3600
+    input:
+      args: "--issue {{ inputs.issue_ref }}"
+  - id: plan-link
+    type: shell
+    # The plan's merge request, when factory-intent opened one (a plan with no
+    # commits beyond the base has none; the gate then says so). The value the
+    # agent wrote arrives as an environment variable, never as shell text, and
+    # is passed on only when it is a merge/pull request URL, so nothing else
+    # can reach the approval message. Never fails the run.
+    env:
+      MR_URL: "{{ steps.intent.output.mr_url }}"
+    run: |
+      node -e '
+      const url = process.env.MR_URL || "";
+      const ok = /^https?:\/\/[a-z0-9.-]+(:[0-9]+)?\/[a-z0-9._~\/%+-]*\/(merge_requests|pull)\/[0-9]+$/i.test(url);
+      if (url && !ok) console.error("plan-link: intent reported an mr_url that is not a merge request URL; not shown");
+      const out = process.env.ADLC_STEP_OUTPUT;
+      if (out) require("fs").writeFileSync(out, JSON.stringify({ mr_url: ok ? url : "" }));
+      console.log("plan-link: " + (ok ? url : "none"));
+      '
+  - id: gate-intent
+    type: gate
+    message: "Plan drafted for {{ inputs.issue_ref }}: {{ steps.plan-link.output.mr_url | default('no merge request was opened') }} — approve before implementation?"
+    options: [approve, reject]
+    on_reject: skip
+    verdict_input: verdict_intent
+  - id: stop-if-plan-rejected
+    type: shell
+    run: |
+      if [ "{{ steps.gate-intent.output.choice }}" != "approve" ]; then
+        echo "stopped: plan rejected at gate-intent" >&2
+        exit 1
+      fi
+  - id: execute
+    type: command
+    command: factory-mission
+    # The mission is the run's issue (ADR-444 §4); the skill also falls back
+    # to ADLC_ISSUE_REF and fails the step when neither is set.
+    # Time limit in seconds. The engine default (3600) killed a real mission
+    # at exactly one hour; the longest clean execute on record took 2831 s.
+    # Keep it below the lane's per-spawn watchdog (WORKFLOW_SPAWN_TIMEOUT_MS).
+    timeout: 7200
+    input:
+      args: "--issue {{ inputs.issue_ref }}"
+  - id: proof-of-work
+    type: shell
+    # The deliverable is the code MR factory-mission opened (its mr_url step
+    # output, ADR-444). The agent-written value arrives as an environment
+    # variable, never as shell text (a quote in a templated value would end the
+    # string and run the rest), and must be a GitLab merge request or GitHub
+    # pull request URL: letters, digits and . _ ~ / % + - only. The completion
+    # gate below shows the same, checked value. The free-text conclusion is not
+    # used at all.
+    env:
+      MR_URL: "{{ steps.execute.output.mr_url }}"
+    run: |
+      node -e '
+      const url = process.env.MR_URL || "";
+      if (!/^https?:\/\/[a-z0-9.-]+(:[0-9]+)?\/[a-z0-9._~\/%+-]*\/(merge_requests|pull)\/[0-9]+$/i.test(url)) {
+        console.error("proof-of-work: execute returned no merge request URL (mr_url); see the conclusion of the execute step");
+        process.exit(1);
+      }
+      console.log("proof-of-work: " + url);
+      '
+  - id: gate-completion
+    type: gate
+    message: "Implementation for {{ inputs.issue_ref }} is ready: {{ steps.execute.output.mr_url }} — approve completion?"
+    options: [approve, reject]
+    on_reject: skip
+    verdict_input: verdict_completion
+  - id: stop-if-result-rejected
+    type: shell
+    run: |
+      if [ "{{ steps.gate-completion.output.choice }}" != "approve" ]; then
+        echo "stopped: result rejected at gate-completion" >&2
+        exit 1
+      fi
