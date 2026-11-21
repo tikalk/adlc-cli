@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { WorkflowEngine, RunStatus, validateWorkflow, headlessGateErrors } from "../src/workflow/engine.mjs";
 import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
 import { classifyWorkflowStatus } from "../src/exit-codes.mjs";
@@ -23,7 +24,7 @@ const POSIX = process.platform !== "win32";
 const EXISTING_COMMANDS = new Set(["factory-intent", "factory-mission"]);
 const STEP_IDS = [
   "preflight", "intent", "plan-link", "gate-intent", "gate-intent-decisions",
-  "stop-if-plan-rejected",
+  "stop-if-plan-rejected", "run-branch-execute",
   "execute", "proof-of-work", "gate-completion", "stop-if-result-rejected",
 ];
 const MR = "https://gitlab.example.com/g/p/-/merge_requests/7";
@@ -379,6 +380,71 @@ test("factory 2.1.0: approve, MR, approve completes; the completion gate links t
   } finally {
     cleanup();
   }
+});
+
+test("factory 2.1.0: a resume into a fresh clone checks out the mission run branch before execute (F3)", { skip: !POSIX }, async () => {
+  // F3: a parked run restored into a fresh clone starts on the base branch;
+  // resume continues after gate-intent-decisions and never re-runs earlier
+  // steps. Without a run-branch step between the gates and execute,
+  // factory-mission would run detached on the base branch. The fix mirrors
+  // supervised's run-branch-execute: check out the mission run branch again
+  // (--kind code) right after the plan gates, before execute.
+  const remote = mkdtempSync(join(tmpdir(), "f3-remote-"));
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main", remote]);
+  const seed = mkdtempSync(join(tmpdir(), "f3-seed-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: seed });
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: seed });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: seed });
+  execFileSync("git", ["push", "-q", "origin", "main"], { cwd: seed });
+  const m0 = execFileSync("git", ["rev-parse", "HEAD"], { cwd: seed, encoding: "utf-8" }).trim();
+  execFileSync("git", ["update-ref", "refs/remotes/origin/main", m0], { cwd: seed });
+  installSkills(seed);
+  const seen = join(mkdtempSync(join(tmpdir(), "f3-seen-")), "seen.json");
+  const e1 = new WorkflowEngine(seed);
+  // Stub every command step: intent writes nothing (no drafts -> the record
+  // gate auto-passes), execute records the branch it ran on.
+  const { def } = stubbedWorkflow(seed, {
+    "factory-intent": "echo intent",
+    "factory-mission": `echo execute on $(git rev-parse --abbrev-ref HEAD) > ${seen}\n${executeWrites({ mr_url: "https://gl.test/g/p/-/merge_requests/7" })}`,
+  });
+  const s1 = await e1.execute(def, { issue_ref: "g/p#12" }, "f3r0001", STEP_REGISTRY);
+  assert.equal(s1.status, RunStatus.PAUSED, "run pauses at the plan gate");
+  const branchBefore = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: seed, encoding: "utf-8" }).trim();
+  // Restore into a fresh single-branch clone on main (detached/base), like a
+  // parked run coming back on a new pod; then resume through the gates.
+  const fresh = join(mkdtempSync(join(tmpdir(), "f3-fresh-")), "repo");
+  execFileSync("git", ["clone", "-q", "--branch", "main", "--single-branch", remote, fresh]);
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: fresh, encoding: "utf-8" }).trim(), "main");
+  installSkills(fresh);
+  const { restoreRun } = await import("../src/workflow/refs.mjs");
+  restoreRun(fresh, "f3r0001", { issueRef: "g/p#12" });
+  // Pre-create the mission branch at m0 (the intent phase did on the pod).
+  execFileSync("git", ["branch", "-q", "factory/mission/p-12", m0], { cwd: fresh });
+  // The placeholder run-branch.sh from installSkills exits 0 without
+  // switching; give the fresh clone a helper that really checks out the
+  // mission branch, like the real run-branch.sh --kind code does.
+  const helperDir = join(fresh, ".agents", "skills", "factory-runbook", "scripts", "bash");
+  writeFileSync(join(helperDir, "run-branch.sh"), "#!/usr/bin/env bash\ngit switch -q factory/mission/p-12\n");
+  const e2 = new WorkflowEngine(fresh);
+  // Two plan gates share verdict_intent: approve gate-intent, then approve
+  // gate-intent-decisions. After the second approval the run must execute
+  // run-branch-execute before execute.
+  let resumed = await e2.resume("f3r0001", { verdict_intent: "approve" }, STEP_REGISTRY);
+  assert.equal(resumed.status, RunStatus.PAUSED, "second plan gate still asks");
+  assert.equal(resumed.currentStepId, "gate-intent-decisions");
+  resumed = await e2.resume("f3r0001", { verdict_intent: "approve" }, STEP_REGISTRY);
+  const ids = Object.keys(resumed.stepResults);
+  assert.ok(ids.indexOf("run-branch-execute") !== -1, "the workflow declares run-branch-execute");
+  assert.ok(ids.indexOf("run-branch-execute") < ids.indexOf("execute"), "run-branch-execute runs before execute");
+  assert.equal(resumed.stepResults["run-branch-execute"]?.status, "completed");
+  assert.equal(
+    execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: fresh, encoding: "utf-8" }).trim(),
+    "factory/mission/p-12",
+    `execute must run on the mission branch, not detached (was: ${branchBefore} before restore)`,
+  );
+  rmSync(remote, { recursive: true, force: true });
+  rmSync(seed, { recursive: true, force: true });
+  rmSync(join(fresh, ".."), { recursive: true, force: true });
 });
 
 for (const [gate, inputs, stop] of [
