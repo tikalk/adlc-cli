@@ -97,29 +97,24 @@ steps:
     options: [approve, reject]
     on_reject: skip
     verdict_input: verdict_intent
-    # ADR-522: record gates for the two intent lanes (ADR-435 merged DAG).
-    # Context gates tie the approval to the local HEAD: a park-restore into a
-    # fresh clone refuses them ("head moved") instead of re-pausing
-    # (ADR-391-amendment-3 S4, ADR-422). They share verdict_intent with
-    # gate-intent above, so one human plan approval covers all three plan gates.
-  - id: gate-product-decisions
+    # ADR-522: single scope-pinned record gate for both intent lanes
+    # (ADR-435 merged DAG; PR #111 review F1). One gate over both globs so a
+    # single approval covers every record the intent step committed: two
+    # sequential gates with `since: last_approved` would let the first
+    # approval move `since` past records the second gate never shows
+    # (F1: the architecture gate approved sight-unseen). A context gate ties
+    # the approval to the local HEAD: a park-restore into a fresh clone
+    # refuses it ("head moved") instead of re-pausing (ADR-391-amendment-3
+    # S4, ADR-422). Shares verdict_intent with gate-intent above, so one
+    # human plan approval covers both plan gates.
+  - id: gate-intent-decisions
     type: gate
-    message: "Approve product decisions before execution? Cross-lane acceptance is a contract violation."
+    message: "Approve the intent records before execution? PDRs and ADRs are listed together — approve only what is shown."
     context:
-      records: [".adlc/drafts/pdr/*.md"]
+      records: [".adlc/drafts/pdr/*.md", ".adlc/drafts/adr/*.md"]
       since: last_approved
       # The draft MR factory-intent opened via the runbook publish rail
-      # (ADR-444 §5, ADR-431-amendment §3a).
-      link: "{{ steps.intent.output.mr_url }}"
-    options: [approve, reject]
-    on_reject: skip
-    verdict_input: verdict_intent
-  - id: gate-architecture-decisions
-    type: gate
-    message: "Approve architecture decisions before execution? Cross-lane acceptance is a contract violation."
-    context:
-      records: [".adlc/drafts/adr/*.md"]
-      since: last_approved
+      # (ADR-444 S5, ADR-431-amendment S3a).
       link: "{{ steps.intent.output.mr_url }}"
     options: [approve, reject]
     on_reject: skip

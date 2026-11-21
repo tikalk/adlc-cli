@@ -22,8 +22,8 @@ const POSIX = process.platform !== "win32";
 // factory-product / factory-architect were removed on 2026-10-25.
 const EXISTING_COMMANDS = new Set(["factory-intent", "factory-mission"]);
 const STEP_IDS = [
-  "preflight", "intent", "plan-link", "gate-intent", "gate-product-decisions",
-  "gate-architecture-decisions", "stop-if-plan-rejected",
+  "preflight", "intent", "plan-link", "gate-intent", "gate-intent-decisions",
+  "stop-if-plan-rejected",
   "execute", "proof-of-work", "gate-completion", "stop-if-result-rejected",
 ];
 const MR = "https://gitlab.example.com/g/p/-/merge_requests/7";
@@ -34,17 +34,17 @@ function project() {
 }
 
 
-// Approve the plan gate plus both record gates in a non-git fixture project
-// (the record gates see "Decision list unavailable: not in a git work tree"
-// and approve cleanly without a list, S1/T2). Returns the paused-or-finished
-// state after the final resume.
+// Approve the plan gate plus the single record gate in a non-git fixture
+// project (the record gate sees "Decision list unavailable: not in a git
+// work tree" and approves cleanly without a list, S1/T2). Returns the
+// paused-or-finished state after the final resume.
 async function approvePlanGates(engine, runId, extraInputs = {}) {
   let state = await engine.resume(runId, { verdict_intent: "approve" }, STEP_REGISTRY);
   let guard = 0;
-  while (state.status === RunStatus.PAUSED && guard < 4) {
+  while (state.status === RunStatus.PAUSED && guard < 3) {
     guard++;
     const id = state.currentStepId;
-    if (id !== "gate-intent" && id !== "gate-product-decisions" && id !== "gate-architecture-decisions") break;
+    if (id !== "gate-intent" && id !== "gate-intent-decisions") break;
     state = await engine.resume(runId, { verdict_intent: "approve" }, STEP_REGISTRY);
   }
   return state;
@@ -112,23 +112,24 @@ test("factory 2.1.0: valid, headless-valid, calls only existing skills, gates ne
       assert.ok(EXISTING_COMMANDS.has(s.command), `step ${s.id} calls ${s.command}, which adlc-team-skills does not ship`);
     }
     // A plan-gate reject ends FAILED (exit 10), never ABORTED (exit 1,
-    // retried by the lane). The two record gates are scope-pinned context
-    // gates (ADR-522): they share verdict_intent with gate-intent so one
-    // human plan approval covers all three, and they skip (not abort) like
-    // the other plan gates — a rejected record never reaches execute via
+    // retried by the lane). The record gate is a scope-pinned context gate
+    // (ADR-522; PR #111 review F1: one gate over both globs, so the product
+    // approval cannot move `since` past records the architecture gate never
+    // shows). It shares verdict_intent with gate-intent so one human plan
+    // approval covers both plan gates, and it skips (never aborts) like the
+    // other plan gates — a rejected record never reaches execute via
     // stop-if-plan-rejected.
     const gates = def.steps.filter((x) => x.type === "gate");
     assert.deepEqual(gates.map((g) => [g.id, g.on_reject, g.verdict_input]), [
       ["gate-intent", "skip", "verdict_intent"],
-      ["gate-product-decisions", "skip", "verdict_intent"],
-      ["gate-architecture-decisions", "skip", "verdict_intent"],
+      ["gate-intent-decisions", "skip", "verdict_intent"],
       ["gate-completion", "skip", "verdict_completion"],
     ]);
-    // Only the record gates declare `context`, on purpose: a context gate
+    // Only the record gate declares `context`, on purpose: a context gate
     // binds the approval to the local HEAD, and the plan/completion gates
     // must survive a park-restore into a fresh clone ("head moved").
     for (const g of gates) {
-      if (g.id === "gate-product-decisions" || g.id === "gate-architecture-decisions") {
+      if (g.id === "gate-intent-decisions") {
         assert.ok("context" in g, `${g.id} declares context`);
       } else {
         assert.equal("context" in g, false, `${g.id} declares no context`);
