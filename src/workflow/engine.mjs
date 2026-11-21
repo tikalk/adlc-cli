@@ -468,6 +468,11 @@ export class RunState {
     // Persisted only when set, so runs without context gates are unchanged.
     this.runStartSha = null;
     this.lastApprovedSha = null;
+    // True when the run failed because an agent step exited non-zero within
+    // the fast-failure threshold of spawn (ADR-542; persisted as
+    // `fast_failure` only when set). The CLI exits with the retryable code
+    // for such a run; the status stays "failed".
+    this.fastFailure = false;
     // Async mutex serializing save()/appendLog file writes — the JS analogue
     // of upstream's _lock/_log_lock pair (single-threaded JS needs it only
     // across await points during concurrent fan-out).
@@ -517,6 +522,7 @@ export class RunState {
       };
       if (this.runStartSha !== null) stateData.run_start_sha = this.runStartSha;
       if (this.lastApprovedSha !== null) stateData.last_approved_sha = this.lastApprovedSha;
+      if (this.fastFailure === true) stateData.fast_failure = true;
       atomicWriteJson(join(this.runsDir, "state.json"), stateData);
       atomicWriteJson(join(this.runsDir, "inputs.json"), { inputs: this.inputs });
     });
@@ -618,6 +624,8 @@ export class RunState {
     // Optional (absent in state files written before context gates existed).
     state.runStartSha = typeof stateData.run_start_sha === "string" ? stateData.run_start_sha : null;
     state.lastApprovedSha = typeof stateData.last_approved_sha === "string" ? stateData.last_approved_sha : null;
+    // Absent in state files written before ADR-542 existed.
+    state.fastFailure = stateData.fast_failure === true;
 
     const inputsPath = join(runsDir, "inputs.json");
     if (existsSync(inputsPath)) {
@@ -817,7 +825,12 @@ export class WorkflowEngine {
     } else if (state.status === RunStatus.COMPLETED) {
       this.emit("run_completed", { run_id: state.runId });
     } else if (state.status === RunStatus.FAILED || state.status === RunStatus.ABORTED) {
-      this.emit("run_failed", { run_id: state.runId, error: state.error, status: state.status });
+      this.emit("run_failed", {
+        run_id: state.runId,
+        error: state.error,
+        status: state.status,
+        ...(state.fastFailure === true ? { fast_failure: true } : {}),
+      });
     }
     try {
       // Trace: close the bundle (retention) before the ref is pushed, so a
@@ -893,6 +906,7 @@ export class WorkflowEngine {
     }
 
     state.error = null;
+    state.fastFailure = false;
     state.status = RunStatus.RUNNING;
     await state.save();
     // Trace: resume keeps the original manifest identity and appends a marker.
@@ -1105,6 +1119,10 @@ export class WorkflowEngine {
 
         state.status = RunStatus.FAILED;
         state.error = result.error;
+        // ADR-542: a fast agent failure marks the whole run retryable; the
+        // flag persists so the command boundary can classify after the
+        // engine process context is gone.
+        if (result.output?.fast_failure === true) state.fastFailure = true;
         await state.appendLog({ event: "step_failed", step_id: stepId, error: result.error });
         await state.save();
         if (this.onStepComplete !== null) {
