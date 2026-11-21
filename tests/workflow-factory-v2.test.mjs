@@ -1,4 +1,4 @@
-// Bundled `factory` 2.0.0 (SF-LANE-05): it calls only skills that exist in
+// Bundled `factory` 2.1.0 (SF-LANE-05 + ADR-522 record gates): it calls only skills that exist in
 // adlc-team-skills and fails closed. A run with no factory skills, no issue,
 // or no merge request ends FAILED (CLI exit 10, never retried by the Argo
 // lane) instead of "completed" with nothing done; a human reject ends FAILED,
@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { WorkflowEngine, RunStatus, validateWorkflow, headlessGateErrors } from "../src/workflow/engine.mjs";
 import { STEP_REGISTRY } from "../src/workflow/registry.mjs";
 import { classifyWorkflowStatus } from "../src/exit-codes.mjs";
@@ -22,7 +23,8 @@ const POSIX = process.platform !== "win32";
 // factory-product / factory-architect were removed on 2026-10-25.
 const EXISTING_COMMANDS = new Set(["factory-intent", "factory-mission"]);
 const STEP_IDS = [
-  "preflight", "intent", "plan-link", "gate-intent", "stop-if-plan-rejected",
+  "preflight", "intent", "plan-link", "gate-intent", "gate-intent-decisions",
+  "stop-if-plan-rejected", "run-branch-execute",
   "execute", "proof-of-work", "gate-completion", "stop-if-result-rejected",
 ];
 const MR = "https://gitlab.example.com/g/p/-/merge_requests/7";
@@ -30,6 +32,23 @@ const MR = "https://gitlab.example.com/g/p/-/merge_requests/7";
 function project() {
   const dir = mkdtempSync(join(tmpdir(), "wf-factory-v2-"));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+
+// Approve the plan gate plus the single record gate in a non-git fixture
+// project (the record gate sees "Decision list unavailable: not in a git
+// work tree" and approves cleanly without a list, S1/T2). Returns the
+// paused-or-finished state after the final resume.
+async function approvePlanGates(engine, runId, extraInputs = {}) {
+  let state = await engine.resume(runId, { verdict_intent: "approve" }, STEP_REGISTRY);
+  let guard = 0;
+  while (state.status === RunStatus.PAUSED && guard < 3) {
+    guard++;
+    const id = state.currentStepId;
+    if (id !== "gate-intent" && id !== "gate-intent-decisions") break;
+    state = await engine.resume(runId, { verdict_intent: "approve" }, STEP_REGISTRY);
+  }
+  return state;
 }
 
 function installSkills(dir) {
@@ -81,31 +100,44 @@ function withoutIssueEnv(fn) {
   };
 }
 
-test("factory 2.0.0: valid, headless-valid, calls only existing skills, gates never abort", () => {
+test("factory 2.1.0: valid, headless-valid, calls only existing skills, gates never abort", () => {
   const { dir, cleanup } = project();
   try {
     const def = new WorkflowEngine(dir).loadWorkflow("factory");
     assert.equal(def.id, "factory");
-    assert.equal(def.version, "2.0.0");
+    assert.equal(def.version, "2.1.0");
     assert.deepEqual(validateWorkflow(def, STEP_REGISTRY), []);
     assert.deepEqual(headlessGateErrors(def), []);
     assert.deepEqual(def.steps.map((s) => s.id), STEP_IDS);
     for (const s of def.steps.filter((x) => x.type === "command")) {
       assert.ok(EXISTING_COMMANDS.has(s.command), `step ${s.id} calls ${s.command}, which adlc-team-skills does not ship`);
     }
-    // A reject must end FAILED (exit 10), never ABORTED (exit 1, retried by
-    // the lane); each gate has its own verdict input.
+    // A plan-gate reject ends FAILED (exit 10), never ABORTED (exit 1,
+    // retried by the lane). The record gate is a scope-pinned context gate
+    // (ADR-522; PR #111 review F1: one gate over both globs, so the product
+    // approval cannot move `since` past records the architecture gate never
+    // shows). It shares verdict_intent with gate-intent so one human plan
+    // approval covers both plan gates, and it skips (never aborts) like the
+    // other plan gates — a rejected record never reaches execute via
+    // stop-if-plan-rejected.
     const gates = def.steps.filter((x) => x.type === "gate");
     assert.deepEqual(gates.map((g) => [g.id, g.on_reject, g.verdict_input]), [
       ["gate-intent", "skip", "verdict_intent"],
+      ["gate-intent-decisions", "skip", "verdict_intent"],
       ["gate-completion", "skip", "verdict_completion"],
     ]);
-    // No `context` on the gates, on purpose: a context gate binds the approval
-    // to the local HEAD, and a parked run restored into a fresh clone would
-    // have its approval refused ("head moved").
-    for (const g of gates) assert.equal("context" in g, false, `${g.id} declares no context`);
-    // Every agent step names its time limit, and each is one hour (also the
-    // engine default): no bundled step runs longer than that.
+    // Only the record gate declares `context`, on purpose: a context gate
+    // binds the approval to the local HEAD, and the plan/completion gates
+    // must survive a park-restore into a fresh clone ("head moved").
+    for (const g of gates) {
+      if (g.id === "gate-intent-decisions") {
+        assert.ok("context" in g, `${g.id} declares context`);
+      } else {
+        assert.equal("context" in g, false, `${g.id} declares no context`);
+      }
+    }
+    // Every agent step sets its time limit on purpose (the engine default,
+    // 3600 s, killed a real mission at exactly one hour).
     assert.deepEqual(
       def.steps.filter((x) => x.type === "command").map((s) => [s.id, s.timeout]),
       [["intent", 3600], ["execute", 3600]],
@@ -115,7 +147,7 @@ test("factory 2.0.0: valid, headless-valid, calls only existing skills, gates ne
   }
 });
 
-test("factory 2.0.0: a workspace without the factory skills fails at preflight, before any agent step", { skip: !POSIX }, async () => {
+test("factory 2.1.0: a workspace without the factory skills fails at preflight, before any agent step", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     const { engine, def } = stubbedWorkflow(dir);
@@ -130,7 +162,7 @@ test("factory 2.0.0: a workspace without the factory skills fails at preflight, 
   }
 });
 
-test("factory 2.0.0: skills without the factory-runbook helpers fail at preflight", { skip: !POSIX }, async () => {
+test("factory 2.1.0: skills without the factory-runbook helpers fail at preflight", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -144,7 +176,7 @@ test("factory 2.0.0: skills without the factory-runbook helpers fail at prefligh
   }
 });
 
-test("factory 2.0.0: a run without an issue fails at preflight", { skip: !POSIX }, withoutIssueEnv(async () => {
+test("factory 2.1.0: a run without an issue fails at preflight", { skip: !POSIX }, withoutIssueEnv(async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -158,12 +190,13 @@ test("factory 2.0.0: a run without an issue fails at preflight", { skip: !POSIX 
   }
 }));
 
-test("factory 2.0.0: an approved plan whose execute reports no mr_url fails at proof-of-work", { skip: !POSIX }, async () => {
+test("factory 2.1.0: an approved plan whose execute reports no mr_url fails at proof-of-work", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
     const { engine, def } = stubbedWorkflow(dir);
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0001", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0001", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0001");
     assert.equal(state.status, RunStatus.FAILED);
     assert.equal(classifyWorkflowStatus(state.status).exitCode, 10);
     assert.equal(state.stepResults.execute?.status, "completed");
@@ -175,14 +208,15 @@ test("factory 2.0.0: an approved plan whose execute reports no mr_url fails at p
   }
 });
 
-test("factory 2.0.0: an mr_url that is not a URL (e.g. 'none') fails at proof-of-work", { skip: !POSIX }, async () => {
+test("factory 2.1.0: an mr_url that is not a URL (e.g. 'none') fails at proof-of-work", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
     const { engine, def } = stubbedWorkflow(dir, {
       "factory-mission": executeWrites({ mr_url: "none", conclusion: "could not open the MR" }),
     });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0002", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0002", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0002");
     assert.equal(state.status, RunStatus.FAILED);
     assert.equal(state.stepResults["proof-of-work"]?.status, "failed");
   } finally {
@@ -190,7 +224,7 @@ test("factory 2.0.0: an mr_url that is not a URL (e.g. 'none') fails at proof-of
   }
 });
 
-test("factory 2.0.0: an mr_url carrying $(…) or backticks is refused and never run", { skip: !POSIX }, async () => {
+test("factory 2.1.0: an mr_url carrying $(…) or backticks is refused and never run", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -201,7 +235,8 @@ test("factory 2.0.0: an mr_url carrying $(…) or backticks is refused and never
         conclusion: "ok",
       }),
     });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0003", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0003", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0003");
     assert.equal(existsSync(marker), false, "nothing from the step output was executed");
     assert.equal(state.stepResults["proof-of-work"]?.status, "failed");
     assert.equal(state.status, RunStatus.FAILED);
@@ -210,7 +245,7 @@ test("factory 2.0.0: an mr_url carrying $(…) or backticks is refused and never
   }
 });
 
-test("factory 2.0.0: a conclusion full of shell syntax is never run; a real MR URL passes", { skip: !POSIX }, async () => {
+test("factory 2.1.0: a conclusion full of shell syntax is never run; a real MR URL passes", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -221,7 +256,8 @@ test("factory 2.0.0: a conclusion full of shell syntax is never run; a real MR U
         conclusion: `opened "the MR" — it's done; ran \`touch ${marker}\` and $(touch ${marker})`,
       }),
     });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0005", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0005", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0005");
     assert.equal(state.stepResults["proof-of-work"]?.status, "completed");
     assert.equal(existsSync(marker), false, "nothing from the step output was executed");
     assert.equal(state.status, RunStatus.PAUSED);
@@ -238,12 +274,13 @@ for (const [what, value] of [
   ["a disguised Slack link", "https://evil.example/x/-/merge_requests/1|https://gitlab.example.com/g/p/-/merge_requests/7"],
   ["a URL with user info", "https://user:pw@gitlab.example.com/g/p/-/merge_requests/7"],
 ]) {
-  test(`factory 2.0.0: proof-of-work refuses ${what} as the merge request`, { skip: !POSIX }, async () => {
+  test(`factory 2.1.0: proof-of-work refuses ${what} as the merge request`, { skip: !POSIX }, async () => {
     const { dir, cleanup } = project();
     try {
       installSkills(dir);
       const { engine, def } = stubbedWorkflow(dir, { "factory-mission": executeWrites({ mr_url: value }) });
-      const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0006", STEP_REGISTRY);
+      let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0006", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0006");
       assert.equal(state.stepResults["proof-of-work"]?.status, "failed");
       assert.equal(state.status, RunStatus.FAILED);
       assert.equal(state.stepResults["gate-completion"], undefined, "the value never reaches the approval message");
@@ -253,13 +290,14 @@ for (const [what, value] of [
   });
 }
 
-test("factory 2.0.0: proof-of-work accepts a GitHub pull request URL", { skip: !POSIX }, async () => {
+test("factory 2.1.0: proof-of-work accepts a GitHub pull request URL", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
     const pr = "https://github.com/acme/widgets/pull/42";
     const { engine, def } = stubbedWorkflow(dir, { "factory-mission": executeWrites({ mr_url: pr }) });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0007", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0007", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0007");
     assert.equal(state.stepResults["proof-of-work"]?.status, "completed");
     assert.ok(state.stepResults["gate-completion"].output.message.includes(pr));
   } finally {
@@ -269,7 +307,7 @@ test("factory 2.0.0: proof-of-work accepts a GitHub pull request URL", { skip: !
 
 // The plan gate's message is posted to Slack as written, so the plan link is
 // checked first (plan-link) and anything that is not an MR URL is left out.
-test("factory 2.0.0: the plan gate shows only a checked merge request link", { skip: !POSIX }, async () => {
+test("factory 2.1.0: the plan gate shows only a checked merge request link", { skip: !POSIX }, async () => {
   for (const [id, reported, shown] of [
     ["fv2g0001", "https://gitlab.example.com/g/p/-/merge_requests/6", "https://gitlab.example.com/g/p/-/merge_requests/6"],
     ["fv2g0002", "https://gitlab.example.com/g/p/-/merge_requests/6 <!channel> <https://evil.example|click>", "no merge request was opened"],
@@ -294,7 +332,7 @@ test("factory 2.0.0: the plan gate shows only a checked merge request link", { s
 
 // Second review (2026-11-21): a single quote closed the shell string the first
 // version put mr_url in, so the rest of the value ran as a command.
-test("factory 2.0.0: a single quote in mr_url cannot break out into the shell", { skip: !POSIX }, async () => {
+test("factory 2.1.0: a single quote in mr_url cannot break out into the shell", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -305,7 +343,8 @@ test("factory 2.0.0: a single quote in mr_url cannot break out into the shell", 
         conclusion: "ok",
       }),
     });
-    const state = await engine.execute(def, { issue_ref: "g/p#1", verdict_intent: "approve" }, "fv2c0004", STEP_REGISTRY);
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, "fv2c0004", STEP_REGISTRY);
+    state = await approvePlanGates(engine, "fv2c0004");
     assert.equal(existsSync(marker), false, "nothing from the step output was executed");
     assert.equal(state.stepResults["proof-of-work"]?.status, "failed", "a value that is not exactly a merge request URL is refused");
     assert.equal(state.status, RunStatus.FAILED);
@@ -315,7 +354,7 @@ test("factory 2.0.0: a single quote in mr_url cannot break out into the shell", 
   }
 });
 
-test("factory 2.0.0: approve, MR, approve completes; the completion gate links the MR", { skip: !POSIX }, async () => {
+test("factory 2.1.0: approve, MR, approve completes; the completion gate links the MR", { skip: !POSIX }, async () => {
   const { dir, cleanup } = project();
   try {
     installSkills(dir);
@@ -329,7 +368,7 @@ test("factory 2.0.0: approve, MR, approve completes; the completion gate links t
     assert.match(s1.stepResults["gate-intent"].output.message, /Plan drafted for g\/p#1: https:\/\/gitlab\.example\.com\/g\/p\/-\/merge_requests\/6/);
     assert.equal(s1.stepResults.execute, undefined, "nothing is implemented before the plan is approved");
 
-    const s2 = await engine.resume("fv2d0001", { verdict_intent: "approve" }, STEP_REGISTRY);
+    const s2 = await approvePlanGates(engine, "fv2d0001");
     assert.equal(s2.status, RunStatus.PAUSED);
     assert.equal(s2.currentStepId, "gate-completion", "approving the plan does not pre-answer the completion gate");
     assert.equal(s2.stepResults["proof-of-work"]?.status, "completed");
@@ -343,18 +382,88 @@ test("factory 2.0.0: approve, MR, approve completes; the completion gate links t
   }
 });
 
+test("factory 2.1.0: a resume into a fresh clone checks out the mission run branch before execute (F3)", { skip: !POSIX }, async () => {
+  // F3: a parked run restored into a fresh clone starts on the base branch;
+  // resume continues after gate-intent-decisions and never re-runs earlier
+  // steps. Without a run-branch step between the gates and execute,
+  // factory-mission would run detached on the base branch. The fix mirrors
+  // supervised's run-branch-execute: check out the mission run branch again
+  // (--kind code) right after the plan gates, before execute.
+  const remote = mkdtempSync(join(tmpdir(), "f3-remote-"));
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main", remote]);
+  const seed = mkdtempSync(join(tmpdir(), "f3-seed-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: seed });
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: seed });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: seed });
+  execFileSync("git", ["push", "-q", "origin", "main"], { cwd: seed });
+  const m0 = execFileSync("git", ["rev-parse", "HEAD"], { cwd: seed, encoding: "utf-8" }).trim();
+  execFileSync("git", ["update-ref", "refs/remotes/origin/main", m0], { cwd: seed });
+  installSkills(seed);
+  const seen = join(mkdtempSync(join(tmpdir(), "f3-seen-")), "seen.json");
+  const e1 = new WorkflowEngine(seed);
+  // Stub every command step: intent writes nothing (no drafts -> the record
+  // gate auto-passes), execute records the branch it ran on.
+  const { def } = stubbedWorkflow(seed, {
+    "factory-intent": "echo intent",
+    "factory-mission": `echo execute on $(git rev-parse --abbrev-ref HEAD) > ${seen}\n${executeWrites({ mr_url: "https://gl.test/g/p/-/merge_requests/7" })}`,
+  });
+  const s1 = await e1.execute(def, { issue_ref: "g/p#12" }, "f3r0001", STEP_REGISTRY);
+  assert.equal(s1.status, RunStatus.PAUSED, "run pauses at the plan gate");
+  const branchBefore = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: seed, encoding: "utf-8" }).trim();
+  // Restore into a fresh single-branch clone on main (detached/base), like a
+  // parked run coming back on a new pod; then resume through the gates.
+  const fresh = join(mkdtempSync(join(tmpdir(), "f3-fresh-")), "repo");
+  execFileSync("git", ["clone", "-q", "--branch", "main", "--single-branch", remote, fresh]);
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: fresh, encoding: "utf-8" }).trim(), "main");
+  installSkills(fresh);
+  const { restoreRun } = await import("../src/workflow/refs.mjs");
+  restoreRun(fresh, "f3r0001", { issueRef: "g/p#12" });
+  // Pre-create the mission branch at m0 (the intent phase did on the pod).
+  execFileSync("git", ["branch", "-q", "factory/mission/p-12", m0], { cwd: fresh });
+  // The placeholder run-branch.sh from installSkills exits 0 without
+  // switching; give the fresh clone a helper that really checks out the
+  // mission branch, like the real run-branch.sh --kind code does.
+  const helperDir = join(fresh, ".agents", "skills", "factory-runbook", "scripts", "bash");
+  writeFileSync(join(helperDir, "run-branch.sh"), "#!/usr/bin/env bash\ngit switch -q factory/mission/p-12\n");
+  const e2 = new WorkflowEngine(fresh);
+  // Two plan gates share verdict_intent: approve gate-intent, then approve
+  // gate-intent-decisions. After the second approval the run must execute
+  // run-branch-execute before execute.
+  let resumed = await e2.resume("f3r0001", { verdict_intent: "approve" }, STEP_REGISTRY);
+  assert.equal(resumed.status, RunStatus.PAUSED, "second plan gate still asks");
+  assert.equal(resumed.currentStepId, "gate-intent-decisions");
+  resumed = await e2.resume("f3r0001", { verdict_intent: "approve" }, STEP_REGISTRY);
+  const ids = Object.keys(resumed.stepResults);
+  assert.ok(ids.indexOf("run-branch-execute") !== -1, "the workflow declares run-branch-execute");
+  assert.ok(ids.indexOf("run-branch-execute") < ids.indexOf("execute"), "run-branch-execute runs before execute");
+  assert.equal(resumed.stepResults["run-branch-execute"]?.status, "completed");
+  assert.equal(
+    execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: fresh, encoding: "utf-8" }).trim(),
+    "factory/mission/p-12",
+    `execute must run on the mission branch, not detached (was: ${branchBefore} before restore)`,
+  );
+  rmSync(remote, { recursive: true, force: true });
+  rmSync(seed, { recursive: true, force: true });
+  rmSync(join(fresh, ".."), { recursive: true, force: true });
+});
+
 for (const [gate, inputs, stop] of [
   ["gate-intent", { verdict_intent: "reject" }, "stop-if-plan-rejected"],
-  ["gate-completion", { verdict_intent: "approve", verdict_completion: "reject" }, "stop-if-result-rejected"],
+  ["gate-completion", { verdict_completion: "reject" }, "stop-if-result-rejected"],
 ]) {
-  test(`factory 2.0.0: a reject at ${gate} ends FAILED (exit 10), never ABORTED (exit 1, retried)`, { skip: !POSIX }, async () => {
+  test(`factory 2.1.0: a reject at ${gate} ends FAILED (exit 10), never ABORTED (exit 1, retried)`, { skip: !POSIX }, async () => {
     const { dir, cleanup } = project();
     try {
       installSkills(dir);
       const { engine, def } = stubbedWorkflow(dir, {
         "factory-mission": executeWrites({ mr_url: MR, conclusion: "ok" }),
       });
-      const state = await engine.execute(def, { issue_ref: "g/p#1", ...inputs }, `fv2e${gate === "gate-intent" ? "0001" : "0002"}`, STEP_REGISTRY);
+      const runId = `fv2e${gate === "gate-intent" ? "0001" : "0002"}`;
+      let state = await engine.execute(def, { issue_ref: "g/p#1" }, runId, STEP_REGISTRY);
+      if (gate === "gate-completion") {
+        state = await approvePlanGates(engine, runId);
+        state = await engine.resume(runId, inputs, STEP_REGISTRY);
+      } else state = await engine.resume(runId, inputs, STEP_REGISTRY);
       assert.equal(state.status, RunStatus.FAILED);
       assert.equal(classifyWorkflowStatus(state.status).exitCode, 10);
       assert.equal(state.stepResults[gate].output.choice, "reject");
@@ -365,3 +474,33 @@ for (const [gate, inputs, stop] of [
     }
   });
 }
+
+test("factory 2.1.0: a reject at gate-intent-decisions stops the run before execute (F4)", { skip: !POSIX }, async () => {
+  // F4 (PR #111 review F1): the two plan gates share verdict_intent across
+  // two resumes, so a split verdict is possible — approve the plan, reject
+  // the records. stop-if-plan-rejected must catch the record-gate reject;
+  // execute must never run on rejected records.
+  const { dir, cleanup } = project();
+  try {
+    installSkills(dir);
+    const { engine, def } = stubbedWorkflow(dir, {
+      "factory-mission": executeWrites({ mr_url: MR, conclusion: "ok" }),
+    });
+    const runId = "fv2f4001";
+    let state = await engine.execute(def, { issue_ref: "g/p#1" }, runId, STEP_REGISTRY);
+    assert.equal(state.status, RunStatus.PAUSED);
+    // First resume: approve at gate-intent -> pauses at the record gate.
+    state = await engine.resume(runId, { verdict_intent: "approve" }, STEP_REGISTRY);
+    assert.equal(state.status, RunStatus.PAUSED);
+    assert.equal(state.currentStepId, "gate-intent-decisions");
+    // Second resume: reject the records -> the stop step fails the run.
+    state = await engine.resume(runId, { verdict_intent: "reject" }, STEP_REGISTRY);
+    assert.equal(state.status, RunStatus.FAILED);
+    assert.equal(classifyWorkflowStatus(state.status).exitCode, 10);
+    assert.equal(state.stepResults["gate-intent-decisions"].output.choice, "reject");
+    assert.equal(state.stepResults["stop-if-plan-rejected"]?.status, "failed");
+    assert.equal(state.stepResults.execute, undefined, "a rejected record is never implemented");
+  } finally {
+    cleanup();
+  }
+});
