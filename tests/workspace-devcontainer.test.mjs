@@ -102,7 +102,10 @@ test("setup fails fast with a loud error when the devcontainer CLI is absent", a
   }
 });
 
-test("setup fails fast naming the cause when the daemon is unreachable", async () => {
+// The stub `devcontainer` is a POSIX shell script, so these two run on POSIX only.
+const POSIX_ONLY = { skip: process.platform === "win32" && "POSIX shell stub" };
+
+test("setup fails fast naming the cause when the daemon is unreachable", POSIX_ONLY, async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
   const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
   try {
@@ -131,7 +134,7 @@ test("setup fails fast naming the cause when the daemon is unreachable", async (
   }
 });
 
-test("setup propagates the inner devcontainer exit code unchanged", async () => {
+test("setup propagates the inner devcontainer exit code unchanged", POSIX_ONLY, async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
   const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
   try {
