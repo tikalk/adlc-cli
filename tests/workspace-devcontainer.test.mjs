@@ -113,7 +113,7 @@ test("setup fails fast naming the cause when the daemon is unreachable", async (
     // DOCKER_HOST at a dead path and shrink the wait so the test stays fast.
     writeFileSync(
       join(stubDir, "devcontainer"),
-      '#!/bin/sh\necho "STUB-SHOULD-NOT-RUN" >&2\nexit 99\n',
+      '#!/bin/sh\n[ "$1" = "--version" ] && exit 0\necho "STUB-SHOULD-NOT-RUN" >&2\nexit 99\n',
       { mode: 0o755 },
     );
     const r = await run(["workspace", "setup"], dir, {
@@ -142,7 +142,7 @@ test("setup propagates the inner devcontainer exit code unchanged", async () => 
     // pass (ADLC_DEVCONTAINER_SKIP_READINESS) so the stub actually runs.
     writeFileSync(
       join(stubDir, "devcontainer"),
-      '#!/bin/sh\necho "INNER-MARKER-STDOUT"\necho "INNER-MARKER-STDERR" >&2\nexit 42\n',
+      '#!/bin/sh\n[ "$1" = "--version" ] && exit 0\necho "INNER-MARKER-STDOUT"\necho "INNER-MARKER-STDERR" >&2\nexit 42\n',
       { mode: 0o755 },
     );
     const r = await run(["workspace", "setup"], dir, {

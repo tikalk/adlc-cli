@@ -19,7 +19,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const CANONICAL = ".devcontainer/devcontainer.json";
 const LEGACY = ".devcontainer.json";
@@ -46,19 +46,20 @@ export function resolveDevcontainerConfig(projectRoot) {
   return null;
 }
 
-// Locate the `devcontainer` CLI on PATH. Returns the resolved path or null.
-// spawnSync `error` covers ENOENT, but an explicit pre-check lets setup fail
-// loudly with a cause that names the missing prerequisite.
-export function findDevcontainerCli() {
-  const pathEnv = process.env.PATH || "";
-  const dirs = pathEnv.split(delimiter).filter(Boolean);
-  // PATHEXT is set only on Windows (devcontainer.cmd/.exe); unset elsewhere.
-  const exts = ["", ...(process.env.PATHEXT || "").split(";").filter(Boolean)];
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      const candidate = join(dir, `devcontainer${ext}`);
-      if (existsSync(candidate)) return candidate;
-    }
+// Verify the `devcontainer` CLI runs. `devcontainer --version` lets the OS
+// resolve the binary (no PATH/PATHEXT logic here) and fails setup early,
+// before the slow daemon wait, with a cause naming the missing prerequisite.
+// Returns null when usable, or an error string.
+export function checkDevcontainerCli() {
+  const result = spawnSync("devcontainer", ["--version"], { encoding: "utf-8" });
+  if (result.error?.code === "ENOENT") {
+    return (
+      "devcontainer CLI not found on PATH — install devcontainers/cli " +
+      "(pod image provides it per #102; local dev installs it)"
+    );
+  }
+  if (result.error || result.status !== 0) {
+    return `devcontainer --version failed: ${describeSpawnFailure(result)}`;
   }
   return null;
 }
@@ -121,15 +122,9 @@ export function runDevcontainerTrigger({ projectRoot, dryRun, out = null }) {
     return { ran: true, code: 0 };
   }
 
-  const cli = findDevcontainerCli();
-  if (!cli) {
-    return {
-      ran: true,
-      code: 1,
-      error:
-        "devcontainer CLI not found on PATH — install devcontainers/cli " +
-        "(pod image provides it per #102; local dev installs it)",
-    };
+  const cliError = checkDevcontainerCli();
+  if (cliError) {
+    return { ran: true, code: 1, error: cliError };
   }
 
   const daemonError = waitForDaemon();
@@ -137,7 +132,7 @@ export function runDevcontainerTrigger({ projectRoot, dryRun, out = null }) {
     return { ran: true, code: 1, error: daemonError };
   }
 
-  const child = spawnSync(cli, argv, {
+  const child = spawnSync("devcontainer", argv, {
     stdio: "inherit",
     cwd: resolve(projectRoot),
     env: process.env,
