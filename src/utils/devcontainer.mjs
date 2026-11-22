@@ -52,11 +52,8 @@ export function resolveDevcontainerConfig(projectRoot) {
 export function findDevcontainerCli() {
   const pathEnv = process.env.PATH || "";
   const dirs = pathEnv.split(delimiter).filter(Boolean);
-  // Windows resolves executables through PATHEXT (devcontainer.cmd/.exe).
-  const exts =
-    process.platform === "win32"
-      ? ["", ...(process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";").filter(Boolean)]
-      : [""];
+  // PATHEXT is set only on Windows (devcontainer.cmd/.exe); unset elsewhere.
+  const exts = ["", ...(process.env.PATHEXT || "").split(";").filter(Boolean)];
   for (const dir of dirs) {
     for (const ext of exts) {
       const candidate = join(dir, `devcontainer${ext}`);
