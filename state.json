@@ -1,0 +1,31 @@
+{
+  "run_id": "aa793cc2",
+  "workflow_id": "factory",
+  "installed_workflow_id": null,
+  "installed_registry_root": null,
+  "status": "failed",
+  "current_step_index": 0,
+  "current_step_id": "preflight",
+  "step_results": {
+    "preflight": {
+      "type": "shell",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": {},
+      "output": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input\n"
+      },
+      "status": "failed",
+      "error": "Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input"
+    }
+  },
+  "workflow_dir": "/home/lior/dev/adlc-workspace/adlc-cli/.adlc/worktrees/factory-review-cfcfd47/workflows/factory",
+  "created_at": "2026-11-22T12:58:22.454Z",
+  "updated_at": "2026-11-22T12:58:25.176Z",
+  "error": "Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input",
+  "run_start_sha": "cfcfd4736cd875bf4cb00a888b6dd6c426a351f3"
+}
