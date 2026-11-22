@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.15.0] - 2026-11-22
+
+### Added
+
+- **Gates show an agent-composed payload** (#113, adlc-workspace#164) — a step before a gate may write `runs/<run_id>/gate-payloads/<gate_id>.json` (`summary`, optional `title`, up to 8 `sections`, up to 8 http(s) `artifacts`). Agent steps get `ADLC_GATE_PAYLOADS` and `ADLC_UPCOMING_GATES` (every gate still ahead, wherever it is nested). The gate renders the payload under the first line of its message, capped at 30 lines / 2000 characters; a gate with `payload: true` notes `(no agent payload)` when the file is missing, and an invalid file always shows why. The approval is bound to the shown payload (`gate_payload_sha`): a changed payload re-pauses the gate, after the moved-HEAD halt; a reject is always honoured.
+- **`context.on_empty: pass` on decision gates** (#106) — a gate that lists decision records completes by itself when the list was built and is empty. Opt-in; unset keeps today's behaviour.
+- **Pin the skills installer** (#105) — `ADLC_SKILLS_PACKAGE=skills@<x.y.z>` pins the `npx skills` installer; anything but an exact version is ignored with a warning.
+- **Bundled `factory` spec gate and intent phase** (#111) — the bundled workflow (2.1.0) gains the blocking spec gate with an early draft MR, and an intent phase through `factory-intent` with a single `gate-intent-decisions` record gate.
+
+### Changed
+
+- **`hooks` is the canonical name** (#112) — `.hooks.json` (top-level `hooks`) replaces `.events.json`; `events` keeps working as a deprecated alias until v3, and `.hooks.json` wins when both exist. Install and teardown remove the legacy opencode plugin.
+- **Bundled `factory` workflow calls only existing skills and fails closed** (#104) — preflight → plan → plan gate → implement → proof of work → completion gate; a missing helper script fails the step instead of skipping it. The execute step's limit is one hour (#107).
+
+### Fixed
+
+- **Fast agent failures are retryable** (#110) — an agent that exits non-zero within 60 s of spawn is an infrastructure failure: the run exits 1 (the lane retries) instead of 10. Step time-out kills stay logical failures.
+- **A step time-out says so** (#107) — the error names the step and the limit in seconds.
+- **A run that throws exits 10** (#108) — an engine error while running a step saves the run failed and exits 10, so the lane no longer retries an error that cannot succeed.
+- **Run state is pushed at once after an answered gate** (#109) — the step after a gate is saved to the remote without the 60-second throttle, so a lost pod no longer restores to an already-answered gate.
+- **Claude Code hooks are emitted as matcher groups** (#94) — generated hooks were flat entries that Claude Code silently skipped.
+- **Workspace setup re-runs are idempotent** (#91) — setup's own change to `.adlc/init-options.json` no longer blocks `--link` on a second run.
+
 ## [2.14.0] - 2026-11-19
 
 ### Added
