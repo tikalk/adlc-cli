@@ -15,6 +15,7 @@ import {
   buildGateManifest,
   currentHeadSha,
   renderGateMessage,
+  runTargetBranch,
   safeMrLink,
   uncommittedRecords,
   validateGateContext,
@@ -171,6 +172,7 @@ export class GateStep extends StepBase {
           projectRoot: context.projectRoot,
           lastApprovedSha: context.gateRun?.lastApprovedSha ?? null,
           runStartSha: context.gateRun?.runStartSha ?? null,
+          targetBranch: runTargetBranch({ inputs: context.inputs }),
         });
         unavailableReason = built.unavailable;
         unavailableKind = built.unavailable ? built.unavailable_kind : null;

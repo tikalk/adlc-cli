@@ -39,6 +39,19 @@ const MAX_FIELD_CHARS = 300;
 // cannot pull already-merged drafts back into the list (converge-1 I2).
 const TARGET_BRANCHES = ["origin/HEAD", "origin/main", "origin/master", "main", "master"];
 
+// A run dispatched onto a target branch (`target-branch::<name>` label,
+// adlc-team-skills#188 / adlc-argo-wf!104) works on a clone of that branch —
+// often `git clone --branch <name> --single-branch`, which has no
+// origin/main — and its decisions are compared against that branch, not the
+// repository default. Sources, first valid one wins: the env var below, the
+// run's `target_branch` input, then `target_branch` in the WORKFLOW_INPUTS
+// JSON the dispatcher exports (undeclared inputs never reach `inputs`).
+export const TARGET_BRANCH_ENV = "ADLC_TARGET_BRANCH";
+const MAX_BRANCH_CHARS = 255;
+const MAX_WORKFLOW_INPUTS_CHARS = 1024 * 1024;
+// One fetch of a missing origin/<target> may take longer than a local probe.
+const FETCH_TIMEOUT_MS = 60_000;
+
 // Unavailable-list kinds that are structural facts of the project, so an
 // approval shown one of them may stand "without list" when the fresh build
 // reports the identical kind (T2). Every other failure is kind `error`.
@@ -127,6 +140,46 @@ export function safeMrLink(value) {
   return value;
 }
 
+// The branch name `value` names, or null. Accepts only names git itself
+// would accept as a branch (git-check-ref-format rules) drawn from
+// [A-Za-z0-9._/+-]: no leading '-' (never an option), no '..', '//', '@{',
+// no component starting with '.' or ending in '.lock', no trailing '/' or
+// '.'. A leading `refs/heads/` is dropped. The name is only ever passed to
+// git as one argument of an argument array and shown in the gate message,
+// so the allow-list also keeps it free of Slack/terminal syntax.
+export function safeBranchName(value) {
+  if (typeof value !== "string") return null;
+  let name = value.trim();
+  if (name.startsWith("refs/heads/")) name = name.slice("refs/heads/".length);
+  if (name === "" || name.length > MAX_BRANCH_CHARS || name === "HEAD") return null;
+  if (!/^[A-Za-z0-9._/+-]+$/.test(name)) return null;
+  if (name.startsWith("-") || name.startsWith("/") || name.endsWith("/") || name.endsWith(".")) return null;
+  if (name.includes("..") || name.includes("//")) return null;
+  if (name.split("/").some((part) => part.startsWith(".") || part.endsWith(".lock"))) return null;
+  return name;
+}
+
+// The run's target branch (see TARGET_BRANCH_ENV), or null when none is set
+// or none of the set values is a valid branch name. Never throws.
+export function runTargetBranch({ env = process.env, inputs = null } = {}) {
+  const candidates = [env?.[TARGET_BRANCH_ENV], inputs?.target_branch, workflowInputsTarget(env?.WORKFLOW_INPUTS)];
+  for (const candidate of candidates) {
+    const name = safeBranchName(candidate);
+    if (name !== null) return name;
+  }
+  return null;
+}
+
+function workflowInputsTarget(raw) {
+  if (typeof raw !== "string" || raw === "" || raw.length > MAX_WORKFLOW_INPUTS_CHARS) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed.target_branch : null;
+  } catch {
+    return null;
+  }
+}
+
 // HEAD of the project root as a full sha, or null (no repo, no commits, git
 // failure). Never throws.
 export function currentHeadSha(projectRoot) {
@@ -170,6 +223,8 @@ export function hasContextGate(steps) {
 
 // Build the manifest for a context gate. Never throws.
 // `lastApprovedSha` / `runStartSha` are the run-level shas (state.json).
+// `targetBranch` is the run's target branch (runTargetBranch), or null: when
+// set, origin/<targetBranch> is the base, ahead of the default candidates.
 // Returns { decisions, since_sha, since_basis, head_sha, no_changes,
 // truncated_count, total, unavailable, unavailable_kind, more_link, kind,
 // compare_url }. `compare_url` is the web compare page since_sha...head_sha
@@ -178,7 +233,7 @@ export function hasContextGate(steps) {
 // `unavailable_kind` classifies it (T2): PERMANENT_UNAVAILABLE kinds are
 // structural facts of the project, `error` is anything transient (git
 // missing/spawn error, timeout, maxBuffer, a failing rev-parse/diff/show).
-export function buildGateManifest({ records, projectRoot, lastApprovedSha = null, runStartSha = null }) {
+export function buildGateManifest({ records, projectRoot, lastApprovedSha = null, runStartSha = null, targetBranch = null }) {
   const kind = recordKind(records);
   const empty = (reason, unavailableKind = "error") => ({
     decisions: [],
@@ -213,9 +268,11 @@ export function buildGateManifest({ records, projectRoot, lastApprovedSha = null
     if (headProbe.status === 1 || headProbe.stdout === "") return empty("no git history in the project root", "not-a-git-repo");
     const head = headProbe.stdout;
 
-    const resolved = resolveSince(cwd, git, head, lastApprovedSha, runStartSha);
+    const target = safeBranchName(targetBranch);
+    const resolved = resolveSince(cwd, git, head, lastApprovedSha, runStartSha, target);
     if (resolved.unavailable_kind === "no-target-branch") {
-      return empty(`no target branch (${TARGET_BRANCHES.join(", ")}) to compare against`, "no-target-branch");
+      const tried = target === null ? TARGET_BRANCHES : [`origin/${target}`, ...TARGET_BRANCHES];
+      return empty(`no target branch (${tried.join(", ")}) to compare against`, "no-target-branch");
     }
     if (resolved.unavailable_kind) return empty("no base commit to compare against");
     const { sha: since, basis } = resolved;
@@ -313,14 +370,14 @@ function manifestLines(manifest) {
 // signal) — distinct from git running and exiting with a non-zero `status`.
 // With `stderr: true`, stderr is captured too, in the C locale so git's
 // messages can be matched.
-function gitExec(cwd, args, { stderr = false } = {}) {
+function gitExec(cwd, args, { stderr = false, timeout = GIT_TIMEOUT_MS, env = null } = {}) {
   const r = spawnSync("git", args, {
     cwd,
     encoding: "utf-8",
-    timeout: GIT_TIMEOUT_MS,
+    timeout,
     maxBuffer: 16 * 1024 * 1024,
     stdio: ["ignore", "pipe", stderr ? "pipe" : "ignore"],
-    ...(stderr ? { env: { ...process.env, LC_ALL: "C" } } : {}),
+    ...(stderr || env ? { env: { ...process.env, ...(env ?? {}), ...(stderr ? { LC_ALL: "C" } : {}) } } : {}),
   });
   const failed = Boolean(r.error) || r.signal !== null || typeof r.status !== "number";
   const text = (v) => (typeof v === "string" ? v.trim() : "");
@@ -336,13 +393,15 @@ function runGit(cwd, args) {
 // `since` (with its basis for the message):
 //   1. the run's last_approved_sha — the most recent approval in time (N3) —
 //      while it is still an ancestor of HEAD (N4);
-//   2. else the most recent merge-base of HEAD with an existing target-branch
+//   2. else, when the run has a target branch, the merge-base of HEAD with
+//      origin/<target> — fetched once when missing locally;
+//   3. else the most recent merge-base of HEAD with an existing target-branch
 //      candidate (I2);
-//   3. if that merge-base is HEAD itself (running on the target branch), the
+//   4. if that merge-base is HEAD itself (running on the target branch), the
 //      HEAD recorded at run start (I3).
 // Returns { sha, basis } or { unavailable_kind }: `no-target-branch` only when
 // git answered that none of the candidates exists, else `error` (T2).
-function resolveSince(cwd, git, head, lastApprovedSha, runStartSha) {
+function resolveSince(cwd, git, head, lastApprovedSha, runStartSha, target = null) {
   const verify = (sha) =>
     typeof sha === "string" && /^[0-9a-f]{7,64}$/i.test(sha)
       ? git(["rev-parse", "--verify", "--quiet", `${sha}^{commit}`])
@@ -356,22 +415,51 @@ function resolveSince(cwd, git, head, lastApprovedSha, runStartSha) {
     return { sha: approved, basis: "approval" };
   }
 
-  const bases = [];
-  for (const branch of TARGET_BRANCHES) {
-    const probe = gitExec(cwd, ["rev-parse", "--verify", "--quiet", `${branch}^{commit}`]);
-    if (probe.failed || (probe.status !== 0 && probe.status !== 1)) return { unavailable_kind: "error" };
-    if (probe.status === 1) continue; // the candidate does not exist
-    const base = git(["merge-base", "HEAD", branch]);
-    if (!base) return { unavailable_kind: "error" };
-    if (!bases.includes(base)) bases.push(base);
+  const probe = (ref) => {
+    const r = gitExec(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    return r.failed || (r.status !== 0 && r.status !== 1) ? "error" : r.status === 0 ? "found" : "missing";
+  };
+
+  let base = null;
+  if (target !== null) {
+    // The full ref, so a local branch or tag named `origin/<target>` cannot
+    // stand in for the remote-tracking branch.
+    const ref = `refs/remotes/origin/${target}`;
+    let found = probe(ref);
+    if (found === "missing") {
+      // One attempt; a failure (no origin, no such branch, offline, timeout)
+      // leaves the ref missing and the default candidates decide.
+      gitExec(cwd, ["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${target}:${ref}`], {
+        timeout: FETCH_TIMEOUT_MS,
+        env: { GIT_TERMINAL_PROMPT: "0" },
+      });
+      found = probe(ref);
+    }
+    if (found === "error") return { unavailable_kind: "error" };
+    if (found === "found") {
+      base = git(["merge-base", "HEAD", ref]);
+      if (!base) return { unavailable_kind: "error" };
+    }
   }
-  if (bases.length === 0) return { unavailable_kind: "no-target-branch" };
-  let base = bases[0];
-  if (bases.length > 1) {
-    // Bases not reachable from any other; on a linear history exactly one
-    // (the newest). Divergent bases fall back to candidate order.
-    const independent = (git(["merge-base", "--independent", ...bases]) ?? "").split(/\s+/).filter(Boolean);
-    base = bases.find((b) => independent.includes(b)) ?? base;
+
+  if (base === null) {
+    const bases = [];
+    for (const branch of TARGET_BRANCHES) {
+      const found = probe(branch);
+      if (found === "error") return { unavailable_kind: "error" };
+      if (found === "missing") continue; // the candidate does not exist
+      const candidate = git(["merge-base", "HEAD", branch]);
+      if (!candidate) return { unavailable_kind: "error" };
+      if (!bases.includes(candidate)) bases.push(candidate);
+    }
+    if (bases.length === 0) return { unavailable_kind: "no-target-branch" };
+    base = bases[0];
+    if (bases.length > 1) {
+      // Bases not reachable from any other; on a linear history exactly one
+      // (the newest). Divergent bases fall back to candidate order.
+      const independent = (git(["merge-base", "--independent", ...bases]) ?? "").split(/\s+/).filter(Boolean);
+      base = bases.find((b) => independent.includes(b)) ?? base;
+    }
   }
 
   if (base === head) {
