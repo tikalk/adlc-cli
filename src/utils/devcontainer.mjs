@@ -11,9 +11,10 @@
 // runner-provided daemon. All feature semantics (fetch, order, install)
 // belong to devcontainers/cli, never to adlc-cli. Node stdlib only.
 //
-// Readiness + wrapper semantics per amendment-3: wait for daemon readiness;
-// stream inner stdout/stderr to outer stdout; propagate the exact exit code;
-// forward SIGTERM/SIGINT to the inner run; artifacts land on /workspace. Any
+// Wrapper semantics: stream inner stdout/stderr to outer stdout; propagate the
+// exact exit code; forward SIGTERM/SIGINT to the inner run; artifacts land on
+// /workspace. Daemon readiness is the runner pod's job (native-sidecar
+// startupProbe gates main, ADR-386-amendment-4) — not waited on here. Any
 // failure is a non-zero setup failure — fail-fast, before skills run.
 
 import { spawn, spawnSync } from "node:child_process";
@@ -23,17 +24,6 @@ import { join, resolve } from "node:path";
 
 const CANONICAL = ".devcontainer/devcontainer.json";
 const LEGACY = ".devcontainer.json";
-
-// Tunables: ADLC_DAEMON_WAIT_ATTEMPTS / ADLC_DAEMON_WAIT_MS set the daemon
-// readiness window (default 30 attempts x 1000ms).
-function waitConfig() {
-  const attempts = Number(process.env.ADLC_DAEMON_WAIT_ATTEMPTS ?? 30);
-  const waitMs = Number(process.env.ADLC_DAEMON_WAIT_MS ?? 1000);
-  return {
-    attempts: Number.isFinite(attempts) && attempts > 0 ? Math.floor(attempts) : 30,
-    waitMs: Number.isFinite(waitMs) && waitMs >= 0 ? Math.floor(waitMs) : 1000,
-  };
-}
 
 // Resolve the devcontainer declaration for a project root. Returns the
 // relative config path (canonical preferred over legacy) or null when no
@@ -45,8 +35,8 @@ export function resolveDevcontainerConfig(projectRoot) {
 }
 
 // Verify the `devcontainer` CLI runs. `devcontainer --version` lets the OS
-// resolve the binary (no PATH/PATHEXT logic here) and fails setup early,
-// before the slow daemon wait, with a cause naming the missing prerequisite.
+// resolve the binary (no PATH/PATHEXT logic here) and fails setup early with
+// a cause naming the missing prerequisite.
 // Returns null when usable, or an error string.
 export function checkDevcontainerCli() {
   const result = spawnSync("devcontainer", ["--version"], { encoding: "utf-8" });
@@ -60,28 +50,6 @@ export function checkDevcontainerCli() {
     return `devcontainer --version failed: ${describeSpawnFailure(result)}`;
   }
   return null;
-}
-
-// Wait for the Docker daemon to answer. The runner provides the daemon
-// (sidecar per #102 / amendment-3); DOCKER_HOST selects the socket.
-// Returns null when ready, or an error string naming the cause.
-export function waitForDaemon() {
-  const { attempts, waitMs } = waitConfig();
-  const dockerHost = process.env.DOCKER_HOST || "unix:///var/run/docker.sock";
-  let lastError = "";
-  for (let i = 0; i < attempts; i++) {
-    const result = spawnSync("docker", ["info"], {
-      encoding: "utf-8",
-      timeout: 10000,
-    });
-    if (result.status === 0) return null;
-    lastError = describeSpawnFailure(result);
-    if (i < attempts - 1 && waitMs > 0) {
-      // Blocking sleep without CPU spin; stdlib-only, sync setup path.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
-    }
-  }
-  return `docker daemon not ready (DOCKER_HOST=${dockerHost}): ${lastError}`;
 }
 
 function describeSpawnFailure(result) {
@@ -112,11 +80,6 @@ export async function runDevcontainerTrigger({ projectRoot, dryRun, out = null }
   const cliError = checkDevcontainerCli();
   if (cliError) {
     return { ran: true, code: 1, error: cliError };
-  }
-
-  const daemonError = waitForDaemon();
-  if (daemonError) {
-    return { ran: true, code: 1, error: daemonError };
   }
 
   // Async spawn so a SIGTERM/SIGINT delivered to this process alone (e.g. the

@@ -23,11 +23,6 @@ function makeWorkspace(dir, content) {
   writeFileSync(join(dir, ".adlc", "workspace.yml"), content, "utf-8");
 }
 
-// Stub `docker` that reports a ready daemon (`docker info` exits 0).
-function writeDockerStub(dir) {
-  writeFileSync(join(dir, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-}
-
 const BASE_YML =`schema_version: "1.0"
 name: "Devcontainer Trigger"
 agent: opencode
@@ -104,35 +99,6 @@ test("setup fails fast with a loud error when the devcontainer CLI is absent", a
 // The stub `devcontainer` is a POSIX shell script, so these two run on POSIX only.
 const POSIX_ONLY = { skip: process.platform === "win32" && "POSIX shell stub" };
 
-test("setup fails fast naming the cause when the daemon is unreachable", POSIX_ONLY, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
-  const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
-  try {
-    makeWorkspace(dir, BASE_YML);
-    mkdirSync(join(dir, ".devcontainer"), { recursive: true });
-    writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
-    // Stub devcontainer exists but the daemon socket is unreachable: point
-    // DOCKER_HOST at a dead path and shrink the wait so the test stays fast.
-    writeFileSync(
-      join(stubDir, "devcontainer"),
-      '#!/bin/sh\n[ "$1" = "--version" ] && exit 0\necho "STUB-SHOULD-NOT-RUN" >&2\nexit 99\n',
-      { mode: 0o755 },
-    );
-    const r = await run(["workspace", "setup"], dir, {
-      PATH: `${stubDir}:/usr/bin:/bin`,
-      DOCKER_HOST: "unix:///nonexistent-adlc-test-docker.sock",
-      ADLC_DAEMON_WAIT_ATTEMPTS: "2",
-      ADLC_DAEMON_WAIT_MS: "10",
-    });
-    assert.notEqual(r.code, 0, "unreachable daemon fails the setup");
-    assert.match(combined(r), /daemon|DOCKER_HOST|socket|docker/i, "failure names the daemon cause");
-    assert.doesNotMatch(combined(r), /STUB-SHOULD-NOT-RUN/, "readiness gate held — stub never spawned");
-  } finally {
-    rmSync(stubDir, { recursive: true, force: true });
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("setup propagates the inner devcontainer exit code unchanged", POSIX_ONLY, async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
   const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
@@ -140,9 +106,7 @@ test("setup propagates the inner devcontainer exit code unchanged", POSIX_ONLY, 
     makeWorkspace(dir, BASE_YML);
     mkdirSync(join(dir, ".devcontainer"), { recursive: true });
     writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
-    // Stub devcontainer that exits 42 with marker output; a stub docker lets
-    // the readiness gate pass so the stub actually runs.
-    writeDockerStub(stubDir);
+    // Stub devcontainer that exits 42 with marker output.
     writeFileSync(
       join(stubDir, "devcontainer"),
       '#!/bin/sh\n[ "$1" = "--version" ] && exit 0\necho "INNER-MARKER-STDOUT"\necho "INNER-MARKER-STDERR" >&2\nexit 42\n',
@@ -170,7 +134,6 @@ test("setup forwards SIGTERM to the inner devcontainer run", POSIX_ONLY, async (
     const ready = join(dir, "ready");
     const marker = join(dir, "term-received");
     // Stub signals readiness, then waits; on SIGTERM it records the signal and exits 7.
-    writeDockerStub(stubDir);
     writeFileSync(
       join(stubDir, "devcontainer"),
       `#!/bin/sh\n[ "$1" = "--version" ] && exit 0\ntrap 'echo TERM > "${marker}"; exit 7' TERM\n: > "${ready}"\nwhile :; do sleep 0.1; done\n`,
