@@ -17,7 +17,7 @@
 // startupProbe gates main, ADR-386-amendment-4) — not waited on here. Any
 // failure is a non-zero setup failure — fail-fast, before skills run.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
@@ -34,52 +34,18 @@ export function resolveDevcontainerConfig(projectRoot) {
   return null;
 }
 
-// Verify the `devcontainer` CLI runs. `devcontainer --version` lets the OS
-// resolve the binary (no PATH/PATHEXT logic here) and fails setup early with
-// a cause naming the missing prerequisite.
-// Returns null when usable, or an error string.
-export function checkDevcontainerCli() {
-  const result = spawnSync("devcontainer", ["--version"], { encoding: "utf-8" });
-  if (result.error?.code === "ENOENT") {
-    return (
-      "devcontainer CLI not found on PATH — install devcontainers/cli " +
-      "(pod image provides it per #102; local dev installs it)"
-    );
-  }
-  if (result.error || result.status !== 0) {
-    return `devcontainer --version failed: ${describeSpawnFailure(result)}`;
-  }
-  return null;
-}
-
-function describeSpawnFailure(result) {
-  if (result?.error) {
-    const err = result.error;
-    return err.code ? `${err.code}: ${err.message}` : String(err.message || err);
-  }
-  const stderr = String(result?.stderr || "").trim();
-  if (stderr) return stderr.split("\n")[0];
-  return `exit ${result?.status ?? "unknown"}`;
-}
-
 // Run the thin trigger. Prints the plan line under --dry-run and spawns
 // nothing. Returns { ran, code } — ran=false when no declaration exists.
-export async function runDevcontainerTrigger({ projectRoot, dryRun, out = null }) {
+export async function runDevcontainerTrigger({ projectRoot, dryRun, out }) {
   const config = resolveDevcontainerConfig(projectRoot);
   if (!config) return { ran: false, code: 0 };
 
   const argv = ["up", "--workspace-folder", projectRoot];
   const planLine = `devcontainer ${argv.join(" ")} (${config})`;
-  const print = out || ((line) => process.stdout.write(`${line}\n`));
 
   if (dryRun) {
-    print(`  → ${planLine} [dry-run]`);
+    out(`  → ${planLine} [dry-run]`);
     return { ran: true, code: 0 };
-  }
-
-  const cliError = checkDevcontainerCli();
-  if (cliError) {
-    return { ran: true, code: 1, error: cliError };
   }
 
   // Async spawn so a SIGTERM/SIGINT delivered to this process alone (e.g. the
@@ -102,11 +68,12 @@ export async function runDevcontainerTrigger({ projectRoot, dryRun, out = null }
   process.off("SIGINT", forwardInt);
 
   if (spawnError) {
-    return {
-      ran: true,
-      code: 1,
-      error: `devcontainer up could not start: ${describeSpawnFailure({ error: spawnError })}`,
-    };
+    const error =
+      spawnError.code === "ENOENT"
+        ? "devcontainer CLI not found on PATH — install devcontainers/cli " +
+          "(pod image provides it per #102; local dev installs it)"
+        : `devcontainer up could not start: ${spawnError.message}`;
+    return { ran: true, code: 1, error };
   }
   // A signal-killed child has no exit code; report the shell convention 128+n.
   const code = typeof exitCode === "number" ? exitCode : 128 + (osConstants.signals[signal] ?? 0);

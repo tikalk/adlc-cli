@@ -109,7 +109,7 @@ test("setup propagates the inner devcontainer exit code unchanged", POSIX_ONLY, 
     // Stub devcontainer that exits 42 with marker output.
     writeFileSync(
       join(stubDir, "devcontainer"),
-      '#!/bin/sh\n[ "$1" = "--version" ] && exit 0\necho "INNER-MARKER-STDOUT"\necho "INNER-MARKER-STDERR" >&2\nexit 42\n',
+      '#!/bin/sh\necho "INNER-MARKER-STDOUT"\necho "INNER-MARKER-STDERR" >&2\nexit 42\n',
       { mode: 0o755 },
     );
     const r = await run(["workspace", "setup"], dir, {
@@ -136,7 +136,7 @@ test("setup forwards SIGTERM to the inner devcontainer run", POSIX_ONLY, async (
     // Stub signals readiness, then waits; on SIGTERM it records the signal and exits 7.
     writeFileSync(
       join(stubDir, "devcontainer"),
-      `#!/bin/sh\n[ "$1" = "--version" ] && exit 0\ntrap 'echo TERM > "${marker}"; exit 7' TERM\n: > "${ready}"\nwhile :; do sleep 0.1; done\n`,
+      `#!/bin/sh\ntrap 'echo TERM > "${marker}"; exit 7' TERM\n: > "${ready}"\nwhile :; do sleep 0.1; done\n`,
       { mode: 0o755 },
     );
     const proc = spawn(process.execPath, [BIN, "workspace", "setup"], {
