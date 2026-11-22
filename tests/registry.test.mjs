@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { AGENTS, getAgent, getEventAgents, getCommandAgents, resolveNpxAgent } from "../src/registry.mjs";
+import { AGENTS, getAgent, getHookAgents, getCommandAgents, resolveNpxAgent } from "../src/registry.mjs";
 
 describe("Registry integrity", () => {
   it("every agent has required fields", () => {
@@ -27,7 +27,7 @@ describe("Registry integrity", () => {
   });
 
   it("9 agents support events", () => {
-    const eventAgents = getEventAgents();
+    const eventAgents = getHookAgents();
     assert.equal(eventAgents.length, 9);
     const keys = eventAgents.map((a) => a.key).sort();
     assert.deepEqual(keys, [
@@ -75,13 +75,13 @@ describe("Registry integrity", () => {
 
 describe("session_compact event support", () => {
   it("session_compact is a recognized canonical event", async () => {
-    const { CANONICAL_EVENTS } = await import("../src/registry.mjs");
-    assert.ok(CANONICAL_EVENTS.includes("session_compact"));
+    const { CANONICAL_HOOKS } = await import("../src/registry.mjs");
+    assert.ok(CANONICAL_HOOKS.includes("session_compact"));
   });
 
   it("every event agent declares an explicit session_compact mapping (even null)", async () => {
-    const { EVENT_AGENTS } = await import("../src/registry.mjs");
-    for (const [key, entry] of Object.entries(EVENT_AGENTS)) {
+    const { HOOK_AGENTS } = await import("../src/registry.mjs");
+    for (const [key, entry] of Object.entries(HOOK_AGENTS)) {
       assert.ok(
         Object.prototype.hasOwnProperty.call(entry.canonical_to_native, "session_compact"),
         `${key}: canonical_to_native lacks an explicit session_compact mapping`,
@@ -90,9 +90,9 @@ describe("session_compact event support", () => {
   });
 
   it("no canonical event is silently unknown to any event agent", async () => {
-    const { EVENT_AGENTS, CANONICAL_EVENTS } = await import("../src/registry.mjs");
-    for (const [key, entry] of Object.entries(EVENT_AGENTS)) {
-      for (const ev of CANONICAL_EVENTS) {
+    const { HOOK_AGENTS, CANONICAL_HOOKS } = await import("../src/registry.mjs");
+    for (const [key, entry] of Object.entries(HOOK_AGENTS)) {
+      for (const ev of CANONICAL_HOOKS) {
         assert.ok(
           Object.prototype.hasOwnProperty.call(entry.canonical_to_native, ev),
           `${key}: canonical event ${ev} has no per-agent decision`,

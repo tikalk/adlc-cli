@@ -13,7 +13,7 @@
 // The units under test (cmdAdd, cmdUpdate) run for real against temp-dir
 // fixtures through the CLI binary, the way team-mcp-chain.test.mjs runs its
 // units: one external boundary is stubbed — the `npx skills` installer (a PATH
-// stub; cmdAdd's install loop must not hit the network), and `--no-events`
+// stub; cmdAdd's install loop must not hit the network), and `--no-hooks`
 // keeps the events-manifest fetch offline. Frontmatter parsing yields strings
 // (`reference-only: true` and `reference-only: "true"` both arrive as `"true"`),
 // so both spellings are pinned.
@@ -122,7 +122,7 @@ function project() {
 it("skills add: generates commands for plain skills, skips reference-only ones", async () => {
   const p = project();
   try {
-    const r = await run(["skills", "add", "fixture-src", "-a", "opencode", "--no-events"], {
+    const r = await run(["skills", "add", "fixture-src", "-a", "opencode", "--no-hooks"], {
       cwd: p.dir,
       env: p.env,
     });

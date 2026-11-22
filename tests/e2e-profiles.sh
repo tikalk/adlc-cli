@@ -6,7 +6,7 @@
 #   2. `adlc-cli workspace setup <fixture>` — workspace file passed explicitly.
 #   3. Asserts: public HTTPS clone of team-ai-directives, workspace.dirs
 #      scaffolding, agent-led .adlc/ init, skills from the remote GitHub
-#      source (+ events wiring), team setup command, brownfield discovery +
+#      source (+ hooks wiring), team setup command, brownfield discovery +
 #      submodule registration of BOTH the pre-cloned repo and the fixture's
 #      clone. First-boot goal executes (workspace was assembled this run).
 #   4. Re-run: everything skips (idempotent), and the goal is skipped too —
@@ -80,10 +80,10 @@ pass "agent-led workspace init created .adlc/ tree"
 # Skills from remote GitHub source
 assert_exists "$WS/.agents/skills/team-boot/SKILL.md"
 assert_exists "$WS/.opencode/commands/team-boot.md"
-assert_exists "$WS/.events.json"
+assert_exists "$WS/.hooks.json"
 assert_exists "$WS/.agents/dispatcher.mjs"
-assert_exists "$WS/.opencode/plugins/adlc-skills-events.ts"
-pass "skills installed from remote GitHub source + events wired"
+assert_exists "$WS/.opencode/plugins/adlc-skills-hooks.ts"
+pass "skills installed from remote GitHub source + hooks wired"
 
 # team setup command ran — deterministic wiring included.
 # The workspace file passes --directives <cloned path>, so wiring needs no

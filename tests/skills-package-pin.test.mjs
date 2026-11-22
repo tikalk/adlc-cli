@@ -48,7 +48,7 @@ function project() {
 }
 
 async function skillsAdd(p, extraEnv) {
-  return exec(process.execPath, [BIN, "skills", "add", "fixture-src", "-a", "opencode", "--no-events"], {
+  return exec(process.execPath, [BIN, "skills", "add", "fixture-src", "-a", "opencode", "--no-hooks"], {
     cwd: p.dir,
     env: p.env(extraEnv),
   });

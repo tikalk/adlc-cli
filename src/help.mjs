@@ -60,10 +60,10 @@ export function printCliHelp() {
   out(
     section("Commands", [
       ...pairs([
-        ["skills add <source> -a <agent>", "Install skills + generate commands + wire events (never changes the workspace primary agent)"],
+        ["skills add <source> -a <agent>", "Install skills + generate commands + wire hooks (never changes the workspace primary agent)"],
         ["skills update [-a <agent>]", "Regenerate commands from installed skills"],
-        ["skills remove [-a <agent>]", "Remove generated commands + event configs"],
-        ["skills status [-a <agent>]", "Report installed commands/events state"],
+        ["skills remove [-a <agent>]", "Remove generated commands + hook configs"],
+        ["skills status [-a <agent>]", "Report installed commands/hooks state"],
         ["team setup <source> -a <agent>", "Install skills + configure team-ai-directives"],
         ["team update", "Git pull + skills update + confidence update"],
         ["team repair", "Validate and repair team-ai-directives state"],
@@ -150,9 +150,9 @@ export function printSkillsHelp() {
   out(
     section("Commands", [
       ...pairs([
-        ["add <source>", "Install skills via npx skills + generate commands + events"],
+        ["add <source>", "Install skills via npx skills + generate commands + hooks"],
         ["update [--pull]", "Re-generate commands from currently-installed skills"],
-        ["remove", "Remove generated commands + event configs"],
+        ["remove", "Remove generated commands + hook configs"],
         ["(no subcommand)", "Show what's installed per agent"],
         ["help", "Show this help"],
       ]),
@@ -161,7 +161,7 @@ export function printSkillsHelp() {
   out(
     section("Flags", [
       tint(
-        "-a, -g, --no-events, --prefix, --mode, --skill, --copy, --pull, -y",
+        "-a, -g, --no-hooks, --prefix, --mode, --skill, --copy, --pull, -y",
         "bold",
       ),
     ]),
@@ -338,9 +338,9 @@ export function printHelp() {
   out(
     section("Commands", [
       ...pairs([
-        ["add <source>", "Install skills via npx skills + generate commands + events"],
+        ["add <source>", "Install skills via npx skills + generate commands + hooks"],
         ["upgrade [--pull]", "Re-generate commands from currently-installed skills"],
-        ["remove", "Remove generated commands + event configs"],
+        ["remove", "Remove generated commands + hook configs"],
         ["status", "Show what's installed per agent"],
         ["agents", "List supported agents"],
       ]),
@@ -351,7 +351,7 @@ export function printHelp() {
       ...pairs([
         ["-a <agent>", "Target agent (repeatable). Run 'agents' to list."],
         ["-g, --global", "Install to user directory instead of project"],
-        ["--no-events", "Skip event config generation"],
+        ["--no-hooks", "Skip hook config generation (--no-events is a deprecated alias)"],
         ["--prefix <str>", "Namespace command filenames"],
         ["--mode <mode>", "inline (default) | wrapper"],
         ["--skill <name>", "Install/generate for one skill only (use '*' for all)"],

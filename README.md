@@ -18,7 +18,7 @@ Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-te
 ## Quickstart
 
 ```bash
-# Install skills + generate commands + wire events
+# Install skills + generate commands + wire hooks
 npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
 
 # Install skills AND configure team-ai-directives
@@ -31,8 +31,8 @@ npx adlc-cli team setup tikalk/adlc-team-skills -a opencode
 # session, validates structure then writes .adlc/init-options.json
 npx adlc-cli team setup tikalk/adlc-team-skills -a opencode --skip-skills --directives ./team-ai-directives
 
-# Works with any skills repo — events auto-skip if no .events.json
-npx adlc-cli skills add mattpocock/skills -a claude-code --no-events
+# Works with any skills repo — hooks auto-skip if no .hooks.json
+npx adlc-cli skills add mattpocock/skills -a claude-code --no-hooks
 npx adlc-cli skills add addyosmani/agent-skills -a opencode -a cursor
 
 # Run a coding agent headlessly with a task
@@ -51,10 +51,10 @@ npx adlc-cli version
 
 | Command | Description |
 |---------|-------------|
-| `skills add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire events |
+| `skills add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire hooks |
 | `skills update [-a <agent>]` | Re-generate commands from installed skills; `--pull` re-installs from source |
-| `skills remove [-a <agent>]` | Remove generated commands + event configs; cleans dispatcher + `.events.json` |
-| `skills [-a <agent>]` | Show what's installed per agent + dispatcher + event status |
+| `skills remove [-a <agent>]` | Remove generated commands + hook configs; cleans dispatcher + `.hooks.json` |
+| `skills [-a <agent>]` | Show what's installed per agent + dispatcher + hook status |
 
 ### Team directives
 
@@ -133,7 +133,7 @@ The live SSH transport is the default: `--provider coder` provisions or reuses a
 | Command | Description |
 |----------|-------------|
 | `agent run "<task>" [flags]` | Run a coding agent headlessly with a task |
-| `agent list` | List supported agents, command formats, event support, and run profiles |
+| `agent list` | List supported agents, command formats, hook support, and run profiles |
 | `run "<task>" [flags]` | Top-level alias for `agent run` (runtime contract, ADR-368) |
 
 ### Workflows
@@ -428,9 +428,9 @@ adlc-cli skills add <source> -a <agent>
   │     .opencode/commands/<name>.md                   inline: embeds skill body
   │                                                    wrapper: references skill
   │
-  └─ 4. Wire events (if .events.json in source)     ← lifecycle hooks
+  └─ 4. Wire hooks (if .hooks.json in source)     ← lifecycle hooks
         .agents/dispatcher.mjs                        generic dispatcher (shipped)
-        .opencode/plugins/adlc-skills-events.ts       agent-native hook config
+        .opencode/plugins/adlc-skills-hooks.ts        agent-native hook config
 ```
 
 Step 1 runs `npx --yes <spec>`. By default the spec follows the running Node:
@@ -446,7 +446,7 @@ exact version (`skills@latest`, `skills@^1.7.0`, …) is ignored with a warning.
 |------|-------------|
 | `-a <agent>` | Target agent (repeatable). Run `agent list` to list. |
 | `-g, --global` | Install to user directory instead of project |
-| `--no-events` | Skip event config generation |
+| `--no-hooks` | Skip hook config generation (`--no-events` still works) |
 | `--prefix <str>` | Namespace command filenames (e.g., `adlc.team-setup.md`) |
 | `--mode <mode>` | `inline` (embeds full skill body) or `wrapper` (references skill by name) |
 | `--skill, -s <name>` | Install/generate for one skill only (use `'*'` for all). The selection is expanded through the source's `.skills-deps.json` closure: borrowers auto-pull their canonical homes (e.g. `--skill architect-implement` also installs `architect-clarify`) |
@@ -457,15 +457,15 @@ exact version (`skills@latest`, `skills@^1.7.0`, …) is ignored with a warning.
 ## Supported agents
 
 24 command agents across 3 command formats (plus a `generic` fallback), 9
-agents with event hooks, 4 run profiles.
+agents with hook support, 4 run profiles.
 
 > **Gemini key split (current behavior):** the agent registry key is
-> `gemini-cli` (skills/commands/events), but the run profile is keyed
+> `gemini-cli` (skills/commands/hooks), but the run profile is keyed
 > `gemini`. So: `skills add -a gemini-cli`, but `agent run -a gemini` — and
 > `agent list` shows gemini-cli without a run profile. Use the two keys as
 > shown.
 
-| Agent | Commands dir | Format | Events | Run |
+| Agent | Commands dir | Format | Hooks | Run |
 |-------|-------------|--------|--------|-----|
 | opencode (1.x + 2.x hybrid plugin) | `.opencode/commands/` | markdown | yes | yes |
 | claude-code | `.claude/commands/` | markdown | yes | yes |
@@ -528,20 +528,20 @@ User-invoked skills (`disable-model-invocation: true` in frontmatter) are meant 
 | `wrapper` | opencode | Ignores `disable-model-invocation` — skill stays available, model calls `skill({name})` |
 | `execution` | claude-code, cursor, copilot, codex | Respects `disable-model-invocation` — skill hidden, body must be inlined |
 
-## Events: lifecycle hooks
+## Hooks: lifecycle hooks
 
-For agents with native hook support (9 agents), the CLI wires event hooks that auto-trigger skills at lifecycle points.
+For agents with native hook support (9 agents), the CLI wires hooks that auto-trigger skills at lifecycle points.
 
-Events are **auto-enabled** when:
-1. The agent supports events
-2. The source repo declares a `.events.json` manifest
-3. `--no-events` is not set
+Hooks are **auto-enabled** when:
+1. The agent supports hooks
+2. The source repo declares a `.hooks.json` manifest (`.events.json` still reads as a deprecated alias until v3)
+3. `--no-hooks` is not set (`--no-events` still works)
 
-### `.events.json` manifest
+### `.hooks.json` manifest
 
 ```json
 {
-  "events": {
+  "hooks": {
     "session_start": [
       { "skill": "team-boot", "description": "Bootstrap session with team context", "timeout": 60 }
     ],
@@ -552,7 +552,7 @@ Events are **auto-enabled** when:
 }
 ```
 
-Repos without `.events.json` get commands only — events are skipped silently.
+Repos without `.hooks.json` get commands only — hooks are skipped silently.
 
 ### The dispatcher: two execution paths
 
@@ -565,9 +565,9 @@ A generic dispatcher (`.agents/dispatcher.mjs`) is shipped to the project. When 
 
 Both paths feed the **stdout → context injection** pipeline.
 
-### 8 canonical events
+### 8 canonical hooks
 
-| Event | Fires when | Body path? | Script path? |
+| Hook | Fires when | Body path? | Script path? |
 |-------|-----------|-----------|-------------|
 | `session_start` | Agent session begins | yes | yes |
 | `session_compact` | Harness compacts history | yes | yes |
@@ -601,7 +601,7 @@ Skill scripts see `ADLC_EVENT` in their environment and the event payload on std
 
 | Agent | Config file | Format | Timeout unit |
 |-------|------------|--------|-------------|
-| opencode (hybrid: V1 `server()` + V2 `setup()`, requires opencode 1.x >= 1.18.29 or any 2.x; project needs `@opencode/plugin` installed for the generated import) | `.opencode/plugins/adlc-skills-events.ts` | TS plugin | seconds |
+| opencode (hybrid: V1 `server()` + V2 `setup()`, requires opencode 1.x >= 1.18.29 or any 2.x; project needs `@opencode/plugin` installed for the generated import) | `.opencode/plugins/adlc-skills-hooks.ts` | TS plugin | seconds |
 | claude-code | `.claude/settings.json` (merged) | JSON nested | seconds |
 | cursor | `.cursor/hooks.json` (merged) | JSON nested | seconds |
 | github-copilot | `.github/hooks/adlc-skills.json` | JSON | seconds |
@@ -622,7 +622,7 @@ Skill scripts see `ADLC_EVENT` in their environment and the event payload on std
 
 ## Self-describing files
 
-Every generated file includes a `<!-- generated by adlc-cli -->` header. Event hook entries carry a `_adlc_skills_cli: true` marker (JSON) or `adlc_skills_marker = true` (TOML). This enables:
+Every generated file includes a `<!-- generated by adlc-cli -->` header. Hook entries carry a `_adlc_skills_cli: true` marker (JSON) or `adlc_skills_marker = true` (TOML). This enables:
 - `remove` to safely delete only our files
 - `upgrade` to overwrite our files while skipping user-modified ones
 
