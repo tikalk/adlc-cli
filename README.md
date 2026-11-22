@@ -202,6 +202,7 @@ adlc-cli workflow state pause <run_id> --step review      # gate → human
 | `ADLC_WORKFLOW_LEASE_TTL` | Lease TTL in seconds (default 900) |
 | `ADLC_WORKFLOW_PUSH_INTERVAL` | Minimum seconds between pushes of the run ref (`refs/factory-runs/<run_id>`) at step starts (default 60; `0` = every step start; an invalid or negative value means the default). Pauses, run ends and the step right after an answered gate are always pushed at once |
 | `ADLC_WORKSPACE_FILE` | Workspace file path override for `workspace setup` |
+| `ADLC_TARGET_BRANCH` | The branch the run targets. A `context` gate compares its decision list against `origin/<branch>` (fetched once if missing) before trying `origin/HEAD`, `origin/main`, `origin/master`, `main`, `master`. Falls back to the run's `target_branch` input, then `target_branch` in the `WORKFLOW_INPUTS` JSON. Must be a plain branch name (`A-Z a-z 0-9 . _ / + -`, git ref rules); anything else is ignored |
 
 SIGINT/SIGTERM trigger a clean pause (resumable) rather than a corrupt
 partial state.
