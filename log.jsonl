@@ -1,0 +1,4 @@
+{"event":"step_started","step_id":"preflight","type":"shell","timestamp":"2026-11-22T08:06:03.091Z"}
+{"event":"step_completed","step_id":"preflight","status":"failed","timestamp":"2026-11-22T08:06:03.099Z"}
+{"event":"step_failed","step_id":"preflight","error":"Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input","timestamp":"2026-11-22T08:06:03.100Z"}
+{"event":"workflow_finished","status":"failed","timestamp":"2026-11-22T08:06:03.101Z"}
