@@ -124,6 +124,31 @@ test("setup propagates the inner devcontainer exit code unchanged", POSIX_ONLY, 
   }
 });
 
+// npm installs the real devcontainer CLI on Windows as `devcontainer.cmd`; this
+// pins that a .cmd shim on PATH is spawnable (Windows only).
+const WIN32_ONLY = { skip: process.platform !== "win32" && "Windows .cmd shim" };
+
+test("setup spawns a Windows devcontainer.cmd shim and propagates its exit code", WIN32_ONLY, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
+  const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
+  try {
+    makeWorkspace(dir, BASE_YML);
+    mkdirSync(join(dir, ".devcontainer"), { recursive: true });
+    writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
+    writeFileSync(join(stubDir, "devcontainer.cmd"), "@echo off\r\necho INNER-MARKER-STDOUT\r\nexit /b 42\r\n");
+    // Windows env keys are case-insensitive: drop the original Path before prepending the stub dir.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== "path"));
+    env.PATH = `${stubDir};${process.env.PATH ?? process.env.Path}`;
+    const r = await exec(process.execPath, [BIN, "workspace", "setup"], { cwd: dir, env }).catch((e) => e);
+    assert.equal(r.code, 42, `inner exit code propagates unchanged\n${combined(r)}`);
+    assert.match(r.stdout, /INNER-MARKER-STDOUT/, "inner stdout streams to outer stdout");
+    assert.doesNotMatch(combined(r), /not found on PATH/, "a .cmd shim is found, not reported as missing");
+  } finally {
+    rmSync(stubDir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("setup forwards SIGTERM to the inner devcontainer run", POSIX_ONLY, async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
   const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
