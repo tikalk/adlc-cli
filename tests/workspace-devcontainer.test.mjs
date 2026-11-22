@@ -4,9 +4,9 @@
 // in adlc-cli — the trigger fires on declaration only, never on a provider flag.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -155,6 +155,39 @@ test("setup propagates the inner devcontainer exit code unchanged", POSIX_ONLY, 
     assert.equal(r.code, 42, "inner exit code propagates unchanged");
     assert.match(r.stdout, /INNER-MARKER-STDOUT/, "inner stdout streams to outer stdout");
     assert.match(combined(r), /INNER-MARKER-STDERR/, "inner stderr streams out");
+  } finally {
+    rmSync(stubDir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup forwards SIGTERM to the inner devcontainer run", POSIX_ONLY, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
+  const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
+  try {
+    makeWorkspace(dir, BASE_YML);
+    mkdirSync(join(dir, ".devcontainer"), { recursive: true });
+    writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
+    const ready = join(dir, "ready");
+    const marker = join(dir, "term-received");
+    // Stub signals readiness, then waits; on SIGTERM it records the signal and exits 7.
+    writeFileSync(
+      join(stubDir, "devcontainer"),
+      `#!/bin/sh\n[ "$1" = "--version" ] && exit 0\ntrap 'echo TERM > "${marker}"; exit 7' TERM\n: > "${ready}"\nwhile :; do sleep 0.1; done\n`,
+      { mode: 0o755 },
+    );
+    const proc = spawn(process.execPath, [BIN, "workspace", "setup"], {
+      cwd: dir,
+      env: { ...process.env, PATH: `${stubDir}:/usr/bin:/bin`, ADLC_DEVCONTAINER_SKIP_READINESS: "1" },
+      stdio: "ignore",
+    });
+    const closed = new Promise((resolve) => proc.on("close", (code) => resolve(code)));
+    for (let i = 0; i < 100 && !existsSync(ready); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(existsSync(ready), "stub started");
+    proc.kill("SIGTERM");
+    const code = await closed;
+    assert.equal(code, 7, "inner exit code propagates after SIGTERM");
+    assert.equal(readFileSync(marker, "utf-8").trim(), "TERM", "inner run received SIGTERM");
   } finally {
     rmSync(stubDir, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });

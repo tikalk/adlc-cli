@@ -13,12 +13,12 @@
 //
 // Readiness + wrapper semantics per amendment-3: wait for daemon readiness;
 // stream inner stdout/stderr to outer stdout; propagate the exact exit code;
-// artifacts land on /workspace. SIGTERM is NOT forwarded in flight (see
-// the limitation note at the spawn site). Any failure is a non-zero
-// setup failure — fail-fast, before skills run.
+// forward SIGTERM/SIGINT to the inner run; artifacts land on /workspace. Any
+// failure is a non-zero setup failure — fail-fast, before skills run.
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 
 const CANONICAL = ".devcontainer/devcontainer.json";
@@ -99,7 +99,7 @@ function describeSpawnFailure(result) {
 
 // Run the thin trigger. Prints the plan line under --dry-run and spawns
 // nothing. Returns { ran, code } — ran=false when no declaration exists.
-export function runDevcontainerTrigger({ projectRoot, dryRun, out = null }) {
+export async function runDevcontainerTrigger({ projectRoot, dryRun, out = null }) {
   const config = resolveDevcontainerConfig(projectRoot);
   if (!config) return { ran: false, code: 0 };
 
@@ -132,15 +132,6 @@ export function runDevcontainerTrigger({ projectRoot, dryRun, out = null }) {
     return { ran: true, code: 1, error: daemonError };
   }
 
-  const child = spawnSync("devcontainer", argv, {
-    stdio: "inherit",
-    cwd: resolve(projectRoot),
-    env: process.env,
-  });
-  // Limitation: spawnSync blocks the event loop, so a SIGTERM delivered to
-  // this process alone is not forwarded to the inner run. With stdio: inherit
-  // the child shares the terminal/process group, so a group-directed signal
-  // (Ctrl-C, `kill -- -PGID`, pod termination) still reaches it.
   if (spawnLog) {
     try {
       writeFileSync(spawnLog, `spawned: devcontainer ${argv.join(" ")}\n`, "utf-8");
@@ -148,14 +139,35 @@ export function runDevcontainerTrigger({ projectRoot, dryRun, out = null }) {
       // best-effort audit only
     }
   }
-  if (child.error) {
+
+  // Async spawn so a SIGTERM/SIGINT delivered to this process alone (e.g. the
+  // runner pod signalling its main process) is forwarded to the inner run
+  // instead of orphaning it. stdio: inherit streams output unchanged.
+  const child = spawn("devcontainer", argv, {
+    stdio: "inherit",
+    cwd: resolve(projectRoot),
+    env: process.env,
+  });
+  const forwardTerm = () => child.kill("SIGTERM");
+  const forwardInt = () => child.kill("SIGINT");
+  process.on("SIGTERM", forwardTerm);
+  process.on("SIGINT", forwardInt);
+  const { code: exitCode, signal, error: spawnError } = await new Promise((done) => {
+    child.on("error", (error) => done({ error }));
+    child.on("close", (code, sig) => done({ code, signal: sig }));
+  });
+  process.off("SIGTERM", forwardTerm);
+  process.off("SIGINT", forwardInt);
+
+  if (spawnError) {
     return {
       ran: true,
       code: 1,
-      error: `devcontainer up could not start: ${describeSpawnFailure(child)}`,
+      error: `devcontainer up could not start: ${describeSpawnFailure({ error: spawnError })}`,
     };
   }
-  const code = typeof child.status === "number" ? child.status : 1;
+  // A signal-killed child has no exit code; report the shell convention 128+n.
+  const code = typeof exitCode === "number" ? exitCode : 128 + (osConstants.signals[signal] ?? 0);
   if (code !== 0) {
     return { ran: true, code, error: `devcontainer up failed with exit code ${code}` };
   }

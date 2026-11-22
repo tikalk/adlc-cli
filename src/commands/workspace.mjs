@@ -709,7 +709,7 @@ export async function cmdWorkspaceSetup(args, flags) {
   {
     const { runDevcontainerTrigger } = await import("../utils/devcontainer.mjs");
     sectionHeader("devcontainer (step 5.7)");
-    const trigger = runDevcontainerTrigger({
+    const trigger = await runDevcontainerTrigger({
       projectRoot,
       dryRun,
       out: (line) => item(line.replace(/^  → /, ""), { glyph: sym.arrow, color: "gray" }),
