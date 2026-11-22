@@ -27,6 +27,37 @@ const MARKER = `${GENERATED_TEXT}; ${SOURCE_MARKER} adlc-hooks`;
 // Teardown still recognizes it so old installs clean up without residue.
 const LEGACY_MARKER = `${GENERATED_TEXT}; ${SOURCE_MARKER} adlc-events`;
 
+// Legacy opencode plugin path — pre-rename installs wrote here. Install and
+// teardown remove it when it carries our marker (MARKER or LEGACY_MARKER)
+// so upgrades never leave a stale plugin that double-fires hooks.
+const LEGACY_OPENCODE_PLUGIN = ".opencode/plugins/adlc-skills-events.ts";
+
+function hasOurMarker(content) {
+  return content.includes(MARKER) || content.includes(LEGACY_MARKER);
+}
+
+// Remove the legacy opencode plugin file when it exists and carries our
+// marker. User-crafted files (no marker) are never touched. Returns true
+// when a file was removed.
+function removeLegacyOpenCodePlugin(projectRoot) {
+  const legacyPath = join(projectRoot, LEGACY_OPENCODE_PLUGIN);
+  if (!existsSync(legacyPath)) return false;
+  try {
+    validateSafeDestination(legacyPath, projectRoot);
+  } catch {
+    return false; // symlinked-redirect: leave it for the operator (spec-kit R3)
+  }
+  let content;
+  try {
+    content = readFileSync(legacyPath, "utf-8");
+  } catch {
+    return false; // unreadable: leave it alone (spec-kit #3861)
+  }
+  if (!hasOurMarker(content)) return false;
+  rmSync(legacyPath);
+  return true;
+}
+
 // ── Dispatcher installation ─────────────────────────────────────────────
 
 export function getDispatcherContent() {
@@ -263,7 +294,7 @@ export function installHooks(agentKey, projectRoot, resolvedEvents, agentSkillsD
 
   switch (agentConfig.format) {
     case "ts-plugin":
-      return generateOpenCodePlugin(projectRoot, resolvedEvents, agentSkillsDir, agentConfig);
+      return generateOpenCodePlugin(agentKey, projectRoot, resolvedEvents, agentSkillsDir, agentConfig);
     case "json-nested":
       return generateJsonNested(agentKey, projectRoot, resolvedEvents, agentSkillsDir, agentConfig);
     case "copilot-json":
@@ -279,7 +310,7 @@ export function installHooks(agentKey, projectRoot, resolvedEvents, agentSkillsD
 
 // ── opencode: TypeScript plugin ─────────────────────────────────────────
 
-function generateOpenCodePlugin(projectRoot, resolvedEvents, skillsDir, agentConfig) {
+function generateOpenCodePlugin(agentKey, projectRoot, resolvedEvents, skillsDir, agentConfig) {
   const v1Entries = buildOpenCodeHooks(resolvedEvents, skillsDir, agentConfig);
   const v2SetupBody = buildOpenCodeV2Setup(resolvedEvents, agentConfig);
 
@@ -421,7 +452,15 @@ ${v1Entries}
   validateSafeDestination(target, projectRoot);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, content, "utf-8");
+  // Upgrade path: a pre-rename install left the legacy filename behind —
+  // remove it (marker-gated) so two plugins never double-fire hooks.
+  if (agentKey === "opencode") removeLegacyOpenCodePlugin(projectRoot);
   return { path: agentConfig.config_file, merged: false };
+}
+
+// Exported for tests: removes the legacy opencode plugin when marker-gated.
+export function pruneLegacyOpenCodePlugin(projectRoot) {
+  return removeLegacyOpenCodePlugin(projectRoot);
 }
 
 // V2 setup body: register ctx.session/ctx.tool hooks + ctx.event subscription
@@ -1050,10 +1089,15 @@ export function removeHooks(agentKey, projectRoot) {
         // Unreadable plugin file: leave it alone (spec-kit #3861).
         return { path: agentConfig.config_file, action: "manual" };
       }
-      if (content.includes(MARKER) || content.includes(LEGACY_MARKER)) {
+      if (hasOurMarker(content)) {
         rmSync(configPath);
         return { path: agentConfig.config_file, action: "deleted" };
       }
+    }
+    // Upgrade residue: the pre-rename opencode filename may still exist
+    // alongside (or instead of) the canonical one — same marker gate.
+    if (agentKey === "opencode" && removeLegacyOpenCodePlugin(projectRoot)) {
+      return { path: LEGACY_OPENCODE_PLUGIN, action: "deleted" };
     }
     return null;
   }
@@ -1181,14 +1225,14 @@ function removeTomlEvents(agentKey, projectRoot) {
     // Unreadable config: leave it alone, ask for manual removal (spec-kit #3861).
     return { path: agentConfig.config_file, action: "manual" };
   }
-  if (!content.includes("adlc_skills_marker") && !content.includes(MARKER)) {
+  if (!content.includes("adlc_skills_marker") && !hasOurMarker(content)) {
     return { path: agentConfig.config_file, action: "no-hooks" };
   }
 
   const cleaned = stripTomlMarkerBlocks(content);
   // If only our marker comment remains, delete the file.
   const trimmed = cleaned.trim();
-  if (!trimmed || trimmed === `# ${MARKER} — do not edit`) {
+  if (!trimmed || trimmed === `# ${MARKER} — do not edit` || trimmed === `# ${LEGACY_MARKER} — do not edit`) {
     rmSync(configPath);
     return { path: agentConfig.config_file, action: "deleted" };
   }

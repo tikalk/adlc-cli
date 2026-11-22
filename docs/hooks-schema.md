@@ -64,7 +64,7 @@ OpenCode 1.x older than 1.18.29 cannot load the hybrid file; upgrade to use hook
 
 ```json
 {
-  "events": {
+  "hooks": {
     "session_start": [
       {
         "skill": "team-boot",
@@ -83,11 +83,11 @@ OpenCode 1.x older than 1.18.29 cannot load the hybrid file; upgrade to use hook
 }
 ```
 
-## Example: multiple skills per event
+## Example: multiple skills per hook
 
 ```json
 {
-  "events": {
+  "hooks": {
     "session_start": [
       { "skill": "using-superpowers", "description": "Load skill orientation" },
       { "skill": "team-boot", "description": "Load team context" }
@@ -102,7 +102,7 @@ Each skill gets its own native hook entry — both fire on session start.
 
 ```json
 {
-  "events": {
+  "hooks": {
     "pre_tool_use": [
       { "skill": "audit-write", "matcher": "write|edit", "timeout": 10 },
       { "skill": "audit-bash", "matcher": "bash", "timeout": 10 }
@@ -122,7 +122,7 @@ The dispatcher:
 1. Resolves `<skill>` → finds `SKILL.md` in `<skills_dir>` (by directory name or frontmatter `name`)
 2. Parses the frontmatter
 3. **If `scripts:` present** → runs the script (sh/ps/py variant) with stdin payload → stdout
-4. **Else if body-injection event** (`session_start`, `user_prompt_submit`) → outputs the skill body → stdout
+4. **Else if body-injection hook** (`session_start`, `user_prompt_submit`) → outputs the skill body → stdout
 5. **Else** → logs "no script" and exits 0 (fail-open)
 
 The stdout is captured by the agent's native hook and injected as session context.

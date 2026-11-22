@@ -54,7 +54,7 @@ npx adlc-cli version
 | `skills add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire hooks |
 | `skills update [-a <agent>]` | Re-generate commands from installed skills; `--pull` re-installs from source |
 | `skills remove [-a <agent>]` | Remove generated commands + hook configs; cleans dispatcher + `.hooks.json` |
-| `skills [-a <agent>]` | Show what's installed per agent + dispatcher + event status |
+| `skills [-a <agent>]` | Show what's installed per agent + dispatcher + hook status |
 
 ### Team directives
 
@@ -133,7 +133,7 @@ The live SSH transport is the default: `--provider coder` provisions or reuses a
 | Command | Description |
 |----------|-------------|
 | `agent run "<task>" [flags]` | Run a coding agent headlessly with a task |
-| `agent list` | List supported agents, command formats, event support, and run profiles |
+| `agent list` | List supported agents, command formats, hook support, and run profiles |
 | `run "<task>" [flags]` | Top-level alias for `agent run` (runtime contract, ADR-368) |
 
 ### Workflows
@@ -457,7 +457,7 @@ exact version (`skills@latest`, `skills@^1.7.0`, …) is ignored with a warning.
 ## Supported agents
 
 24 command agents across 3 command formats (plus a `generic` fallback), 9
-agents with event hooks, 4 run profiles.
+agents with hook support, 4 run profiles.
 
 > **Gemini key split (current behavior):** the agent registry key is
 > `gemini-cli` (skills/commands/hooks), but the run profile is keyed
