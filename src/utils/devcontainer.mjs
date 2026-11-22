@@ -11,7 +11,7 @@
 // runner-provided daemon. All feature semantics (fetch, order, install)
 // belong to devcontainers/cli, never to adlc-cli. Node stdlib only.
 //
-// Wrapper semantics: stream inner stdout/stderr to outer stdout; propagate the
+// Wrapper semantics: stream inner stdio unchanged (inherit); propagate the
 // exact exit code; forward SIGTERM/SIGINT to the inner run; artifacts land on
 // /workspace. Daemon readiness is the runner pod's job (native-sidecar
 // startupProbe gates main, ADR-386-amendment-4) — not waited on here. Any
@@ -55,15 +55,24 @@ export async function runDevcontainerTrigger({ projectRoot, dryRun, out }) {
   // spawn through a shell (args are not quoted for us then). POSIX spawns the
   // binary directly so signals reach it and a missing CLI is a clean ENOENT.
   const win = process.platform === "win32";
-  const quote = (a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a);
+  // Quoting is cmd.exe-aware: whitespace and the metacharacters & | ^ < > ( )
+  // are wrapped in double quotes (literal inside them). `%VAR%` expansion is
+  // not escapable this way, so project paths containing `%` are unsupported.
+  const quote = (a) => (/[\s"&|^<>()]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a);
   const child = spawn("devcontainer", win ? argv.map(quote) : argv, {
     shell: win,
     stdio: "inherit",
     cwd: resolve(projectRoot),
     env: process.env,
   });
-  const forwardTerm = () => child.kill("SIGTERM");
-  const forwardInt = () => child.kill("SIGINT");
+  // Best-effort forwarding: only SIGTERM/SIGINT, skipped once the child exited
+  // (Windows kill() is best-effort too).
+  const forwardTerm = () => {
+    if (child.exitCode === null) child.kill("SIGTERM");
+  };
+  const forwardInt = () => {
+    if (child.exitCode === null) child.kill("SIGINT");
+  };
   process.on("SIGTERM", forwardTerm);
   process.on("SIGINT", forwardInt);
   const { code: exitCode, signal, error: spawnError } = await new Promise((done) => {
