@@ -259,3 +259,51 @@ test("P14: a change past the rendered cut still re-pauses", async () => {
   assert.equal(s.status, RunStatus.PAUSED);
   assert.equal(s.stepResults["gate-spec"].output.payload_changed, true);
 });
+
+test("P15: gates nested in switch cases, switch default, loops and fan-out count as upcoming", async () => {
+  const { gateStepIds } = await import("../src/workflow/gate-payload.mjs");
+  const engine = new WorkflowEngine(project());
+  const path = join(tempDir("gpay-wf15-"), "workflow.yml");
+  writeFileSync(path, `schema_version: "1.0"
+workflow: { id: gp15, name: GP15, version: "1.0.0" }
+inputs:
+  v: { type: string, enum: ["", approve, reject] }
+steps:
+  - id: route
+    type: switch
+    expression: "{{ inputs.v }}"
+    cases:
+      fast:
+        - id: gate-case
+          type: gate
+          message: "case?"
+          options: [approve, reject]
+    default:
+      - id: gate-default
+        type: gate
+        message: "default?"
+        options: [approve, reject]
+  - id: loop
+    type: while
+    condition: "{{ false }}"
+    steps:
+      - id: gate-loop
+        type: gate
+        message: "loop?"
+        options: [approve, reject]
+  - id: each
+    type: fan-out
+    items: "{{ [] }}"
+    step:
+      id: gate-item
+      type: gate
+      message: "item?"
+      options: [approve, reject]
+  - id: gate-top
+    type: gate
+    message: "top?"
+    options: [approve, reject]
+`);
+  const def = await engine.loadWorkflow(path);
+  assert.deepEqual(gateStepIds(def.steps), ["gate-case", "gate-default", "gate-loop", "gate-item", "gate-top"]);
+});

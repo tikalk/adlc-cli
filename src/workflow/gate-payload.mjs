@@ -125,14 +125,23 @@ export function withGatePayload(message, read, expected) {
   return { message: `${head}\n\n${block}${rest}`, payload: read.payload };
 }
 
-/** Ids of the gate steps in a step list (if/else branches and loop bodies included), in order. */
-export function gateStepIds(steps, acc = []) {
-  for (const s of Array.isArray(steps) ? steps : []) {
-    if (!s || typeof s !== "object") continue;
-    if (s.type === "gate" && typeof s.id === "string") acc.push(s.id);
-    for (const key of ["then", "else", "steps", "do", "body"]) {
-      if (Array.isArray(s[key])) gateStepIds(s[key], acc);
-    }
+/**
+ * Ids of every gate step in a step list, in document order, wherever it is
+ * nested: if/else branches, switch cases and default, loop bodies, a fan-out
+ * template (a single step object) — any container, present or future. Walks
+ * the whole definition rather than a fixed list of child keys, so a new
+ * container type cannot hide a gate from ADLC_UPCOMING_GATES (a hidden gate
+ * gets no payload and shows the approver nothing).
+ */
+export function gateStepIds(steps, acc = [], depth = 0) {
+  if (depth > 64 || steps === null || typeof steps !== "object") return acc;
+  if (Array.isArray(steps)) {
+    for (const s of steps) gateStepIds(s, acc, depth + 1);
+    return acc;
+  }
+  if (steps.type === "gate" && typeof steps.id === "string" && !acc.includes(steps.id)) acc.push(steps.id);
+  for (const value of Object.values(steps)) {
+    if (value !== null && typeof value === "object") gateStepIds(value, acc, depth + 1);
   }
   return acc;
 }

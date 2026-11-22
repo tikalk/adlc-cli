@@ -265,7 +265,7 @@ run the agent with these environment variables:
 - `ADLC_RUN_ID` and `ADLC_STEP_ID`.
 - `ADLC_STEP_OUTPUT`, the path `.adlc/workflows/runs/<run_id>/steps/<step_id>.output.json`. Any leftover file there is deleted before the step starts.
 - `ADLC_ISSUE_REF`, only when the run has an `issue_ref` input.
-- `ADLC_GATE_PAYLOADS`, the directory `.adlc/workflows/runs/<run_id>/gate-payloads/`, and `ADLC_UPCOMING_GATES`, the comma-separated ids of the gates not yet passed (gates inside `if` branches and loops count).
+- `ADLC_GATE_PAYLOADS`, the directory `.adlc/workflows/runs/<run_id>/gate-payloads/`, and `ADLC_UPCOMING_GATES`, the comma-separated ids of the gates not yet passed, wherever they are nested (`if`/`else`, `switch` cases and `default`, loop bodies, a `fan-out` template).
 
 A step can return a few named strings by writing a JSON object to
 `ADLC_STEP_OUTPUT`. The rules:
