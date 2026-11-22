@@ -13,12 +13,13 @@
 //
 // Readiness + wrapper semantics per amendment-3: wait for daemon readiness;
 // stream inner stdout/stderr to outer stdout; propagate the exact exit code;
-// forward SIGTERM; artifacts land on /workspace. Any failure is a non-zero
+// artifacts land on /workspace. SIGTERM is NOT forwarded in flight (see
+// the limitation note at the spawn site). Any failure is a non-zero
 // setup failure — fail-fast, before skills run.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 const CANONICAL = ".devcontainer/devcontainer.json";
 const LEGACY = ".devcontainer.json";
@@ -50,10 +51,17 @@ export function resolveDevcontainerConfig(projectRoot) {
 // loudly with a cause that names the missing prerequisite.
 export function findDevcontainerCli() {
   const pathEnv = process.env.PATH || "";
-  const dirs = pathEnv.split(":").filter(Boolean);
+  const dirs = pathEnv.split(delimiter).filter(Boolean);
+  // Windows resolves executables through PATHEXT (devcontainer.cmd/.exe).
+  const exts =
+    process.platform === "win32"
+      ? ["", ...(process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";").filter(Boolean)]
+      : [""];
   for (const dir of dirs) {
-    const candidate = join(dir, "devcontainer");
-    if (existsSync(candidate)) return candidate;
+    for (const ext of exts) {
+      const candidate = join(dir, `devcontainer${ext}`);
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return null;
 }
@@ -74,11 +82,8 @@ export function waitForDaemon() {
     if (result.status === 0) return null;
     lastError = describeSpawnFailure(result);
     if (i < attempts - 1 && waitMs > 0) {
-      const end = Date.now() + waitMs;
-      while (Date.now() < end) {
-        // Brief synchronous sleep keeps stdlib-only (no timers/async in the
-        // setup path); bounded by waitMs per attempt.
-      }
+      // Blocking sleep without CPU spin; stdlib-only, sync setup path.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
     }
   }
   return `docker daemon not ready (DOCKER_HOST=${dockerHost}): ${lastError}`;
@@ -140,16 +145,23 @@ export function runDevcontainerTrigger({ projectRoot, dryRun, out = null }) {
     cwd: resolve(projectRoot),
     env: process.env,
   });
-  // SIGTERM forwarding: the outer system kills setup; the inner devcontainer
-  // run must observe the signal rather than outlive its parent. With stdio:
-  // inherit the child shares the terminal; a Node-level handler re-raises
-  // the signal onto the child group on preemption paths.
+  // Limitation: spawnSync blocks the event loop, so a SIGTERM delivered to
+  // this process alone is not forwarded to the inner run. With stdio: inherit
+  // the child shares the terminal/process group, so a group-directed signal
+  // (Ctrl-C, `kill -- -PGID`, pod termination) still reaches it.
   if (spawnLog) {
     try {
       writeFileSync(spawnLog, `spawned: devcontainer ${argv.join(" ")}\n`, "utf-8");
     } catch {
       // best-effort audit only
     }
+  }
+  if (child.error) {
+    return {
+      ran: true,
+      code: 1,
+      error: `devcontainer up could not start: ${describeSpawnFailure(child)}`,
+    };
   }
   const code = typeof child.status === "number" ? child.status : 1;
   if (code !== 0) {

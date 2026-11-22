@@ -104,13 +104,13 @@ test("setup fails fast with a loud error when the devcontainer CLI is absent", a
 
 test("setup fails fast naming the cause when the daemon is unreachable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
+  const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
   try {
     makeWorkspace(dir, BASE_YML);
     mkdirSync(join(dir, ".devcontainer"), { recursive: true });
     writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
     // Stub devcontainer exists but the daemon socket is unreachable: point
     // DOCKER_HOST at a dead path and shrink the wait so the test stays fast.
-    const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
     writeFileSync(
       join(stubDir, "devcontainer"),
       '#!/bin/sh\necho "STUB-SHOULD-NOT-RUN" >&2\nexit 99\n',
@@ -125,21 +125,21 @@ test("setup fails fast naming the cause when the daemon is unreachable", async (
     assert.notEqual(r.code, 0, "unreachable daemon fails the setup");
     assert.match(combined(r), /daemon|DOCKER_HOST|socket|docker/i, "failure names the daemon cause");
     assert.doesNotMatch(combined(r), /STUB-SHOULD-NOT-RUN/, "readiness gate held — stub never spawned");
-    rmSync(stubDir, { recursive: true, force: true });
   } finally {
+    rmSync(stubDir, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test("setup propagates the inner devcontainer exit code unchanged", async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
+  const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
   try {
     makeWorkspace(dir, BASE_YML);
     mkdirSync(join(dir, ".devcontainer"), { recursive: true });
     writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
     // Stub devcontainer that exits 42 with marker output; readiness gate must
     // pass (ADLC_DEVCONTAINER_SKIP_READINESS) so the stub actually runs.
-    const stubDir = mkdtempSync(join(tmpdir(), "adlc-dc-stub-"));
     writeFileSync(
       join(stubDir, "devcontainer"),
       '#!/bin/sh\necho "INNER-MARKER-STDOUT"\necho "INNER-MARKER-STDERR" >&2\nexit 42\n',
@@ -152,13 +152,13 @@ test("setup propagates the inner devcontainer exit code unchanged", async () => 
     assert.equal(r.code, 42, "inner exit code propagates unchanged");
     assert.match(r.stdout, /INNER-MARKER-STDOUT/, "inner stdout streams to outer stdout");
     assert.match(combined(r), /INNER-MARKER-STDERR/, "inner stderr streams out");
-    rmSync(stubDir, { recursive: true, force: true });
   } finally {
+    rmSync(stubDir, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("setup with no devcontainer file is byte-identical to main (SC5 regression pin)", async () => {
+test("setup with no devcontainer file never runs the devcontainer step (SC5 regression pin)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
   try {
     makeWorkspace(dir, BASE_YML);
@@ -177,12 +177,15 @@ test("setup devcontainer step never consults a provider flag (location-free, ADR
     makeWorkspace(dir, BASE_YML);
     mkdirSync(join(dir, ".devcontainer"), { recursive: true });
     writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
-    // A provider flag must not change trigger behaviour: same dry-run plan
-    // with and without --provider (provider routes refuse workspace setup;
-    // the assertion is that the trigger itself ignores location).
+    // The trigger fires on declaration alone, with no provider flag. The
+    // provider route (`--provider coder`) is a separate path that refuses
+    // --dry-run and never reaches step 5.7: it must not run the trigger.
     const plain = await run(["workspace", "setup", "--dry-run"], dir, { PATH: "" });
     assert.equal(plain.code ?? 0, 0, combined(plain));
     assert.match(plain.stdout, /devcontainer up/, "trigger fires without any provider flag");
+    const viaProvider = await run(["workspace", "setup", "--dry-run", "--provider", "coder"], dir, { PATH: "" });
+    assert.notEqual(viaProvider.code, 0, "provider route refuses --dry-run");
+    assert.doesNotMatch(combined(viaProvider), /devcontainer up/, "provider flag never drives the trigger");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
