@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { WorkflowEngine, WorkflowDefinition, RunState, RunStatus } from "./engine.mjs";
 import { STEP_REGISTRY } from "./registry.mjs";
 import { Lease } from "./lease.mjs";
-import { pushRunRef } from "./refs.mjs";
+import { syncRunRef } from "./refs.mjs";
+import { initTrace, appendTraceEvent, finalizeTrace } from "./trace.mjs";
 
 // start: create a run (status running, index 0) from a workflow source.
 // Returns the run state. Does NOT execute steps — the LLM executor drives.
@@ -43,8 +44,16 @@ export async function stateStart({ projectRoot = process.cwd(), workflowSource, 
   state.status = RunStatus.RUNNING;
   state.currentStepIndex = 0;
   state.currentStepId = definition.steps[0]?.id ?? null;
+  // Trace bundle v1 (ADR-490): identity is durable from the first save, and
+  // the run-start event opens the lifecycle stream.
+  try {
+    initTrace(state.runsDir, { state, projectRoot, definition });
+    appendTraceEvent(state.runsDir, { event: "run_started", workflow_id: definition.id });
+  } catch {}
   await state.save();
-  pushRunRef(projectRoot, state.runId, state.runsDir);
+  // Run start is durable immediately: a pod that dies right after start is
+  // still restorable from the remote ref (ADR-475).
+  syncRunRef(projectRoot, state.runId, state.runsDir, { minIntervalSeconds: 0 });
   releaseCommandScoped();
   return state;
 }
@@ -118,7 +127,23 @@ export async function stateAdvance({
   }
 
   await state.save();
-  pushRunRef(projectRoot, runId, state.runsDir);
+  // Trace: record the helper transition, then close the bundle on a terminal
+  // status (retention prunes successful events before the ref sync below).
+  try {
+    appendTraceEvent(state.runsDir, {
+      event: "step_advanced",
+      step_id: stepId,
+      status,
+      output: output ?? null,
+      error: error ?? null,
+    });
+    if ([RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.ABORTED].includes(state.status)) {
+      finalizeTrace(state.runsDir, state);
+    }
+  } catch {}
+  // Throttled remote sync: on a crash, the remote lags by at most the
+  // throttle window (one step when steps are longer than the window).
+  syncRunRef(projectRoot, runId, state.runsDir);
   if (state.status === RunStatus.COMPLETED || !lease.persistent) lease.release();
   return state;
 }
@@ -133,7 +158,13 @@ export async function statePause({ projectRoot = process.cwd(), runId, stepId } 
   state.currentStepIndex = idx;
   state.currentStepId = stepId;
   await state.save();
-  pushRunRef(projectRoot, runId, state.runsDir);
+  // Trace: a pause is not terminal; keep the full bundle and mark the outcome.
+  try {
+    appendTraceEvent(state.runsDir, { event: "run_paused", step_id: stepId });
+    finalizeTrace(state.runsDir, state);
+  } catch {}
+  // Exit path: push unconditionally so the pause survives a pod teardown.
+  syncRunRef(projectRoot, runId, state.runsDir, { minIntervalSeconds: 0 });
   lease.release();
   return state;
 }
@@ -145,7 +176,13 @@ export async function stateFail({ projectRoot = process.cwd(), runId, error } = 
   state.status = RunStatus.FAILED;
   state.error = error ?? "failed";
   await state.save();
-  pushRunRef(projectRoot, runId, state.runsDir);
+  // Trace: failures keep full events (ADR-490 retention).
+  try {
+    appendTraceEvent(state.runsDir, { event: "run_failed", error: state.error });
+    finalizeTrace(state.runsDir, state);
+  } catch {}
+  // Exit path: push unconditionally so the failure is visible remotely.
+  syncRunRef(projectRoot, runId, state.runsDir, { minIntervalSeconds: 0 });
   lease.release();
   return state;
 }

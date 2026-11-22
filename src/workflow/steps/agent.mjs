@@ -9,10 +9,20 @@ import { evaluateExpression } from "../expressions.mjs";
 import { runTask } from "../../run.mjs";
 import { getRunProfile } from "../../registry.mjs";
 import { readAgent } from "../../utils/init-options.mjs";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { currentHeadSha } from "../gate-context.mjs";
 
 const rid = (config) => `'${config.id ?? "?"}'`;
+
+// ADR-542: an agent that exits non-zero within this many seconds of spawn is
+// an infrastructure failure (retryable), not a logical one. The env override
+// is a test seam (kept out of README on purpose); production stays at 60.
+// Read lazily so tests can set the override after module load.
+export function fastFailureThresholdSeconds() {
+  const raw = Number(process.env.ADLC_FAST_FAILURE_THRESHOLD_SECONDS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60;
+}
 
 // Resolve the agent key: step > workflow default (context) > project default
 // (.adlc/init-options.json). Returns null when nothing resolves — the step
@@ -73,6 +83,11 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   // retried step can never surface a stale value.
   const runEnv = runContextEnv(context, config);
   prepareStepOutput(runEnv.ADLC_STEP_OUTPUT);
+  // Question pause (adlc-workspace#148): clear a question file left by an
+  // earlier pause (it was persisted into that pause's step output), so only a
+  // question written during THIS attempt can pause the run; record the resume
+  // answer once.
+  prepareQuestionRun(runEnv, context, config);
 
   // runTask streams lines; collect them as the step's stdout.
   let stdout = "";
@@ -101,6 +116,9 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     });
   }
   const { promise, kill } = taskHandle;
+  // ADR-542: the fast-failure clock starts at spawn, so a cold-pod crash or
+  // gateway blip at start-up is told apart from a wrong answer later on.
+  const spawnedAt = process.hrtime.bigint();
 
   if (timeoutSec && Number.isFinite(timeoutSec) && timeoutSec > 0) {
     timer = setTimeout(() => {
@@ -141,15 +159,138 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
       output,
     });
   }
-  if (exit.code !== 0) {
+  // The step's own time limit killed the agent. It is still a failed step
+  // (the run fails and exits 10, as before), but it is reported apart from an
+  // agent that failed by itself: the error starts with "timeout:", names the
+  // step and the limit, and the output carries timed_out / timeout_seconds.
+  if (timedOut && exit.code !== 0) {
+    output.timed_out = true;
+    output.timeout_seconds = timeoutSec;
+    // Elapsed is still recorded (F6 pins it): a timeout is a hung agent, not
+    // a cold-pod crash, so the run stays a logical failure (exit 10) with
+    // elapsed but no fast_failure mark.
+    const agentElapsedSeconds = Number(process.hrtime.bigint() - spawnedAt) / 1e9;
+    output.agent_elapsed_seconds = Math.round(agentElapsedSeconds * 10) / 10;
     return new StepResult({
       status: StepStatus.FAILED,
-      error: `Agent step ${rid(config)} exited with code ${exit.code ?? "signal " + exit.signal}.`,
+      error:
+        `timeout: step ${config.id ?? "?"} exceeded ${timeoutSec}s: the agent was killed by the step's time limit, ` +
+        `it did not fail by itself (set 'timeout:' on the step to change the limit).`,
+      output,
+    });
+  }
+  if (exit.code !== 0) {
+    // ADR-542: non-zero exit within the threshold of spawn is classified as
+    // an infrastructure failure; the engine persists it on the run state so
+    // the command boundary exits with the retryable code. A kill by the
+    // step's own timeout is the opposite signal (a hung agent, not a cold
+    // pod) — it stays a logical failure, so the dead `timedOut` flag gates
+    // the mark here.
+    const agentElapsedSeconds = Number(process.hrtime.bigint() - spawnedAt) / 1e9;
+    const fastFailure = !timedOut && agentElapsedSeconds < fastFailureThresholdSeconds();
+    output.agent_elapsed_seconds = Math.round(agentElapsedSeconds * 10) / 10;
+    if (fastFailure) output.fast_failure = true;
+    return new StepResult({
+      status: StepStatus.FAILED,
+      error:
+        `Agent step ${rid(config)} exited with code ${exit.code ?? "signal " + exit.signal}.` +
+        (fastFailure
+          ? ` The agent failed ${Math.round(agentElapsedSeconds)}s after start — classified as an infrastructure failure (retryable; ADR-542), not a wrong answer.`
+          : ""),
       output,
     });
   }
   Object.assign(output, readStepOutput(runEnv.ADLC_STEP_OUTPUT, rid(config)));
+  // Question payload (adlc-workspace#148): after exit 0, a valid
+  // runs/<run_id>/questions/<step_id>.json pauses the run with kind=question
+  // instead of completing. Invalid payloads keep COMPLETED with a warning.
+  const question = readQuestionPayload(runEnv, context, config);
+  if (question.valid) {
+    const pauseCount = priorPauseCount(context, config) + 1;
+    if (pauseCount > MAX_QUESTION_PAUSES) {
+      return new StepResult({
+        status: StepStatus.FAILED,
+        error: `Agent step ${rid(config)}: blocked: question budget exhausted (max ${MAX_QUESTION_PAUSES} pauses per step per run).`,
+        output: { ...output, pause_count: pauseCount },
+      });
+    }
+    return new StepResult({
+      status: StepStatus.PAUSED,
+      output: {
+        ...output,
+        kind: "question",
+        answer_input: `answer_${config.id}`,
+        payload: question.payload,
+        head_sha: currentHeadSha(context.projectRoot) ?? "unknown",
+        pause_count: pauseCount,
+      },
+    });
+  }
+  if (question.present) {
+    console.error(`[workflow] step ${rid(config)}: question payload ignored (${question.why})`);
+    output.question_warning = `question payload ignored: ${question.why}`;
+  }
   return new StepResult({ status: StepStatus.COMPLETED, output });
+}
+
+// ── question payload (adlc-workspace#148) ─────────────────────────────────
+// Caps: max 3 questions per payload, max 3 pauses per step per run.
+export const MAX_QUESTION_PAUSES = 3;
+export const MAX_QUESTIONS_PER_PAYLOAD = 3;
+// Scheme is case-insensitive (RFC 3986 §3.1): HTTPS:// is as valid as https://.
+const MR_URL = /^https?:\/\/[^\s<>|]{1,2040}$/i;
+
+function questionPath(runEnv) {
+  return runEnv.ADLC_STEP_QUESTION ?? null;
+}
+
+function readQuestionPayload(runEnv, context, config) {
+  const path = questionPath(runEnv);
+  if (!path || !existsSync(path)) return { present: false, valid: false };
+  let raw;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    return { present: true, valid: false, why: `unreadable: ${err.message}` };
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { present: true, valid: false, why: "not JSON" };
+  }
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return { present: true, valid: false, why: "not a JSON object" };
+  }
+  if (typeof data.summary !== "string" || data.summary.trim() === "") {
+    return { present: true, valid: false, why: "missing summary" };
+  }
+  const questions = data.questions;
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return { present: true, valid: false, why: "missing questions array" };
+  }
+  if (questions.length > MAX_QUESTIONS_PER_PAYLOAD) {
+    return { present: true, valid: false, why: `more than ${MAX_QUESTIONS_PER_PAYLOAD} questions` };
+  }
+  for (const q of questions) {
+    if (q === null || typeof q !== "object" || Array.isArray(q) ||
+        typeof q.id !== "string" || q.id === "" ||
+        typeof q.text !== "string" || q.text === "") {
+      return { present: true, valid: false, why: "question needs string id and text" };
+    }
+  }
+  const payload = { summary: data.summary, questions };
+  if (typeof data.resume_hint === "string" && data.resume_hint !== "") payload.resume_hint = data.resume_hint;
+  // The run's draft MR (ADR-531 D6): the runtime links it in the Slack post.
+  // Only a plain http(s) URL is kept; anything else is dropped, never fatal.
+  if (typeof data.mr_url === "string" && MR_URL.test(data.mr_url)) payload.mr_url = data.mr_url;
+  return { present: true, valid: true, payload };
+}
+
+function priorPauseCount(context, config) {
+  const prev = context.steps?.[config.id]?.output;
+  const n = prev?.pause_count;
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : 0;
 }
 
 // ── run context + structured step output (ADR-444) ─────────────────────────
@@ -171,6 +312,42 @@ export function prepareStepOutput(path) {
   try { mkdirSync(dirname(path), { recursive: true }); } catch {}
 }
 
+// Before each agent attempt (adlc-workspace#148): remove any question file
+// from an earlier pause — its payload already lives in that pause's step
+// output — and make sure the directory exists, so the agent can write a new
+// one with a plain redirect. On resume, record the answer exactly once per
+// pause in runs/<run_id>/answers/<step_id>.json.
+export function prepareQuestionRun(runEnv, context, config) {
+  const qpath = runEnv.ADLC_STEP_QUESTION;
+  if (qpath) {
+    try { rmSync(qpath, { force: true }); } catch {}
+    try { mkdirSync(dirname(qpath), { recursive: true }); } catch {}
+  }
+  const apath = runEnv.ADLC_STEP_ANSWERS;
+  const text = context.inputs?.[`answer_${config.id}`];
+  if (!apath || typeof text !== "string" || text === "") return;
+  const prev = context.steps?.[config.id]?.output;
+  const pause = Number.isInteger(prev?.pause_count) ? prev.pause_count : 0;
+  let entries = [];
+  try {
+    if (existsSync(apath)) {
+      const parsed = JSON.parse(readFileSync(apath, "utf-8"));
+      if (Array.isArray(parsed)) entries = parsed;
+    }
+  } catch {}
+  if (entries.some((e) => e && e.pause === pause)) return; // already recorded (retry)
+  const qs = prev?.payload?.questions;
+  entries.push({
+    question_id: Array.isArray(qs) && qs.length === 1 && typeof qs[0]?.id === "string" ? qs[0].id : null,
+    pause,
+    text,
+    answered_by: process.env.ADLC_ANSWERED_BY ?? "operator",
+    ts: new Date().toISOString(),
+  });
+  try { mkdirSync(dirname(apath), { recursive: true }); } catch {}
+  try { writeFileSync(apath, JSON.stringify(entries)); } catch {}
+}
+
 export function runContextEnv(context, config) {
   const env = {};
   const runId = typeof context.runId === "string" ? context.runId : null;
@@ -180,6 +357,16 @@ export function runContextEnv(context, config) {
   // Path-safe ids only: the file is deleted before the step and read after it.
   if (runId && stepId && SAFE_ID.test(runId) && SAFE_ID.test(stepId) && context.projectRoot) {
     env.ADLC_STEP_OUTPUT = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "steps", `${stepId}.output.json`);
+    // Question payload path (adlc-workspace#148): the agent leaves
+    // runs/<run_id>/questions/<step_id>.json to pause the run with a question.
+    env.ADLC_STEP_QUESTION = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "questions", `${stepId}.json`);
+    // Answers file on resume (append-only list of {question_id, text,
+    // answered_by, ts}): set when the run resumes with answer_<step_id>.
+    const answerKey = `answer_${stepId}`;
+    const answer = context.inputs?.[answerKey];
+    if (typeof answer === "string" && answer !== "") {
+      env.ADLC_STEP_ANSWERS = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "answers", `${stepId}.json`);
+    }
   }
   const issueRef = context.inputs?.issue_ref;
   if (typeof issueRef === "string" && issueRef !== "") env.ADLC_ISSUE_REF = issueRef;

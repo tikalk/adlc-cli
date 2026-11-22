@@ -1,9 +1,47 @@
 # Changelog
 
+## [2.14.0] - 2026-11-19
+
+### Added
+
+- **Agent steps pause on a question** (#97, adlc-workspace#148) — after exit 0, a valid `runs/<run_id>/questions/<step_id>.json` (`ADLC_STEP_QUESTION`; `summary` plus 1–3 `questions`) makes the step return `PAUSED` with `gate_paused{kind: "question", answer_input: "answer_<step_id>", payload, head_sha}` instead of completing. `workflow resume <run_id> --input answer_<step_id>=…` re-runs the same step with the append-only answers file in `ADLC_STEP_ANSWERS` (and `ADLC_ANSWERED_BY`). `answer_*` inputs are free text: they need no declaration, are never enum-coerced, and a gate may not use one as `verdict_input`. Caps: 3 questions per payload and 3 pauses per step per run, then `blocked: question budget exhausted`. An invalid payload keeps today's `COMPLETED` with a `question_warning`. A stale question file is cleared before each run. The engine still makes no Slack or tracker calls.
+- **Question payload keeps the run's `mr_url`** (#98, adlc-workspace#150) — a plain `http(s)://` URL (case-insensitive scheme, no whitespace or `<>|`, at most ~2 KB) survives into the paused payload so the runtime can link the draft MR; anything else is dropped without blocking the pause.
+- **`factory-supervised` publishes the spec before its gate** (#96) — new `run-branch` and `publish-spec` steps check out the mission branch and open or reuse the early draft MR via the installed `factory-runbook` helpers (clean skip when they are not installed; fail closed on a helper error). `gate-spec` now declares `context.records` (`.adlc/drafts/{adr,pdr}/*.md`, `since: last_approved`) and links the draft MR, so the approval shows what is being approved.
+- **Reference-only skills get no command file** (#89, ADR-507) — `reference-only: true` frontmatter skips command generation in `skills add` (with a `Skipped N reference-only skill(s)` line) and removes a stale generated command on `skills update`; user-authored files are left untouched.
+
+## [2.13.0] - 2026-11-18
+
+### Changed
+
+- **Workspace init/link runs from the skill's scripts, not an agent** (#90) — `workspace setup` now runs `skills.sources` before init, then executes the installed `workspace` skill's `setup-workspace.sh --json` and `workspace.sh --json --link` directly. Missing `.gitignore` rules it reports are appended (never removed) and committed. `workspace.sh` exits 0 even when a repo fails to link, so setup reads `ERROR_COUNT` from its JSON and fails on it. Falls back to the agent-led `Run /workspace --init --link` path only when the skill is not installed (or on Windows).
+
+### Fixed
+
+- **Empty submodule folders are populated instead of skipped** (#90) — a non-recursive workspace clone leaves every submodule as an empty folder, and `workspace.git` logged `(exists, skipping clone)` for all of them, so `team setup` failed with every team-ai-directives file `MISSING` unless the agent happened to run `git submodule update`. Only non-empty paths are skipped now: an empty folder registered in `.gitmodules` gets `git submodule update --init -- <path>` at the pinned commit, and any other empty folder is cloned into. `isEmptyDir` uses `lstat`, so a symlink never counts as empty.
+
+## [2.12.1] - 2026-11-09
+
+### Fixed
+
+- **Truncated output before process exit** (#87) — `bin/adlc-cli.mjs` and `bin/adlc-skills-cli.mjs` now flush stdout/stderr before exiting (`process.exit()` drops writes still queued in libuv; stdout to a pipe is asynchronous on POSIX). Previously large output could be silently truncated on platforms with a small pipe buffer (macOS lost the tail of `workflow help` in the v2.12.0 Publish run, failing CI and skipping the npm publish). The standalone hook dispatcher (`src/dispatcher.mjs`) writes injection bodies synchronously for the same reason.
+
 All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.12.0] - 2026-11-09
+
+### Added
+
+- **Durable run transport on remote refs** (#82) — run refs sync to `origin` on every state transition (throttled via `ADLC_WORKFLOW_PUSH_INTERVAL`, default 60s, `0` = every transition; exit paths push unconditionally). Pushes go through a throwaway staging copy: the wire is redacted, machine-local files (`lease.json`, `.push-ts`) never leave the host, and the local run dir keeps raw values for resume. Symlinks are never followed into pushed trees.
+- **Trace bundle v1** (#83) — every run carries `trace/{manifest,events,artifacts}`: ADR-362 event envelopes with canonical types, a manifest recording run-start and post-step SHAs, and content-addressed artifacts. Fail-closed retention (failed runs keep the full bundle; successful runs degrade to manifest-only unless `ADLC_TRACE_SUCCESS_SAMPLE_RATE` samples the run for full retention). Mid-run event streams stay off the remote until a terminal state.
+- **Cross-session e2e verification** (#84) — a repeatable drill in `npm test` driving two separate adlc-cli sessions in two clones of one remote (run → pause → park → restore → resume → completed), asserting transport, redaction, envelope and retention invariants end to end.
+- **`workflow board` — factory pane of glass v1** (#85) — one view over all factory runs: local run dirs plus remote `refs/factory-runs/*` fetched namespaced (`refs/remotes/<remote>/…`, never touching local refs), with status, current step, trace outcome/retention, and issue ref. `--format json` emits the machine contract for the future dashboard; degrades to a local-only board (warning, exit 0) when the remote is unreachable.
+
+### Security
+
+- **Command injection via `--remote` in `workflow board`** (#85) — remote names are validated by the same `checkRemote` guard as park/restore before reaching `git fetch`; the inline `--remote=--upload-pack=<cmd>` attack form is rejected with a usage error (exit 1).
 
 ## [2.11.0] - 2026-11-07
 

@@ -18,7 +18,7 @@ Works with any skills repo: [adlc-team-skills](https://github.com/tikalk/adlc-te
 ## Quickstart
 
 ```bash
-# Install skills + generate commands + wire events
+# Install skills + generate commands + wire hooks
 npx adlc-cli skills add tikalk/adlc-team-skills -a opencode
 
 # Install skills AND configure team-ai-directives
@@ -31,8 +31,8 @@ npx adlc-cli team setup tikalk/adlc-team-skills -a opencode
 # session, validates structure then writes .adlc/init-options.json
 npx adlc-cli team setup tikalk/adlc-team-skills -a opencode --skip-skills --directives ./team-ai-directives
 
-# Works with any skills repo — events auto-skip if no .events.json
-npx adlc-cli skills add mattpocock/skills -a claude-code --no-events
+# Works with any skills repo — hooks auto-skip if no .hooks.json
+npx adlc-cli skills add mattpocock/skills -a claude-code --no-hooks
 npx adlc-cli skills add addyosmani/agent-skills -a opencode -a cursor
 
 # Run a coding agent headlessly with a task
@@ -51,10 +51,10 @@ npx adlc-cli version
 
 | Command | Description |
 |---------|-------------|
-| `skills add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire events |
+| `skills add <source> -a <agent>` | Install skills via `npx skills add` + generate commands + wire hooks |
 | `skills update [-a <agent>]` | Re-generate commands from installed skills; `--pull` re-installs from source |
-| `skills remove [-a <agent>]` | Remove generated commands + event configs; cleans dispatcher + `.events.json` |
-| `skills [-a <agent>]` | Show what's installed per agent + dispatcher + event status |
+| `skills remove [-a <agent>]` | Remove generated commands + hook configs; cleans dispatcher + `.hooks.json` |
+| `skills [-a <agent>]` | Show what's installed per agent + dispatcher + hook status |
 
 ### Team directives
 
@@ -133,7 +133,7 @@ The live SSH transport is the default: `--provider coder` provisions or reuses a
 | Command | Description |
 |----------|-------------|
 | `agent run "<task>" [flags]` | Run a coding agent headlessly with a task |
-| `agent list` | List supported agents, command formats, event support, and run profiles |
+| `agent list` | List supported agents, command formats, hook support, and run profiles |
 | `run "<task>" [flags]` | Top-level alias for `agent run` (runtime contract, ADR-368) |
 
 ### Workflows
@@ -145,6 +145,15 @@ The live SSH transport is the default: `--provider coder` provisions or reuses a
 | `workflow status [run_id]` | List runs / show one run's step states |
 | `workflow validate <source>` | Validate a definition; `--headless` requires gates to declare `verdict_input` |
 | `workflow state …` | LLM-executor helpers: `start/advance/pause/fail/show` (ADR-395) |
+
+Exit codes of `workflow run` and `workflow resume`:
+
+| Code | Meaning | Worth retrying? |
+|------|---------|-----------------|
+| `0` | The run completed | — |
+| `3` | The run is paused at a gate or a question | No: answer it, then resume |
+| `10` | The run failed: a step failed, or the engine hit an error while running a step (for example an unknown template filter) | No: the same run fails the same way |
+| `1` | The command could not start (unknown workflow or run, lease held by another session), a transient system fault (disk full, I/O error), or a gate with `on_reject: abort` was rejected | CI lanes treat it as retryable |
 
 Full JS port of the upstream `github/spec-kit` workflow engine (zero Python —
 ADR-390 + amendments). **Dual-executor architecture (ADR-395):** the same
@@ -168,8 +177,11 @@ refs/factory-runs/<run_id>             git-refs Tier-3 (ADR-393)
 adlc-cli workflow run mission --input spec="Fix auth"
 adlc-cli workflow resume <run_id> --input verdict=approve
 
-# The bundled outer loop (stages = command steps + gates)
-adlc-cli workflow run factory --input verdict=approve
+# The bundled outer loop: preflight → intent → plan gates → run-branch
+# (mission branch) → execute → proof of work → completion gate
+# (fails closed; one verdict input per gate)
+adlc-cli workflow run factory --input issue_ref=group/repo#12
+adlc-cli workflow resume <run_id> --input verdict_intent=approve
 
 # CI: JSONL lifecycle events (run_started/step_*/gate_paused/…/run_completed)
 adlc-cli workflow run factory --format json
@@ -188,15 +200,47 @@ adlc-cli workflow state pause <run_id> --step review      # gate → human
 | `ADLC_WORKFLOW_SESSION` | Session id — makes the run lease persist across sequential CLI invocations instead of per-command |
 | `ADLC_WORKFLOW_RUN_ID` | Set for step processes so nested commands address their own run |
 | `ADLC_WORKFLOW_LEASE_TTL` | Lease TTL in seconds (default 900) |
+| `ADLC_WORKFLOW_PUSH_INTERVAL` | Minimum seconds between pushes of the run ref (`refs/factory-runs/<run_id>`) at step starts (default 60; `0` = every step start; an invalid or negative value means the default). Pauses, run ends and the step right after an answered gate are always pushed at once |
 | `ADLC_WORKSPACE_FILE` | Workspace file path override for `workspace setup` |
 
 SIGINT/SIGTERM trigger a clean pause (resumable) rather than a corrupt
 partial state.
 
+**Step time limits.** `command` and `prompt` steps take `timeout: <seconds>`
+(default 3600); `shell` steps default to 300. When an agent step hits its
+limit the agent is killed and the step fails with an error that starts
+`timeout: step <id> exceeded <n>s`, so a time-out is not mistaken for an
+agent that failed by itself. The run ends as `failed` with that same error
+and `timed_out: true` (in `state.json` and on the `run_failed` event), and the
+command exits **10** like any other failed run: a time-out is not retried.
+`workflow resume <run_id>` can still run the step again.
+
 Known constraint (inherited upstream): a gate nested inside
 `if`/`switch`/`while` bodies that pauses will re-run the parent control-flow
 step and its nested body on resume. Keep gates at the top level, or bind a
 `verdict_input` on the gate.
+
+**Decision gates with nothing to approve (`context.on_empty`).** A gate that
+declares `context.records` lists the decision records that changed and asks a
+person to approve them. By default it asks even when the list is empty ("No
+new or changed … decisions"). A gate whose *only* subject is that list can opt
+out of asking about nothing:
+
+```yaml
+- id: gate-product
+  type: gate
+  message: "Approve PDRs before architecture?"
+  options: [approve, reject]
+  verdict_input: verdict_product
+  context:
+    records: [".adlc/drafts/pdr/*.md"]
+    since: last_approved
+    on_empty: pass        # default: ask
+```
+
+- `pass` completes the gate with `choice: approve` and `auto_passed: true` only when the list was built and is empty. The run log and the event stream record `gate_auto_passed` ("gate gate-product auto-passed: nothing to approve").
+- A list that could not be built ("Decision list unavailable"), a non-empty list, and a `reject` verdict behave as before.
+- Do not set it on a gate whose real subject is something else (a plan, a merge request): an empty record list would then skip the approval. No bundled workflow sets it.
 
 **Agent-step run context and output (ADR-444).** `command` and `prompt` steps
 run the agent with these environment variables:
@@ -215,9 +259,30 @@ A step can return a few named strings by writing a JSON object to
 
 After a successful exit, these fields are merged into the step output, so a
 later step or gate can read them, for example
-`context.link: "{{ steps.intent-product.output.mr_url }}"`. If any field breaks
+`context.link: "{{ steps.publish-spec.output.mr_url }}"`. If any field breaks
 a rule, the file is ignored with a log line. Stdout is never parsed for
 results.
+
+**Passing values to a `shell` step: use `env:`, not the script text.** A
+`{{ … }}` expression inside `run` is pasted into the script as text before the
+shell reads it, so a value with a quote, a backtick or `$(…)` becomes shell
+code. Anything an agent or a person wrote (step output, free-text inputs)
+belongs under `env:` instead. Each entry is exported as an environment
+variable and the script reads it as data:
+
+```yaml
+- id: proof-of-work
+  type: shell
+  env:
+    MR_URL: "{{ steps.execute.output.mr_url }}"
+  run: |
+    [ -n "$MR_URL" ] || { echo "no merge request" >&2; exit 1; }
+    echo "merge request: $MR_URL"
+```
+
+- Names must match `^[A-Za-z_][A-Za-z0-9_]*$`; `ADLC_*` names are reserved for the engine.
+- Values are strings, numbers or booleans. A value an earlier step never reported is the empty string.
+- Still quote the variable in the script (`"$MR_URL"`), and check its shape before you show it to a person or pass it to another tool.
 
 ### MCP
 
@@ -363,10 +428,17 @@ adlc-cli skills add <source> -a <agent>
   │     .opencode/commands/<name>.md                   inline: embeds skill body
   │                                                    wrapper: references skill
   │
-  └─ 4. Wire events (if .events.json in source)     ← lifecycle hooks
+  └─ 4. Wire hooks (if .hooks.json in source)     ← lifecycle hooks
         .agents/dispatcher.mjs                        generic dispatcher (shipped)
-        .opencode/plugins/adlc-skills-events.ts       agent-native hook config
+        .opencode/plugins/adlc-skills-hooks.ts        agent-native hook config
 ```
+
+Step 1 runs `npx --yes <spec>`. By default the spec follows the running Node:
+`skills@latest` on Node >= 22.20, `skills@1.5.18` (the newest release that
+runs there) on older Nodes. Set `ADLC_SKILLS_PACKAGE=skills@<major>.<minor>.<patch>`
+to pin an exact release instead, for example in a CI or runner image, so
+installs never pick up an untested `skills` release. Anything that is not an
+exact version (`skills@latest`, `skills@^1.7.0`, …) is ignored with a warning.
 
 ## Skill flags
 
@@ -374,7 +446,7 @@ adlc-cli skills add <source> -a <agent>
 |------|-------------|
 | `-a <agent>` | Target agent (repeatable). Run `agent list` to list. |
 | `-g, --global` | Install to user directory instead of project |
-| `--no-events` | Skip event config generation |
+| `--no-hooks` | Skip hook config generation (`--no-events` still works) |
 | `--prefix <str>` | Namespace command filenames (e.g., `adlc.team-setup.md`) |
 | `--mode <mode>` | `inline` (embeds full skill body) or `wrapper` (references skill by name) |
 | `--skill, -s <name>` | Install/generate for one skill only (use `'*'` for all). The selection is expanded through the source's `.skills-deps.json` closure: borrowers auto-pull their canonical homes (e.g. `--skill architect-implement` also installs `architect-clarify`) |
@@ -385,15 +457,15 @@ adlc-cli skills add <source> -a <agent>
 ## Supported agents
 
 24 command agents across 3 command formats (plus a `generic` fallback), 9
-agents with event hooks, 4 run profiles.
+agents with hook support, 4 run profiles.
 
 > **Gemini key split (current behavior):** the agent registry key is
-> `gemini-cli` (skills/commands/events), but the run profile is keyed
+> `gemini-cli` (skills/commands/hooks), but the run profile is keyed
 > `gemini`. So: `skills add -a gemini-cli`, but `agent run -a gemini` — and
 > `agent list` shows gemini-cli without a run profile. Use the two keys as
 > shown.
 
-| Agent | Commands dir | Format | Events | Run |
+| Agent | Commands dir | Format | Hooks | Run |
 |-------|-------------|--------|--------|-----|
 | opencode (1.x + 2.x hybrid plugin) | `.opencode/commands/` | markdown | yes | yes |
 | claude-code | `.claude/commands/` | markdown | yes | yes |
@@ -456,20 +528,20 @@ User-invoked skills (`disable-model-invocation: true` in frontmatter) are meant 
 | `wrapper` | opencode | Ignores `disable-model-invocation` — skill stays available, model calls `skill({name})` |
 | `execution` | claude-code, cursor, copilot, codex | Respects `disable-model-invocation` — skill hidden, body must be inlined |
 
-## Events: lifecycle hooks
+## Hooks: lifecycle hooks
 
-For agents with native hook support (9 agents), the CLI wires event hooks that auto-trigger skills at lifecycle points.
+For agents with native hook support (9 agents), the CLI wires hooks that auto-trigger skills at lifecycle points.
 
-Events are **auto-enabled** when:
-1. The agent supports events
-2. The source repo declares a `.events.json` manifest
-3. `--no-events` is not set
+Hooks are **auto-enabled** when:
+1. The agent supports hooks
+2. The source repo declares a `.hooks.json` manifest (`.events.json` still reads as a deprecated alias until v3)
+3. `--no-hooks` is not set (`--no-events` still works)
 
-### `.events.json` manifest
+### `.hooks.json` manifest
 
 ```json
 {
-  "events": {
+  "hooks": {
     "session_start": [
       { "skill": "team-boot", "description": "Bootstrap session with team context", "timeout": 60 }
     ],
@@ -480,7 +552,7 @@ Events are **auto-enabled** when:
 }
 ```
 
-Repos without `.events.json` get commands only — events are skipped silently.
+Repos without `.hooks.json` get commands only — hooks are skipped silently.
 
 ### The dispatcher: two execution paths
 
@@ -493,9 +565,9 @@ A generic dispatcher (`.agents/dispatcher.mjs`) is shipped to the project. When 
 
 Both paths feed the **stdout → context injection** pipeline.
 
-### 8 canonical events
+### 8 canonical hooks
 
-| Event | Fires when | Body path? | Script path? |
+| Hook | Fires when | Body path? | Script path? |
 |-------|-----------|-----------|-------------|
 | `session_start` | Agent session begins | yes | yes |
 | `session_compact` | Harness compacts history | yes | yes |
@@ -529,7 +601,7 @@ Skill scripts see `ADLC_EVENT` in their environment and the event payload on std
 
 | Agent | Config file | Format | Timeout unit |
 |-------|------------|--------|-------------|
-| opencode (hybrid: V1 `server()` + V2 `setup()`, requires opencode 1.x >= 1.18.29 or any 2.x; project needs `@opencode/plugin` installed for the generated import) | `.opencode/plugins/adlc-skills-events.ts` | TS plugin | seconds |
+| opencode (hybrid: V1 `server()` + V2 `setup()`, requires opencode 1.x >= 1.18.29 or any 2.x; project needs `@opencode/plugin` installed for the generated import) | `.opencode/plugins/adlc-skills-hooks.ts` | TS plugin | seconds |
 | claude-code | `.claude/settings.json` (merged) | JSON nested | seconds |
 | cursor | `.cursor/hooks.json` (merged) | JSON nested | seconds |
 | github-copilot | `.github/hooks/adlc-skills.json` | JSON | seconds |
@@ -550,7 +622,7 @@ Skill scripts see `ADLC_EVENT` in their environment and the event payload on std
 
 ## Self-describing files
 
-Every generated file includes a `<!-- generated by adlc-cli -->` header. Event hook entries carry a `_adlc_skills_cli: true` marker (JSON) or `adlc_skills_marker = true` (TOML). This enables:
+Every generated file includes a `<!-- generated by adlc-cli -->` header. Hook entries carry a `_adlc_skills_cli: true` marker (JSON) or `adlc_skills_marker = true` (TOML). This enables:
 - `remove` to safely delete only our files
 - `upgrade` to overwrite our files while skipping user-modified ones
 

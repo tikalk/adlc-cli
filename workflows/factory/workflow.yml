@@ -1,108 +1,184 @@
 schema_version: "1.0"
+# Factory outer loop 2.0.0 (SF-LANE-05). Calls only skills that exist in
+# adlc-team-skills (factory-intent, factory-mission; both publish through
+# factory-runbook) and fails closed:
+#   preflight               -> fail when the factory skills are not installed
+#                              or the run has no issue
+#   intent                  -> factory-intent drafts the plan for the issue
+#   plan-link               -> keep the plan's MR link only when it is an MR URL
+#   gate-intent             -> a person approves the plan
+#   execute                 -> factory-mission: tests, code, the code MR
+#   proof-of-work           -> fail when execute returned no MR URL
+#   gate-completion         -> a person approves the result (MR link in the message)
+# Agent-written step output never becomes shell text: it reaches a shell step
+# only through `env:`, and reaches a gate message only after one of the two
+# link checks accepted it as a merge/pull request URL.
+# The gates declare no `context` on purpose: a context gate ties the approval
+# to the local HEAD, and a run restored from a park into a fresh clone (on the
+# default branch) would have its approval refused ("head moved").
+# Gates use on_reject: skip plus a stop step, so a reject ends the run FAILED
+# (exit 10, never retried by the Argo lane) instead of ABORTED (exit 1,
+# retried). 1.0.0 called factory-product / factory-architect (removed from
+# adlc-team-skills on 2026-10-25) and "skipped" missing helpers, so a run
+# could pass every gate and open nothing. The 1.0.0 file is kept as an engine
+# test fixture: tests/fixtures/workflows/factory-v1.yml.
 workflow:
   id: factory
   name: Factory Outer Loop
-  version: "1.0.0"
+  version: "2.1.0"
 inputs:
-  verdict:
+  # One verdict input per gate, so approving the plan never pre-answers the
+  # completion gate.
+  verdict_intent:
     type: string
     enum: ["", approve, reject]
-  mr_url:
+  verdict_completion:
+    type: string
+    enum: ["", approve, reject]
+  # Set by the dispatching runtime. issue_ref becomes the steps'
+  # ADLC_ISSUE_REF (ADR-444) and is checked on restore; undeclared inputs are
+  # dropped, so all three must be declared here.
+  issue_ref:
     type: string
     default: ""
-  # Set by the dispatching runtime. issue_ref becomes the agent steps'
-  # ADLC_ISSUE_REF (ADR-444) and is checked on restore; undeclared inputs are
-  # dropped, so both must be declared here.
-  issue_ref:
+  run_id:
     type: string
     default: ""
   dispatch:
     type: string
     default: ""
 steps:
-  - id: run-branch
+  - id: preflight
     type: shell
-    # The engine checks out the intent run branch before any agent step
-    # (ADR-431-amendment §1, §3a), so agent commits land on it and a
-    # re-dispatch continues the issue's branch and MR. Idempotent with the
-    # orchestrator's own run-branch call; skipped without the helper.
-    run: |-
-      node -e "const fs=require('fs'),cp=require('child_process');const fl=['.agents/skills/factory-mission/scripts/bash/run-branch.sh'];const miss=[];for(const f of fl){const n=f.split('/').pop();if(!fs.existsSync(f)){miss.push(n);continue}const r=cp.spawnSync('bash',[f],{stdio:'inherit'});if(r.error){miss.push(n+' ('+r.error.message+')');continue}if(r.status!==0)process.exit(r.status===null?1:r.status)}if(miss.length){const m='run-branch: skipped '+miss.join(', ')+' (factory-mission helpers not installed)';console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"
-  - id: intent-product
+    # Nothing is templated into this script: the engine exports the
+    # issue_ref input as ADLC_ISSUE_REF.
+    run: |
+      missing=""
+      for s in factory-intent factory-mission factory-runbook; do
+        [ -f ".agents/skills/$s/SKILL.md" ] || missing="$missing $s"
+      done
+      for h in run-branch.sh open-mr.sh; do
+        [ -f ".agents/skills/factory-runbook/scripts/bash/$h" ] || missing="$missing factory-runbook/scripts/bash/$h"
+      done
+      [ -n "${ADLC_ISSUE_REF:-}" ] || missing="$missing issue_ref-input"
+      if [ -n "$missing" ]; then
+        echo "preflight: missing:$missing" >&2
+        exit 1
+      fi
+      echo "preflight: ok"
+  - id: intent
     type: command
-    command: factory-product
-  - id: publish-product
+    command: factory-intent
+    # Time limit in seconds, set on purpose (3600 is also the engine default).
+    timeout: 3600
+    input:
+      args: "--issue {{ inputs.issue_ref }}"
+  - id: plan-link
     type: shell
-    # The engine pushes the run branch and opens/reuses the draft MR itself
-    # (ADR-431-amendment §3a), so the gate link never depends on the agent.
-    # run-branch first: an intent step that changed nothing may never have
-    # left the base branch, and open-mr refuses anything but factory/intent/*.
-    # open-mr is idempotent and opens nothing for an empty run; a missing
-    # helper (factory-mission skill not installed) is skipped and reported.
-    run: |-
-      node -e "const fs=require('fs'),cp=require('child_process');const fl=['.agents/skills/factory-mission/scripts/bash/run-branch.sh','.agents/skills/factory-mission/scripts/bash/open-mr.sh'];const miss=[];for(const f of fl){const n=f.split('/').pop();if(!fs.existsSync(f)){miss.push(n);continue}const r=cp.spawnSync('bash',[f],{stdio:'inherit'});if(r.error){miss.push(n+' ('+r.error.message+')');continue}if(r.status!==0)process.exit(r.status===null?1:r.status)}if(miss.length){const m='publish: skipped '+miss.join(', ')+' (factory-mission helpers not installed)';console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"
-  - id: gate-product
+    # The plan's merge request, when factory-intent opened one (a plan with no
+    # commits beyond the base has none; the gate then says so). The value the
+    # agent wrote arrives as an environment variable, never as shell text, and
+    # is passed on only when it is a merge/pull request URL, so nothing else
+    # can reach the approval message. Never fails the run.
+    env:
+      MR_URL: "{{ steps.intent.output.mr_url }}"
+    run: |
+      node -e '
+      const url = process.env.MR_URL || "";
+      const ok = /^https?:\/\/[a-z0-9.-]+(:[0-9]+)?\/[a-z0-9._~\/%+-]*\/(merge_requests|pull)\/[0-9]+$/i.test(url);
+      if (url && !ok) console.error("plan-link: intent reported an mr_url that is not a merge request URL; not shown");
+      const out = process.env.ADLC_STEP_OUTPUT;
+      if (out) require("fs").writeFileSync(out, JSON.stringify({ mr_url: ok ? url : "" }));
+      console.log("plan-link: " + (ok ? url : "none"));
+      '
+  - id: gate-intent
     type: gate
-    message: "Approve PDRs before architecture?"
-    context:
-      records: [".adlc/drafts/pdr/*.md"]
-      since: last_approved
-      # The draft MR the publish step opened (ADR-444 §5, ADR-431-amendment §3a).
-      link: "{{ steps.publish-product.output.mr_url }}"
+    message: "Plan drafted for {{ inputs.issue_ref }}: {{ steps.plan-link.output.mr_url | default('no merge request was opened') }} — approve before implementation?"
     options: [approve, reject]
-    on_reject: abort
-    verdict_input: verdict
-  - id: run-branch-architecture
-    type: shell
-    # Again after the product gate: a parked run resumes after it, possibly
-    # restored into a fresh clone on the base branch, and resume never re-runs
-    # the first run-branch step.
-    run: |-
-      node -e "const fs=require('fs'),cp=require('child_process');const fl=['.agents/skills/factory-mission/scripts/bash/run-branch.sh'];const miss=[];for(const f of fl){const n=f.split('/').pop();if(!fs.existsSync(f)){miss.push(n);continue}const r=cp.spawnSync('bash',[f],{stdio:'inherit'});if(r.error){miss.push(n+' ('+r.error.message+')');continue}if(r.status!==0)process.exit(r.status===null?1:r.status)}if(miss.length){const m='run-branch: skipped '+miss.join(', ')+' (factory-mission helpers not installed)';console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"
-  - id: intent-architecture
-    type: command
-    command: factory-architect
-  - id: publish-architecture
-    type: shell
-    # The engine pushes the run branch and opens/reuses the draft MR itself
-    # (ADR-431-amendment §3a), so the gate link never depends on the agent.
-    # run-branch first: an intent step that changed nothing may never have
-    # left the base branch, and open-mr refuses anything but factory/intent/*.
-    # open-mr is idempotent and opens nothing for an empty run; a missing
-    # helper (factory-mission skill not installed) is skipped and reported.
-    run: |-
-      node -e "const fs=require('fs'),cp=require('child_process');const fl=['.agents/skills/factory-mission/scripts/bash/run-branch.sh','.agents/skills/factory-mission/scripts/bash/open-mr.sh'];const miss=[];for(const f of fl){const n=f.split('/').pop();if(!fs.existsSync(f)){miss.push(n);continue}const r=cp.spawnSync('bash',[f],{stdio:'inherit'});if(r.error){miss.push(n+' ('+r.error.message+')');continue}if(r.status!==0)process.exit(r.status===null?1:r.status)}if(miss.length){const m='publish: skipped '+miss.join(', ')+' (factory-mission helpers not installed)';console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"
-  - id: gate-architecture
+    on_reject: skip
+    verdict_input: verdict_intent
+    # ADR-522: single scope-pinned record gate for both intent lanes
+    # (ADR-435 merged DAG; PR #111 review F1). One gate over both globs so a
+    # single approval covers every record the intent step committed: two
+    # sequential gates with `since: last_approved` would let the first
+    # approval move `since` past records the second gate never shows
+    # (F1: the architecture gate approved sight-unseen). A context gate ties
+    # the approval to the local HEAD: a park-restore into a fresh clone
+    # refuses it ("head moved") instead of re-pausing (ADR-391-amendment-3
+    # S4, ADR-422). Shares verdict_intent with gate-intent above, so one
+    # human plan approval covers both plan gates.
+  - id: gate-intent-decisions
     type: gate
-    message: "Approve ADRs before execution?"
+    message: "Approve the intent records before execution? PDRs and ADRs are listed together — approve only what is shown."
     context:
-      records: [".adlc/drafts/adr/*.md"]
+      records: [".adlc/drafts/pdr/*.md", ".adlc/drafts/adr/*.md"]
       since: last_approved
-      link: "{{ steps.publish-architecture.output.mr_url }}"
+      # The draft MR factory-intent opened via the runbook publish rail
+      # (ADR-444 S5, ADR-431-amendment S3a).
+      link: "{{ steps.intent.output.mr_url }}"
     options: [approve, reject]
-    on_reject: abort
-    verdict_input: verdict
+    on_reject: skip
+    verdict_input: verdict_intent
+  - id: stop-if-plan-rejected
+    type: shell
+    run: |
+      if [ "{{ steps.gate-intent.output.choice }}" != "approve" ]; then
+        echo "stopped: plan rejected at gate-intent" >&2
+        exit 1
+      fi
+      if [ "{{ steps.gate-intent-decisions.output.choice }}" != "approve" ]; then
+        echo "stopped: plan rejected at gate-intent-decisions" >&2
+        exit 1
+      fi
+  # Check out the mission run branch again after the plan gates: a parked run
+  # restored into a fresh clone starts on the base branch and resume skips
+  # prior steps. Mirrors supervised's run-branch-execute (F3) — without it,
+  # execute would run detached on the base branch instead of on
+  # factory/mission/<repo>-<iid> (--kind code).
+  - id: run-branch-execute
+    type: shell
+    run: |-
+      node -e "const fs=require('fs'),cp=require('child_process');const dirs=['.agents/skills/factory-runbook/scripts/bash','.agents/skills/factory-mission/scripts/bash'];const names=['run-branch.sh'];const miss=[];for(const n of names){const f=dirs.map((d)=>d+'/'+n).find((p)=>fs.existsSync(p));if(!f){miss.push(n);continue}const r=cp.spawnSync('bash',[f,'--kind','code'],{stdio:'inherit'});if(r.error){console.error('run-branch-execute: failed to spawn '+n+': '+r.error.message);process.exit(1)}if(r.status!==0)process.exit(r.status===null?1:r.status)}if(miss.length){const m='run-branch-execute: skipped '+miss.join(', ')+' (factory-runbook helpers not installed)';console.error(m);console.log(m);const o=process.env.ADLC_STEP_OUTPUT;if(o){let d={};try{d=JSON.parse(fs.readFileSync(o,'utf8'))}catch(e){}d.skipped=m.slice(0,2000);fs.writeFileSync(o,JSON.stringify(d))}}"
   - id: execute
     type: command
     command: factory-mission
-    # The mission is the run's issue (ADR-444 §4): without it factory-mission
-    # asked for one and returned, and the step counted as completed
-    # (adlc-workspace#12 M9 pilot, run 84412db5). The skill also falls back to
-    # ADLC_ISSUE_REF and fails the step when neither is set.
+    # The mission is the run's issue (ADR-444 §4); the skill also falls back
+    # to ADLC_ISSUE_REF and fails the step when neither is set.
+    # Time limit in seconds, set on purpose (3600 is also the engine default).
+    # A step that reaches it fails the run with a "timeout:" error.
+    timeout: 3600
     input:
       args: "--issue {{ inputs.issue_ref }}"
+  - id: proof-of-work
+    type: shell
+    # The deliverable is the code MR factory-mission opened (its mr_url step
+    # output, ADR-444). The agent-written value arrives as an environment
+    # variable, never as shell text (a quote in a templated value would end the
+    # string and run the rest), and must be a GitLab merge request or GitHub
+    # pull request URL: letters, digits and . _ ~ / % + - only. The completion
+    # gate below shows the same, checked value. The free-text conclusion is not
+    # used at all.
+    env:
+      MR_URL: "{{ steps.execute.output.mr_url }}"
+    run: |
+      node -e '
+      const url = process.env.MR_URL || "";
+      if (!/^https?:\/\/[a-z0-9.-]+(:[0-9]+)?\/[a-z0-9._~\/%+-]*\/(merge_requests|pull)\/[0-9]+$/i.test(url)) {
+        console.error("proof-of-work: execute returned no merge request URL (mr_url); see the conclusion of the execute step");
+        process.exit(1);
+      }
+      console.log("proof-of-work: " + url);
+      '
   - id: gate-completion
     type: gate
-    message: "Approve completion (ChDRs and merge request)?"
-    context:
-      records: [".adlc/drafts/chdr/*.md"]
-      since: last_approved
-      # The code MR factory-mission opened (its mr_url step output, ADR-444);
-      # an operator-supplied mr_url input is the fallback.
-      link: "{{ steps.execute.output.mr_url | default(inputs.mr_url) }}"
+    message: "Implementation for {{ inputs.issue_ref }} is ready: {{ steps.execute.output.mr_url }} — approve completion?"
     options: [approve, reject]
-    on_reject: abort
-    verdict_input: verdict
-  - id: sweep
-    type: command
-    command: factory-init
+    on_reject: skip
+    verdict_input: verdict_completion
+  - id: stop-if-result-rejected
+    type: shell
+    run: |
+      if [ "{{ steps.gate-completion.output.choice }}" != "approve" ]; then
+        echo "stopped: result rejected at gate-completion" >&2
+        exit 1
+      fi

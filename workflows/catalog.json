@@ -5,8 +5,8 @@
     "factory": {
       "id": "factory",
       "name": "Factory Outer Loop",
-      "description": "Factory outer loop — product → architecture → execution → sweep, with stage gates",
-      "version": "1.0.0",
+      "description": "Factory outer loop — preflight → intent → plan gate → execute (factory-mission) → proof of work → completion gate; fails closed",
+      "version": "2.0.0",
       "path": "workflows/factory/workflow.yml",
       "tags": ["factory", "outer-loop", "adlc"]
     },

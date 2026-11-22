@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "session_start": [
+      {
+        "skill": "workspace",
+        "description": "E2E wiring check",
+        "timeout": 60
+      }
+    ]
+  }
+}

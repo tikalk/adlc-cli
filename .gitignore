@@ -18,10 +18,10 @@ npm-debug.log*
 # Generated install artifacts (via adlc-cli skill add)
 .agents/
 .opencode/
-.events.json
+.hooks.json
 skills-lock.json
 # Exception: vendored E2E fixture is a tracked source, not a generated artifact
-!tests/fixtures/skills-src/.events.json
+!tests/fixtures/skills-src/.hooks.json
 
 # graphify knowledge graph (generated)
 graphify-out/

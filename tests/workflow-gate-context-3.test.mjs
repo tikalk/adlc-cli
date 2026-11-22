@@ -44,7 +44,7 @@ import { buildGateManifest, renderGateMessage, parseRecord } from "../src/workfl
 import { fileURLToPath } from "node:url";
 
 const FACTORY_YAML = readFileSync(
-  join(dirname(dirname(fileURLToPath(import.meta.url))), "workflows", "factory", "workflow.yml"),
+  join(dirname(fileURLToPath(import.meta.url)), "fixtures", "workflows", "factory-v1.yml"),
   "utf-8"
 );
 

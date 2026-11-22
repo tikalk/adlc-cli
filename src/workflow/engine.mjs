@@ -26,7 +26,8 @@ import { RunStatus, StepStatus, StepContext, typeName, repr } from "./base.mjs";
 import { evaluateCondition } from "./expressions.mjs";
 import { readAgent } from "../utils/init-options.mjs";
 import { Lease } from "./lease.mjs";
-import { pushRunRef } from "./refs.mjs";
+import { syncRunRef } from "./refs.mjs";
+import { initTrace, appendTraceEvent, finalizeTrace } from "./trace.mjs";
 import { currentHeadSha, hasContextGate } from "./gate-context.mjs";
 import {
   loadBundledCatalog,
@@ -336,6 +337,12 @@ function validateSteps(steps, seenIds, errors, inputDefs, insideFanOut, registry
 
     if (stepType === "gate") {
       const verdictInput = stepConfig.verdict_input;
+      // answer_* inputs belong to question pauses, never to gates
+      // (adlc-workspace#148): gates answer through verdict inputs bound to
+      // enum-admitting workflow inputs.
+      if (typeof verdictInput === "string" && verdictInput.startsWith("answer_")) {
+        errors.push(`Gate step ${repr(stepId)}: 'verdict_input' must not be an answer_* input (reserved for question pauses).`);
+      }
       if (typeof verdictInput === "string" && verdictInput) {
         if (insideFanOut) {
           errors.push(`Gate step ${repr(stepId)}: 'verdict_input' is not supported inside fan-out templates.`);
@@ -461,6 +468,16 @@ export class RunState {
     // Persisted only when set, so runs without context gates are unchanged.
     this.runStartSha = null;
     this.lastApprovedSha = null;
+    // True when the run failed because a step was killed by its own time
+    // limit (persisted as `timed_out` only when set, and carried on the
+    // run_failed event). It is a label for whoever reads the run: the status
+    // stays "failed" and the exit code stays 10 (not retried).
+    this.timedOut = false;
+    // True when the run failed because an agent step exited non-zero within
+    // the fast-failure threshold of spawn (ADR-542; persisted as
+    // `fast_failure` only when set). The CLI exits with the retryable code
+    // for such a run; the status stays "failed".
+    this.fastFailure = false;
     // Async mutex serializing save()/appendLog file writes — the JS analogue
     // of upstream's _lock/_log_lock pair (single-threaded JS needs it only
     // across await points during concurrent fan-out).
@@ -510,6 +527,8 @@ export class RunState {
       };
       if (this.runStartSha !== null) stateData.run_start_sha = this.runStartSha;
       if (this.lastApprovedSha !== null) stateData.last_approved_sha = this.lastApprovedSha;
+      if (this.timedOut === true) stateData.timed_out = true;
+      if (this.fastFailure === true) stateData.fast_failure = true;
       atomicWriteJson(join(this.runsDir, "state.json"), stateData);
       atomicWriteJson(join(this.runsDir, "inputs.json"), { inputs: this.inputs });
     });
@@ -526,6 +545,11 @@ export class RunState {
       } finally {
         closeSync(fd);
       }
+      // Trace bundle v1 (ADR-490): mirror the lifecycle entry into the
+      // ADR-362 stream. Fail-soft — telemetry never breaks a run.
+      try {
+        appendTraceEvent(this.runsDir, entry);
+      } catch {}
     });
   }
 
@@ -606,6 +630,9 @@ export class RunState {
     // Optional (absent in state files written before context gates existed).
     state.runStartSha = typeof stateData.run_start_sha === "string" ? stateData.run_start_sha : null;
     state.lastApprovedSha = typeof stateData.last_approved_sha === "string" ? stateData.last_approved_sha : null;
+    state.timedOut = stateData.timed_out === true;
+    // Absent in state files written before ADR-542 existed.
+    state.fastFailure = stateData.fast_failure === true;
 
     const inputsPath = join(runsDir, "inputs.json");
     if (existsSync(inputsPath)) {
@@ -622,6 +649,21 @@ export class RunState {
 
     return state;
   }
+}
+
+// An error thrown while a run was executing, after the run was saved as
+// failed: it carries the run's id and status, so the caller can tell "this
+// run failed" (a terminal state with its own exit code) from "the command
+// could not start" (lease held, run not found, bad usage). Always returns an
+// Error, so `throw markRunFailed(…)` is safe for any thrown value.
+export function markRunFailed(exc, state) {
+  const error = exc instanceof Error ? exc : new Error(String(exc));
+  try {
+    error.adlcRun = { runId: state.runId, status: state.status };
+  } catch {
+    // A frozen error object: the caller falls back to the generic exit code.
+  }
+  return error;
 }
 
 function atomicWriteJson(path, data) {
@@ -653,6 +695,9 @@ export class WorkflowEngine {
     // Set by the CLI on SIGINT/SIGTERM: the engine pauses cleanly at the
     // next boundary (JS analogue of upstream's KeyboardInterrupt handler).
     this.interrupted = false;
+    // Set when a gate step completes: the next step's start is pushed to the
+    // remote run ref without the ADLC_WORKFLOW_PUSH_INTERVAL throttle.
+    this.pushNextStepStart = false;
   }
 
   // Emit a lifecycle event when a sink is installed (no-op otherwise).
@@ -750,6 +795,11 @@ export class WorkflowEngine {
       state.runStartSha = currentHeadSha(String(this.projectRoot));
     }
     await state.save();
+    // Trace bundle v1 (ADR-490): identity + lifecycle stream from the start.
+    try {
+      initTrace(state.runsDir, { state, projectRoot: this.projectRoot, definition });
+      appendTraceEvent(state.runsDir, { event: "run_started", workflow_id: definition.id });
+    } catch {}
     this.emit("run_started", { run_id: state.runId, workflow_id: definition.id });
 
     const context = new StepContext({
@@ -779,7 +829,7 @@ export class WorkflowEngine {
       await state.appendLog({ event: "workflow_failed", error: state.error });
       await state.save();
       this.finishSession(state, lease);
-      throw exc;
+      throw markRunFailed(exc, state);
     }
 
     if (state.status === RunStatus.RUNNING) {
@@ -800,10 +850,23 @@ export class WorkflowEngine {
     } else if (state.status === RunStatus.COMPLETED) {
       this.emit("run_completed", { run_id: state.runId });
     } else if (state.status === RunStatus.FAILED || state.status === RunStatus.ABORTED) {
-      this.emit("run_failed", { run_id: state.runId, error: state.error, status: state.status });
+      this.emit("run_failed", {
+        run_id: state.runId,
+        error: state.error,
+        status: state.status,
+        ...(state.timedOut === true ? { timed_out: true } : {}),
+        ...(state.fastFailure === true ? { fast_failure: true } : {}),
+      });
     }
     try {
-      pushRunRef(this.projectRoot, state.runId, state.runsDir);
+      // Trace: close the bundle (retention) before the ref is pushed, so a
+      // pruned successful trace never reaches the remote.
+      finalizeTrace(state.runsDir, state);
+    } catch {}
+    try {
+      // Exit path (pause/terminal): push unconditionally so another machine
+      // can restore the run even if this pod is torn down immediately.
+      syncRunRef(this.projectRoot, state.runId, state.runsDir, { minIntervalSeconds: 0 });
     } catch {}
     if (lease) lease.release();
   }
@@ -869,8 +932,15 @@ export class WorkflowEngine {
     }
 
     state.error = null;
+    state.timedOut = false;
+    state.fastFailure = false;
     state.status = RunStatus.RUNNING;
     await state.save();
+    // Trace: resume keeps the original manifest identity and appends a marker.
+    try {
+      initTrace(state.runsDir, { state, projectRoot: this.projectRoot, definition });
+      appendTraceEvent(state.runsDir, { event: "run_resumed", workflow_id: definition.id });
+    } catch {}
     this.emit("run_started", { run_id: state.runId, workflow_id: definition.id, resumed: true });
 
     // Resume from the current step — re-execute it so gates can prompt again.
@@ -892,7 +962,7 @@ export class WorkflowEngine {
       await state.appendLog({ event: "resume_failed", error: state.error });
       await state.save();
       this.finishSession(state, lease);
-      throw exc;
+      throw markRunFailed(exc, state);
     }
 
     if (state.status === RunStatus.RUNNING) {
@@ -921,6 +991,16 @@ export class WorkflowEngine {
         state.currentStepIndex = stepOffset + i;
       }
       await state.save();
+      // Step-boundary durability: throttled remote sync bounds the crash
+      // window to ADLC_WORKFLOW_PUSH_INTERVAL (ADR-475). The step that
+      // follows a completed gate is the exception and is pushed at once: a
+      // gate completes in milliseconds, so the throttle would otherwise leave
+      // the remote saying "at the gate" for the whole next step (often the
+      // longest one), and a restore after a lost pod would go back to a gate
+      // that was already answered.
+      const afterGate = this.pushNextStepStart === true;
+      this.pushNextStepStart = false;
+      syncRunRef(this.projectRoot, state.runId, state.runsDir, afterGate ? { minIntervalSeconds: 0 } : {});
       if (lease) lease.renew();
       this.emit("step_started", { run_id: state.runId, step_id: stepId, step_type: stepType });
 
@@ -941,6 +1021,10 @@ export class WorkflowEngine {
       }
 
       const result = await stepImpl.execute(stepConfig, context);
+      // An answered gate must reach the remote with the next step's start.
+      if (stepType === "gate" && result.status === StepStatus.COMPLETED) {
+        this.pushNextStepStart = true;
+      }
 
       const stepData = {
         type: stepType,
@@ -981,6 +1065,25 @@ export class WorkflowEngine {
           unavailable_reason: result.output.unavailable_reason ?? null,
           unavailable_kind: result.output.unavailable_kind ?? null,
           decisions: [],
+        });
+      }
+      if (stepType === "gate" && result.status === StepStatus.COMPLETED && result.output.auto_passed === true) {
+        // `context.on_empty: pass`: the gate completed without asking because
+        // its decision list was empty. Audited and announced, so the run's
+        // readers see that no person was asked, and why.
+        await state.appendLog({
+          event: "gate_auto_passed",
+          step_id: stepId,
+          reason: result.output.auto_pass_reason ?? null,
+          head_sha: result.output.head_sha ?? null,
+          since_sha: result.output.since_sha ?? null,
+        });
+        this.emit("gate_auto_passed", {
+          run_id: state.runId,
+          step_id: stepId,
+          message: `gate ${stepId} auto-passed: ${result.output.auto_pass_reason ?? "nothing to approve"}`,
+          head_sha: result.output.head_sha ?? null,
+          since_sha: result.output.since_sha ?? null,
         });
       }
       this.emit("step_completed", { run_id: state.runId, step_id: stepId, step_type: stepType, status: result.status });
@@ -1030,6 +1133,20 @@ export class WorkflowEngine {
             verdict_input: stepConfig.verdict_input ?? null,
             ...manifest,
           });
+        } else if (result.output?.kind === "question") {
+          // Agent-step question pause (adlc-workspace#148): same channel as
+          // gate pauses, tagged kind=question. No permission_request — the
+          // answer arrives as the answer_<step_id> resume input (ADR-416:
+          // the engine makes no Slack/tracker calls).
+          this.emit("gate_paused", {
+            run_id: state.runId,
+            step_id: stepId,
+            kind: "question",
+            message: questionMessage(result.output),
+            answer_input: result.output.answer_input ?? null,
+            payload: result.output.payload ?? null,
+            head_sha: result.output.head_sha ?? null,
+          });
         }
         return;
       }
@@ -1059,6 +1176,17 @@ export class WorkflowEngine {
 
         state.status = RunStatus.FAILED;
         state.error = result.error;
+        // A step killed by its own time limit: the run is marked, so a
+        // reader can tell a time-out from an agent failure. The exit code
+        // does not change (failed, 10).
+        state.timedOut = result.output?.timed_out === true;
+        if (state.timedOut) {
+          await state.appendLog({ event: "step_timed_out", step_id: stepId, timeout_seconds: result.output?.timeout_seconds ?? null });
+        }
+        // ADR-542: a fast agent failure marks the whole run retryable; the
+        // flag persists so the command boundary can classify after the
+        // engine process context is gone.
+        if (result.output?.fast_failure === true) state.fastFailure = true;
         await state.appendLog({ event: "step_failed", step_id: stepId, error: result.error });
         await state.save();
         if (this.onStepComplete !== null) {
@@ -1251,6 +1379,8 @@ export class WorkflowEngine {
       const haltRec = context.steps[itemId(haltedAt)];
       if (haltRec && typeof haltRec === "object") {
         state.error = haltRec.error ?? null;
+        // The halting item decides, not whichever item failed last in time.
+        state.timedOut = haltedStatus === RunStatus.FAILED && haltRec.output?.timed_out === true;
       }
       return slots.slice(0, haltedAt + 1);
     }
@@ -1261,6 +1391,15 @@ export class WorkflowEngine {
     const resolved = {};
     if (typeof definition.inputs !== "object" || definition.inputs === null || Array.isArray(definition.inputs)) {
       return {};
+    }
+    // answer_* pass-through (adlc-workspace#148): resume answers arrive as
+    // undeclared workflow inputs (answer_<step_id>). Accept them as free
+    // text so resume can always carry an answer, even when the workflow
+    // declares no such input.
+    for (const [name, value] of Object.entries(provided)) {
+      if (name.startsWith("answer_") && !(name in (definition.inputs ?? {}))) {
+        resolved[name] = String(value);
+      }
     }
     for (const [name, inputDef] of Object.entries(definition.inputs)) {
       if (typeof inputDef !== "object" || inputDef === null || Array.isArray(inputDef)) continue;
@@ -1297,7 +1436,8 @@ export class WorkflowEngine {
 
   static coerceInput(name, value, inputDef) {
     const inputType = inputDef.type ?? "string";
-    const enumValues = inputDef.enum ?? null;
+    // answer_* inputs are free text, never enum-coerced (adlc-workspace#148).
+    const enumValues = name.startsWith("answer_") ? null : (inputDef.enum ?? null);
 
     if (enumValues !== null && !Array.isArray(enumValues)) {
       throw new Error(`Input ${repr(name)} has invalid 'enum': must be a list, got ${typeName(enumValues)}.`);
@@ -1361,4 +1501,14 @@ export class WorkflowEngine {
 function looseEqForInput(a, b) {
   if (typeof a === "number" && typeof b === "number") return a === b;
   return a === b;
+}
+
+// One-line human summary of a question payload for the gate_paused event.
+function questionMessage(output) {
+  const questions = output?.payload?.questions;
+  if (Array.isArray(questions) && questions.length > 0) {
+    const first = questions.map((q) => q?.text).find((t) => typeof t === "string" && t !== "");
+    if (first) return `Question from step '${output?.answer_input?.replace(/^answer_/, "") ?? "?"}': ${first}`;
+  }
+  return "Agent step asked a question.";
 }

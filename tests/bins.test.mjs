@@ -27,3 +27,30 @@ test("version output matches package.json (no drift)", async () => {
   const { stdout } = await exec(process.execPath, ["bin/adlc-cli.mjs", "version"]);
   assert.equal(stdout.trim(), `adlc-cli ${pkg.version}`);
 });
+
+// process.exit() terminates immediately and drops writes still queued in
+// libuv: stdout to a pipe is asynchronous on POSIX. Both bins print, then
+// exit, so without a flush the tail of a large output can be lost on a
+// platform whose pipe buffer is small (Publish run 42608148983: macOS lost
+// the last two panels of `workflow help`). This pins the contract the bins
+// rely on: flush before process.exit.
+test("flushStdio drains queued stdout before process.exit", async () => {
+  const cliUrl = new URL("../src/cli.mjs", import.meta.url).href;
+  const lines = 20000; // ~1.4 MB — far past any pipe buffer
+  const script = `
+    const { flushStdio } = await import(process.env.ADLC_CLI_URL);
+    for (let i = 0; i < ${lines}; i++) {
+      process.stdout.write("line-" + i + " " + "x".repeat(60) + "\\n");
+    }
+    await flushStdio();
+    process.exit(0);
+  `;
+  const { stdout } = await exec(
+    process.execPath,
+    ["--input-type=module", "-e", script],
+    { maxBuffer: 16 * 1024 * 1024, env: { ...process.env, ADLC_CLI_URL: cliUrl } },
+  );
+  const expected = Array.from({ length: lines }, (_, i) => `line-${i} ${"x".repeat(60)}\n`).join("");
+  assert.equal(stdout.length, expected.length, "stdout was truncated before exit");
+  assert.ok(stdout.endsWith(`line-${lines - 1} ${"x".repeat(60)}\n`), "tail of stdout missing");
+});

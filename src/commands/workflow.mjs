@@ -26,8 +26,9 @@ import {
   stateShow,
 } from "../workflow/state.mjs";
 import { parkRun, restoreRun } from "../workflow/refs.mjs";
+import { buildBoardIndex } from "../workflow/board.mjs";
 import { printWorkflowHelp } from "../help.mjs";
-import { classifyWorkflowStatus } from "../exit-codes.mjs";
+import { classifyWorkflowError, classifyWorkflowStatus } from "../exit-codes.mjs";
 import { StepStatus } from "../workflow/base.mjs";
 import {
   out,
@@ -36,6 +37,7 @@ import {
   success,
   failure,
   note,
+  warn,
   panel,
   table,
   keyValue,
@@ -69,6 +71,8 @@ export async function cmdWorkflow(args, flags, rawArgv) {
       return cmdWorkflowPark(rest, rawArgv);
     case "restore":
       return cmdWorkflowRestore(rest, rawArgv);
+    case "board":
+      return cmdWorkflowBoard(rest, rawArgv);
     case "search":
       return cmdWorkflowSearch(rest, rawArgv);
     case "add":
@@ -255,10 +259,12 @@ async function cmdWorkflowRun(rest, rawArgv) {
     // Lane contract: PAUSED exits 3 so the Argo expression
     // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
     // excludes it from retries.
-    return classifyWorkflowStatus(state.status).exitCode;
+    return classifyWorkflowStatus(state.status, { fastFailure: state.fastFailure === true }).exitCode;
   } catch (exc) {
     error(exc.message);
-    return 1;
+    // The engine saved the run as failed before it threw: exit with the
+    // "failed" code (never retried by the lane), not the generic 1.
+    return classifyWorkflowError(exc).exitCode;
   } finally {
     removeHandlers();
   }
@@ -309,14 +315,17 @@ async function cmdWorkflowResume(rest, rawArgv) {
     // Lane contract: PAUSED exits 3 so the Argo expression
     // `asInt(lastRetry.exitCode) != 10 && asInt(lastRetry.exitCode) != 3`
     // excludes it from retries.
-    return classifyWorkflowStatus(state.status).exitCode;
+    return classifyWorkflowStatus(state.status, { fastFailure: state.fastFailure === true }).exitCode;
   } catch (exc) {
     if (exc instanceof LeaseHeldError) {
       error(exc.message);
       return 1;
     }
     error(exc.message);
-    return 1;
+    // A resume that threw after the run was saved as failed exits with the
+    // "failed" code; one that never started (run not found, wrong status)
+    // keeps the generic 1.
+    return classifyWorkflowError(exc).exitCode;
   } finally {
     removeHandlers();
   }
@@ -506,6 +515,91 @@ function valuedFlagValues(rawArgv) {
     }
   }
   return values;
+}
+
+// ── board (ADR-476 pane of glass v1) ──────────────────────────────────────
+
+// One view over every factory run: local run dirs + remote
+// refs/factory-runs/* (ADR-475/490). The index is derived fresh every call
+// and never persisted (ADR-325 stateless aggregation; ADR-490 disposable
+// index). Degrades per source: an unreachable remote keeps the board
+// local-only (warning, exit 0); unreadable refs are skipped and counted.
+async function cmdWorkflowBoard(rest, rawArgv) {
+  const remote = extractFlagValue(rawArgv, "remote") ?? "origin";
+  let board;
+  try {
+    board = buildBoardIndex({ projectRoot: process.cwd(), remote });
+  } catch (exc) {
+    error(exc.message);
+    return 1;
+  }
+
+  // Machine contract for the future web dashboard (ADR-325 SPA): stdout is
+  // the JSON index and nothing else; remote errors ride inside the doc.
+  if (hasFlag(rawArgv, "format") && extractFlagValue(rawArgv, "format") === "json") {
+    out(
+      JSON.stringify(
+        { runs: board.runs, remoteError: board.remoteError, skippedRemote: board.skippedRemote },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (board.remoteError !== null) {
+    warn(
+      combine(
+        style(sym.warn, "yellow"),
+        ` remote "${remote}" unreachable — showing local runs only (`,
+        tint(board.remoteError, "gray"),
+        ")",
+      ),
+    );
+  }
+
+  if (board.runs.length === 0) {
+    out("");
+    note(`No factory runs found (local ${RUNS_DIR} + ${remote}:refs/factory-runs/*)`);
+    if (board.skippedRemote > 0) {
+      note(`Skipped ${board.skippedRemote} unreadable remote ref(s)`);
+    }
+    out("");
+    return 0;
+  }
+
+  out("");
+  out(
+    table({
+      title: `Factory board — ${board.runs.length} run${board.runs.length === 1 ? "" : "s"} (${remote})`,
+      columns: [
+        { header: "Run ID", style: ACCENT },
+        { header: "Source" },
+        { header: "Status" },
+        { header: "Current", optional: true },
+        { header: "Outcome", optional: true },
+        { header: "Retention", optional: true },
+        { header: "Issue", optional: true },
+        { header: "Updated", optional: true },
+      ],
+      rows: board.runs.map((r) => [
+        r.run_id,
+        r.source,
+        statusCell(r.status ?? "unknown"),
+        r.current_step_id ?? "",
+        r.outcome ?? "",
+        r.retention_class ?? "",
+        r.issue_ref ?? "",
+        r.updated_at ?? "",
+      ]),
+    }),
+  );
+  if (board.skippedRemote > 0) {
+    out("");
+    note(`Skipped ${board.skippedRemote} unreadable remote ref(s) — no parsable state.json`);
+  }
+  out("");
+  return 0;
 }
 
 // ── status ───────────────────────────────────────────────────────────────

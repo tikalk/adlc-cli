@@ -79,7 +79,7 @@ Match the prompt against CDR index.`,
 }
 
 describe("Events: manifest discovery", () => {
-  it("reads local .events.json", () => {
+  it("reads deprecated .events.json via alias", () => {
     const dir = mkdtempSync(join(tmpdir(), "adlc-manifest-"));
     try {
       writeFileSync(join(dir, ".events.json"), JSON.stringify(SAMPLE_MANIFEST), "utf-8");
@@ -90,7 +90,7 @@ describe("Events: manifest discovery", () => {
     }
   });
 
-  it("returns null when no .events.json", () => {
+  it("returns null when no manifest", () => {
     const dir = mkdtempSync(join(tmpdir(), "adlc-none-"));
     try {
       assert.equal(readLocalEventsManifest(dir), null);
@@ -191,9 +191,9 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       const result = installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      assert.equal(result.path, ".opencode/plugins/adlc-skills-events.ts");
+      assert.equal(result.path, ".opencode/plugins/adlc-skills-hooks.ts");
       const content = readFileSync(join(projectRoot, result.path), "utf-8");
-      assert.ok(content.includes('id: "adlc-skills-events"'));
+      assert.ok(content.includes('id: "adlc-skills-hooks"'));
       assert.ok(content.includes("runEvent"));
       assert.ok(content.includes("team-boot"));
       assert.ok(content.includes("team-discover"));
@@ -216,7 +216,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(manifest, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       // Generic event subscription (file.edited has no named hook key).
       const eventHandler = content.match(/"event": async \(\{ event \}\) => \{([\s\S]*?)\n    \}/);
@@ -256,7 +256,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(manifest, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
       assert.ok(content.includes('"event": async ({ event }) =>'), "generic event handler present");
       assert.ok(content.includes('"experimental.chat.messages.transform":'), "standalone drainer emitted");
     } finally {
@@ -280,13 +280,44 @@ describe("Events: opencode plugin generation", () => {
       const post = settings.hooks.PostToolUse;
       assert.ok(Array.isArray(post), "PostToolUse array exists");
       assert.equal(post.length, 2, "both entries accumulated (regression: assignment overwrote)");
-      const fe = post.find((h) => h.command.includes("file_edited"));
-      assert.ok(fe, "file_edited entry present");
+      // Claude Code schema: each event holds matcher groups { matcher?, hooks: [ {type, command} ] }.
+      for (const g of post) {
+        assert.ok(Array.isArray(g.hooks) && g.hooks.length === 1, "entry is a matcher group with a hooks array");
+        assert.equal(g.command, undefined, "command lives inside hooks[], not on the group");
+        assert.equal(g[EVENT_MARKER], true, "marker on the group");
+      }
+      const feGroup = post.find((g) => g.hooks[0].command.includes("file_edited"));
+      assert.ok(feGroup, "file_edited entry present");
+      const fe = feGroup.hooks[0];
+      assert.equal(fe.type, "command");
       assert.ok(fe.command.endsWith("hookSpecificOutput"), "file_edited uses hookSpecificOutput envelope");
-      assert.equal(fe.matcher, "Edit|Write", "matcher passthrough");
-      const ptu = post.find((h) => h.command.includes("post_tool_use"));
-      assert.ok(ptu, "post_tool_use entry survives");
+      assert.equal(feGroup.matcher, "Edit|Write", "matcher on the group");
+      assert.equal(fe.matcher, undefined, "matcher not on the inner hook");
+      const ptuGroup = post.find((g) => g.hooks[0].command.includes("post_tool_use"));
+      assert.ok(ptuGroup, "post_tool_use entry survives");
+      assert.equal(ptuGroup.matcher, undefined, "no matcher → matches all tools");
+      const ptu = ptuGroup.hooks[0];
       assert.ok(!ptu.command.includes("hookSpecificOutput"), "post_tool_use stays plain (unchanged)");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("claude-code: reinstall migrates legacy flat marker entries to matcher groups", () => {
+    const projectRoot = createTestProject(false);
+    try {
+      mkdirSync(join(projectRoot, ".claude"), { recursive: true });
+      const settingsPath = join(projectRoot, ".claude", "settings.json");
+      writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionStart: [
+        { type: "command", command: "node old session_start", timeout: 60, [EVENT_MARKER]: true },
+        { hooks: [{ type: "command", command: "echo user-hook" }] },
+      ] } }), "utf-8");
+      const agentConfig = getEventAgentConfig("claude-code");
+      installEvents("claude-code", projectRoot, resolveEvents(SAMPLE_MANIFEST, agentConfig), ".agents/skills");
+      const ss = JSON.parse(readFileSync(settingsPath, "utf-8")).hooks.SessionStart;
+      assert.equal(ss.length, 2, "legacy flat entry replaced, user group kept");
+      for (const g of ss) assert.ok(Array.isArray(g.hooks), "every SessionStart entry is a matcher group");
+      assert.ok(!ss.some((g) => g.command), "no flat entries remain");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -331,7 +362,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       const chatMessage = content.match(/"chat\.message": async \(input, output\) => \{([\s\S]*?)\n    \}/);
       assert.ok(chatMessage, "chat.message handler present");
@@ -351,7 +382,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       const chatMessage = content.match(/"chat\.message": async \(input, output\) => \{([\s\S]*?)\n    \}/);
       assert.ok(chatMessage, "chat.message handler present");
@@ -370,7 +401,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       const messagesTransform = content.match(/"experimental\.chat\.messages\.transform": async \(_input, output\) => \{([\s\S]*?)\n    \}/);
       assert.ok(messagesTransform, "messages.transform handler present");
@@ -394,7 +425,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       // Cache variable declared at module level
       assert.ok(content.includes("_sessionStartCache"), "cache variable present");
@@ -417,7 +448,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       // statSync import for mtime tracking
       assert.ok(content.includes("statSync"), "statSync imported from node:fs");
@@ -443,7 +474,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       const messagesTransform = content.match(/"experimental\.chat\.messages\.transform": async \(_input, output\) => \{([\s\S]*?)\n    \}/);
       assert.ok(messagesTransform, "messages.transform handler present");
@@ -463,7 +494,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       const messagesTransform = content.match(/"experimental\.chat\.messages\.transform": async \(_input, output\) => \{([\s\S]*?)\n    \}/);
       assert.ok(messagesTransform, "messages.transform handler present");
@@ -486,7 +517,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       assert.ok(content.includes("_replaceInjectedTextV2"), "V2 exact-replace helper present");
       const contextHook = content.match(/hook\("context", \(event: any\) => \{([\s\S]*?)\n      \}\)/);
@@ -510,7 +541,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(manifest, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       assert.ok(content.includes("_invalidateSessionStartCache"), "shared invalidation helper present");
       assert.ok(content.includes("function _invalidateSessionStartCache"), "helper defined once");
@@ -530,7 +561,7 @@ describe("Events: opencode plugin generation", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SESSION_START_ONLY_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       assert.ok(content.includes("experimental.chat.messages.transform"), "messages.transform hook present");
       assert.ok(!content.includes('"chat.message"'), "no chat.message hook for session_start-only manifest");
@@ -549,13 +580,13 @@ describe("Events: opencode hybrid V1+V2 plugin", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       const result = installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      assert.equal(result.path, ".opencode/plugins/adlc-skills-events.ts");
+      assert.equal(result.path, ".opencode/plugins/adlc-skills-hooks.ts");
       const content = readFileSync(join(projectRoot, result.path), "utf-8");
 
       // V2 entrypoint: Plugin.define with stable id + setup
       assert.ok(content.includes('import { Plugin } from "@opencode/plugin"'), "V2 import");
       assert.ok(content.includes("Plugin.define"), "Plugin.define present");
-      assert.ok(content.includes('id: "adlc-skills-events"'), "stable plugin id");
+      assert.ok(content.includes('id: "adlc-skills-hooks"'), "stable plugin id");
       assert.ok(content.includes("async setup("), "V2 setup present");
       // V1 entrypoint preserved for opencode 1.x (>=1.18.29 object entrypoints)
       assert.ok(content.includes("async server("), "V1 server() present");
@@ -585,7 +616,7 @@ describe("Events: opencode hybrid V1+V2 plugin", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(manifest, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       assert.ok(content.includes('ctx.tool.hook("execute.before"'), "V2 pre-tool hook");
       assert.ok(content.includes('ctx.tool.hook("execute.after"'), "V2 post-tool hook");
@@ -614,7 +645,7 @@ describe("Events: opencode hybrid V1+V2 plugin", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(manifest, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       assert.ok(content.includes('event.type === "session.deleted"'), "V1 guards on session.deleted type");
       assert.ok(content.includes('"session_end"'), "V1 dispatches canonical session_end");
@@ -638,7 +669,7 @@ describe("Events: opencode hybrid V1+V2 plugin", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(manifest, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       const guards = content.match(/"event": async \(\{ event \}\) => \{/g) || [];
       assert.equal(guards.length, 1, "exactly ONE `event` entry — duplicate object keys would drop a handler at runtime");
@@ -769,7 +800,7 @@ describe("Events: surgical teardown", () => {
       // Add a user-created hook manually
       const settingsPath = join(projectRoot, ".claude", "settings.json");
       const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      settings.hooks.SessionStart.push({ type: "command", command: "echo user-hook" });
+      settings.hooks.SessionStart.push({ hooks: [{ type: "command", command: "echo user-hook" }] });
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
 
       // Remove our events
@@ -778,7 +809,7 @@ describe("Events: surgical teardown", () => {
 
       const after = JSON.parse(readFileSync(settingsPath, "utf-8"));
       assert.equal(after.hooks.SessionStart.length, 1, "Only user hook remains");
-      assert.equal(after.hooks.SessionStart[0].command, "echo user-hook");
+      assert.equal(after.hooks.SessionStart[0].hooks[0].command, "echo user-hook");
       assert.equal(after.hooks.UserPromptSubmit, undefined, "Our entries removed");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
@@ -792,7 +823,7 @@ describe("Events: surgical teardown", () => {
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
 
-      const pluginPath = join(projectRoot, ".opencode/plugins/adlc-skills-events.ts");
+      const pluginPath = join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts");
       assert.ok(existsSync(pluginPath));
 
       const result = removeEvents("opencode", projectRoot);
@@ -836,7 +867,7 @@ describe("Events: read-failure preservation (spec-kit #3861)", () => {
   it("unreadable opencode plugin → teardown reports manual", () => {
     const projectRoot = createTestProject(false);
     try {
-      mkdirSync(join(projectRoot, ".opencode", "plugins", "adlc-skills-events.ts"), { recursive: true });
+      mkdirSync(join(projectRoot, ".opencode", "plugins", "adlc-skills-hooks.ts"), { recursive: true });
       const result = removeEvents("opencode", projectRoot);
       assert.equal(result.action, "manual");
     } finally {
@@ -882,7 +913,7 @@ describe("Events: teardown safe-destination (spec-kit R3)", () => {
 });
 
 describe("Events: non-UTF-8 tolerance (spec-kit #3900)", () => {
-  it("non-UTF-8 .events.json → null with a warning, not silent", () => {
+  it("non-UTF-8 legacy .events.json → null with a warning, not silent", () => {
     const dir = mkdtempSync(join(tmpdir(), "adlc-latin1-"));
     try {
       // Latin-1 encoded: {"events": {}, "note": "café"} with raw 0xE9 for é.
@@ -907,7 +938,7 @@ describe("Events: non-UTF-8 tolerance (spec-kit #3900)", () => {
     }
   });
 
-  it("valid UTF-8 .events.json → no warning", () => {
+  it("valid UTF-8 legacy .events.json → no warning", () => {
     const dir = mkdtempSync(join(tmpdir(), "adlc-utf8-"));
     try {
       writeFileSync(join(dir, ".events.json"), JSON.stringify(SAMPLE_MANIFEST), "utf-8");
@@ -938,7 +969,7 @@ describe("Events: opencode plugin TS literal escaping (spec-kit S1)", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(manifest, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents/skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       assert.ok(content.includes(JSON.stringify('te"am')), "skill name serialized as JSON string literal");
       assert.ok(!content.includes('"te"am"'), "no raw interpolation that would break the TS literal");
@@ -953,7 +984,7 @@ describe("Events: opencode plugin TS literal escaping (spec-kit S1)", () => {
       const agentConfig = getEventAgentConfig("opencode");
       const resolved = resolveEvents(SAMPLE_MANIFEST, agentConfig);
       installEvents("opencode", projectRoot, resolved, ".agents\\skills");
-      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-events.ts"), "utf-8");
+      const content = readFileSync(join(projectRoot, ".opencode/plugins/adlc-skills-hooks.ts"), "utf-8");
 
       assert.ok(
         content.includes(`let SKILLS_DIR = ${JSON.stringify(".agents\\skills")}`),
@@ -981,6 +1012,41 @@ describe("Dispatcher: execution paths", () => {
       assert.equal(result.status, 0, `dispatcher exited ${result.status}: ${result.stderr}`);
       assert.ok(result.stdout.includes("Read .adlc/init-options.json"), "Body output present");
       assert.ok(!result.stdout.startsWith("---"), "Frontmatter stripped");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("body path: a body larger than the pipe buffer is delivered whole", () => {
+    // process.exit() drops writes still queued in libuv. A body larger than
+    // the pipe buffer (200 KB here) makes that visible: the tail vanishes
+    // unless the writer drains stdout before exiting. Skill bodies routinely
+    // run tens of KB, and a truncated injection silently drops instructions.
+    const projectRoot = mkdtempSync(join(tmpdir(), "adlc-bigbody-"));
+    try {
+      const skillsDir = join(projectRoot, ".agents", "skills");
+      mkdirSync(join(skillsDir, "big-body"), { recursive: true });
+      const filler = "0123456789abcdef".repeat((200 * 1024) / 16);
+      writeFileSync(
+        join(skillsDir, "big-body", "SKILL.md"),
+        `---\nname: big-body\ndescription: oversized body\n---\n\nBEGIN-MARKER\n${filler}\nEND-MARKER\n`,
+        "utf-8",
+      );
+      installDispatcher(projectRoot);
+      const dispatcher = join(projectRoot, DISPATCHER_REL);
+
+      const result = spawnSync("node", [dispatcher, "session_start", "big-body", skillsDir, "10"], {
+        encoding: "utf-8",
+        cwd: projectRoot,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+
+      assert.equal(result.status, 0, `dispatcher exited ${result.status}: ${result.stderr}`);
+      assert.ok(result.stdout.includes("BEGIN-MARKER"), "body head missing");
+      assert.ok(
+        result.stdout.includes("END-MARKER"),
+        `body truncated at ${result.stdout.length} bytes (expected > 200 KB)`,
+      );
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
