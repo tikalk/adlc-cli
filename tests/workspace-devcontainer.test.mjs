@@ -37,11 +37,8 @@ test("setup --dry-run with .devcontainer/devcontainer.json prints the resolved i
     makeWorkspace(dir, BASE_YML);
     mkdirSync(join(dir, ".devcontainer"), { recursive: true });
     writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }', "utf-8");
-    // PATH with no devcontainer binary + a marker to prove zero spawns
-    const r = await run(["workspace", "setup", "--dry-run"], dir, {
-      PATH: "",
-      ADLC_DEVCONTAINER_SPAWN_LOG: join(dir, "spawn.log"),
-    });
+    // PATH with no devcontainer binary: any spawn would fail, so exit 0 proves none
+    const r = await run(["workspace", "setup", "--dry-run"], dir, { PATH: "" });
     assert.equal(r.code ?? 0, 0, combined(r));
     assert.match(r.stdout, /devcontainer/i, "dry-run prints the resolved devcontainer invocation");
     assert.match(r.stdout, /devcontainer up/, "dry-run names the exact command that would run");

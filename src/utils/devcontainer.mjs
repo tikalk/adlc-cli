@@ -17,7 +17,7 @@
 // failure is a non-zero setup failure — fail-fast, before skills run.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -107,18 +107,9 @@ export async function runDevcontainerTrigger({ projectRoot, dryRun, out = null }
   const argv = ["up", "--workspace-folder", projectRoot];
   const planLine = `devcontainer ${argv.join(" ")}${configTrace}`;
   const print = out || ((line) => process.stdout.write(`${line}\n`));
-  const spawnLog = process.env.ADLC_DEVCONTAINER_SPAWN_LOG;
 
   if (dryRun) {
     print(`  → ${planLine} [dry-run]`);
-    // Spawn audit for tests: dry-run must leave no trace of a spawn.
-    if (spawnLog) {
-      try {
-        writeFileSync(spawnLog, "", "utf-8");
-      } catch {
-        // best-effort audit only
-      }
-    }
     return { ran: true, code: 0 };
   }
 
@@ -130,14 +121,6 @@ export async function runDevcontainerTrigger({ projectRoot, dryRun, out = null }
   const daemonError = waitForDaemon();
   if (daemonError) {
     return { ran: true, code: 1, error: daemonError };
-  }
-
-  if (spawnLog) {
-    try {
-      writeFileSync(spawnLog, `spawned: devcontainer ${argv.join(" ")}\n`, "utf-8");
-    } catch {
-      // best-effort audit only
-    }
   }
 
   // Async spawn so a SIGTERM/SIGINT delivered to this process alone (e.g. the
