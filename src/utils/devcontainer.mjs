@@ -51,7 +51,13 @@ export async function runDevcontainerTrigger({ projectRoot, dryRun, out }) {
   // Async spawn so a SIGTERM/SIGINT delivered to this process alone (e.g. the
   // runner pod signalling its main process) is forwarded to the inner run
   // instead of orphaning it. stdio: inherit streams output unchanged.
-  const child = spawn("devcontainer", argv, {
+  // Windows: npm installs the CLI as `devcontainer.cmd`, which Node can only
+  // spawn through a shell (args are not quoted for us then). POSIX spawns the
+  // binary directly so signals reach it and a missing CLI is a clean ENOENT.
+  const win = process.platform === "win32";
+  const quote = (a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a);
+  const child = spawn("devcontainer", win ? argv.map(quote) : argv, {
+    shell: win,
     stdio: "inherit",
     cwd: resolve(projectRoot),
     env: process.env,
