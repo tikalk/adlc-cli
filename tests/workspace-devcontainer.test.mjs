@@ -1,4 +1,4 @@
-// Step 5.7 — devcontainer trigger RED suite (issue #101, brief comment 85133).
+// Step 5.7 — devcontainer trigger suite (issue #101, brief comment 85133).
 // Per ADR-386-amendment-3: adlc-cli shells out to the real `devcontainer up`
 // against the runner-provided daemon. No OCI emulation, no feature installs
 // in adlc-cli — the trigger fires on declaration only, never on a provider flag.
@@ -23,7 +23,7 @@ function makeWorkspace(dir, content) {
   writeFileSync(join(dir, ".adlc", "workspace.yml"), content, "utf-8");
 }
 
-const BASE_YML =`schema_version: "1.0"
+const BASE_YML = `schema_version: "1.0"
 name: "Devcontainer Trigger"
 agent: opencode
 workspace:
@@ -83,7 +83,7 @@ test("setup prefers .devcontainer/devcontainer.json over legacy .devcontainer.js
 test("setup fails fast with a loud error when the devcontainer CLI is absent", async () => {
   const dir = mkdtempSync(join(tmpdir(), "adlc-dc-test-"));
   try {
-    makeWorkspace(dir, BASE_YML);
+    makeWorkspace(dir, `${BASE_YML}skills:\n  sources:\n    - tikalk/adlc-team-skills\n`);
     mkdirSync(join(dir, ".devcontainer"), { recursive: true });
     writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
     // Empty PATH: no devcontainer binary can resolve → loud non-zero failure, before skills run.

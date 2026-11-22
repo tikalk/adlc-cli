@@ -704,8 +704,8 @@ export async function cmdWorkspaceSetup(args, flags) {
   // 5.7 devcontainer trigger — thin `devcontainer up` (no emulation, #101).
   // Fires on declaration only (.devcontainer/devcontainer.json >
   // .devcontainer.json > skip), never on a provider flag (ADR-443).
-  // Deterministic, no LLM: readiness wait, exact exit-code propagation,
-  // dry-run silence. Fail-fast before skills/agent-led steps.
+  // Deterministic, no LLM: exact exit-code propagation, SIGTERM/SIGINT
+  // forwarding, dry-run silence. Fail-fast before skills/agent-led steps.
   {
     const { runDevcontainerTrigger } = await import("../utils/devcontainer.mjs");
     sectionHeader("devcontainer (step 5.7)");
