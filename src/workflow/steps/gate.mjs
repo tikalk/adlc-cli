@@ -18,6 +18,7 @@ import {
   uncommittedRecords,
   validateGateContext,
 } from "../gate-context.mjs";
+import { readGatePayload, withGatePayload } from "../gate-payload.mjs";
 import { out, panel, style, tint, combine, sanitize, sanitizeLines, sym, ACCENT } from "../../ui/index.mjs";
 
 export class GateStep extends StepBase {
@@ -100,8 +101,19 @@ export class GateStep extends StepBase {
       showFile = String(showFile);
     }
 
+    // Agent-composed payload (ADR-515, adlc-workspace#164): rendered under
+    // the message's first line so the approver sees what is being approved.
+    // `payload: true` makes a missing file visible; a broken file always is.
+    let gatePayload = null;
+    if (typeof message === "string") {
+      const rendered = withGatePayload(message, readGatePayload(context.projectRoot, context.runId, config.id), config.payload === true);
+      message = rendered.message;
+      gatePayload = rendered.payload;
+    }
+
     const output = {
       message,
+      ...(gatePayload ? { gate_payload: gatePayload } : {}),
       options,
       on_reject: onReject,
       show_file: showFile,
@@ -419,6 +431,9 @@ export class GateStep extends StepBase {
       if (!options.some((o) => rejectChoices.includes(o.toLowerCase()))) {
         errors.push(`Gate step ${rid(config)}: on_reject=${JSON.stringify(onReject)} but options has no 'reject' or 'abort' choice.`);
       }
+    }
+    if ("payload" in config && typeof config.payload !== "boolean") {
+      errors.push(`Gate step ${rid(config)}: 'payload' must be true or false.`);
     }
     errors.push(...validateGateContext(config, rid(config)));
     return errors;

@@ -52,6 +52,9 @@ export class StepContext {
     // lastApprovedSha }); shared by reference so approvals are seen by
     // every derived context.
     this.gateRun = fields.gateRun ?? null;
+    // Ids of every gate step in the workflow, in order (ADR-515: agent steps
+    // learn which gate payloads they may write, via ADLC_UPCOMING_GATES).
+    this.gateIds = fields.gateIds ?? [];
   }
 
   // Returns a shallow copy with per-fan-out-item overrides. The shared

@@ -6,6 +6,7 @@
 // a JS sliding-window semaphore, KeyboardInterrupt → SIGINT maps to PAUSED,
 // and the `integration: auto` sentinel resolves from .adlc/init-options.json.
 
+import { gateStepIds } from "./gate-payload.mjs";
 import {
   closeSync,
   copyFileSync,
@@ -811,6 +812,7 @@ export class WorkflowEngine {
       projectRoot: String(this.projectRoot),
       runId: state.runId,
       workflowDir,
+      gateIds: gateStepIds(definition.steps),
     });
     context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };
 
@@ -920,6 +922,7 @@ export class WorkflowEngine {
       projectRoot: String(this.projectRoot),
       runId: state.runId,
       workflowDir: state.workflowDir,
+      gateIds: gateStepIds(definition.steps),
     });
     context.isResume = true;
     context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };

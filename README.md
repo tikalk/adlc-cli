@@ -242,12 +242,29 @@ out of asking about nothing:
 - A list that could not be built ("Decision list unavailable"), a non-empty list, and a `reject` verdict behave as before.
 - Do not set it on a gate whose real subject is something else (a plan, a merge request): an empty record list would then skip the approval. No bundled workflow sets it.
 
+**Gate payloads: show the approver what they approve (ADR-515).** A step
+before a gate can write `$ADLC_GATE_PAYLOADS/<gate_id>.json`:
+
+```json
+{
+  "title": "Spec gate: per-repo config discovery",
+  "summary": "Drafted spec and plan; no code yet.",
+  "sections": [{ "heading": "Files", "body": "src/config.mjs\ntests/config.test.mjs" }],
+  "artifacts": [{ "label": "Draft MR !12", "url": "https://gitlab.example/g/p/-/merge_requests/12" }]
+}
+```
+
+- The gate shows it under the first line of its `message`, capped at 30 lines / 2000 characters (`…(truncated)` past that), and keeps it in the paused output as `gate_payload`.
+- Only `summary` is required. Up to 8 sections and 8 artifacts; an artifact is kept only with a plain `http(s)` URL. Control characters are stripped. `options` is accepted and ignored in this version.
+- Set `payload: true` on a gate that expects one: with no file it then says `(no agent payload)`. A file that is present but invalid always shows `(no agent payload: <reason>)`. Either way the gate still pauses.
+
 **Agent-step run context and output (ADR-444).** `command` and `prompt` steps
 run the agent with these environment variables:
 
 - `ADLC_RUN_ID` and `ADLC_STEP_ID`.
 - `ADLC_STEP_OUTPUT`, the path `.adlc/workflows/runs/<run_id>/steps/<step_id>.output.json`. Any leftover file there is deleted before the step starts.
 - `ADLC_ISSUE_REF`, only when the run has an `issue_ref` input.
+- `ADLC_GATE_PAYLOADS`, the directory `.adlc/workflows/runs/<run_id>/gate-payloads/`, and `ADLC_UPCOMING_GATES`, the comma-separated ids of the gates not yet passed (gates inside `if` branches and loops count).
 
 A step can return a few named strings by writing a JSON object to
 `ADLC_STEP_OUTPUT`. The rules:

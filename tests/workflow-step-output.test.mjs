@@ -125,6 +125,9 @@ test("O1: agent steps see ADLC_RUN_ID, ADLC_STEP_ID, ADLC_STEP_OUTPUT, ADLC_ISSU
     ADLC_STEP_ID: "intent",
     ADLC_STEP_OUTPUT: OUT_PATH(dir),
     ADLC_STEP_QUESTION: join(dir, ".adlc", "workflows", "runs", "r26", "questions", "intent.json"),
+    // Gate payload dir (ADR-515, adlc-workspace#164); no gate ahead, so no
+    // ADLC_UPCOMING_GATES.
+    ADLC_GATE_PAYLOADS: join(dir, ".adlc", "workflows", "runs", "r26", "gate-payloads"),
     ADLC_ISSUE_REF: "g/p#26",
   });
 });
