@@ -3,6 +3,7 @@
 // Non-TTY (CI, pipes) pauses for later resume; interactive prompts with a
 // boxed chooser. verdict_input binds a workflow input as the headless choice.
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { StepBase, StepResult, StepStatus, typeName } from "../base.mjs";
@@ -18,6 +19,7 @@ import {
   uncommittedRecords,
   validateGateContext,
 } from "../gate-context.mjs";
+import { readGatePayload, withGatePayload } from "../gate-payload.mjs";
 import { out, panel, style, tint, combine, sanitize, sanitizeLines, sym, ACCENT } from "../../ui/index.mjs";
 
 export class GateStep extends StepBase {
@@ -100,8 +102,33 @@ export class GateStep extends StepBase {
       showFile = String(showFile);
     }
 
+    // Agent-composed payload (ADR-515, adlc-workspace#164): rendered under
+    // the message's first line so the approver sees what is being approved.
+    // `payload: true` makes a missing file visible; a broken file always is.
+    // The approval covers what was shown: the paused output keeps a
+    // fingerprint of the rendered message, and an approval given after the
+    // payload changed re-pauses with the new content (like a moved head).
+    let gatePayload = null;
+    let gatePayloadSha = null;
+    if (typeof message === "string") {
+      const base = message;
+      const rendered = withGatePayload(message, readGatePayload(context.projectRoot, context.runId, config.id), config.payload === true);
+      message = rendered.message;
+      gatePayload = rendered.payload;
+      // The rendered message is capped, so the fingerprint also covers the
+      // full validated payload: a change past the cut is still a change.
+      if (message !== base) {
+        gatePayloadSha = createHash("sha256").update(`${message}\n\u0000\n${JSON.stringify(gatePayload ?? null)}`).digest("hex");
+      }
+    }
+    const previousRun = context.steps?.[config.id];
+    const shownPayloadSha = previousRun?.status === StepStatus.PAUSED ? (previousRun.output?.gate_payload_sha ?? null) : null;
+    const payloadChanged = previousRun?.status === StepStatus.PAUSED && shownPayloadSha !== gatePayloadSha;
+
     const output = {
       message,
+      ...(gatePayload ? { gate_payload: gatePayload } : {}),
+      ...(gatePayloadSha ? { gate_payload_sha: gatePayloadSha } : {}),
       options,
       on_reject: onReject,
       show_file: showFile,
@@ -136,7 +163,7 @@ export class GateStep extends StepBase {
       const previous = context.steps?.[config.id];
       shownManifest = pausedManifest(previous);
       shownUnavailableKind = shownManifest === null ? pausedUnavailableKind(previous) : null;
-      if (shownManifest && currentHeadSha(context.projectRoot) === shownManifest.head_sha) {
+      if (shownManifest && !payloadChanged && currentHeadSha(context.projectRoot) === shownManifest.head_sha) {
         manifest = shownManifest;
       } else {
         const built = buildGateManifest({
@@ -187,6 +214,7 @@ export class GateStep extends StepBase {
         boundVerdictInput = verdictInput;
       }
     }
+
 
     // Nothing to approve (`context.on_empty: pass`, opt-in): the list was
     // built just now, at this HEAD, and holds no new or changed record, so
@@ -251,6 +279,15 @@ export class GateStep extends StepBase {
         output,
         error: `Gate step ${rid(config)}: head moved since the gate paused (shown ${shortSha(shownManifest.head_sha)}, now ${shortSha(headNow)}); verdict not applied.`,
       });
+    }
+    // After the moved-HEAD halt, which takes priority: an approval answering
+    // a pause whose payload differs from the current one did not see this
+    // content, so clear it and pause again with what is there now. A
+    // rejection is still honoured.
+    if (payloadChanged && boundVerdictInput !== null && !isRejection(choice)) {
+      context.inputs[boundVerdictInput] = "";
+      output.payload_changed = true;
+      return new StepResult({ status: StepStatus.PAUSED, output });
     }
     if (
       "context" in config &&
@@ -419,6 +456,9 @@ export class GateStep extends StepBase {
       if (!options.some((o) => rejectChoices.includes(o.toLowerCase()))) {
         errors.push(`Gate step ${rid(config)}: on_reject=${JSON.stringify(onReject)} but options has no 'reject' or 'abort' choice.`);
       }
+    }
+    if ("payload" in config && typeof config.payload !== "boolean") {
+      errors.push(`Gate step ${rid(config)}: 'payload' must be true or false.`);
     }
     errors.push(...validateGateContext(config, rid(config)));
     return errors;

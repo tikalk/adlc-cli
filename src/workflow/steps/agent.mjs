@@ -4,6 +4,7 @@
 // adlc-cli's run.mjs profiles (registry.mjs) instead of the specify
 // integration CLI — the ADR-390 adaptation.
 
+import { gatePayloadsDir } from "../gate-payload.mjs";
 import { StepBase, StepResult, StepStatus, typeName } from "../base.mjs";
 import { evaluateExpression } from "../expressions.mjs";
 import { runTask } from "../../run.mjs";
@@ -368,6 +369,12 @@ export function runContextEnv(context, config) {
       env.ADLC_STEP_ANSWERS = join(context.projectRoot, ".adlc", "workflows", "runs", runId, "answers", `${stepId}.json`);
     }
   }
+  // Gate payloads (ADR-515): where a step may write
+  // gate-payloads/<gate_id>.json, and which gates are still ahead.
+  const payloads = gatePayloadsDir(context.projectRoot, runId);
+  if (payloads) env.ADLC_GATE_PAYLOADS = payloads;
+  const upcoming = (context.gateIds ?? []).filter((id) => context.steps?.[id]?.status !== "completed");
+  if (upcoming.length) env.ADLC_UPCOMING_GATES = upcoming.join(",");
   const issueRef = context.inputs?.issue_ref;
   if (typeof issueRef === "string" && issueRef !== "") env.ADLC_ISSUE_REF = issueRef;
   return env;
