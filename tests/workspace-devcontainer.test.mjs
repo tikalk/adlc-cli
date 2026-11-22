@@ -23,7 +23,12 @@ function makeWorkspace(dir, content) {
   writeFileSync(join(dir, ".adlc", "workspace.yml"), content, "utf-8");
 }
 
-const BASE_YML = `schema_version: "1.0"
+// Stub `docker` that reports a ready daemon (`docker info` exits 0).
+function writeDockerStub(dir) {
+  writeFileSync(join(dir, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+}
+
+const BASE_YML =`schema_version: "1.0"
 name: "Devcontainer Trigger"
 agent: opencode
 workspace:
@@ -71,10 +76,7 @@ test("setup prefers .devcontainer/devcontainer.json over legacy .devcontainer.js
       "utf-8",
     );
     writeFileSync(join(dir, ".devcontainer.json"), '{ "image": "legacy-image" }', "utf-8");
-    const r = await run(["workspace", "setup", "--dry-run"], dir, {
-      PATH: "",
-      ADLC_DEVCONTAINER_CONFIG_TRACE: "1",
-    });
+    const r = await run(["workspace", "setup", "--dry-run"], dir, { PATH: "" });
     assert.equal(r.code ?? 0, 0, combined(r));
     assert.match(r.stdout, /\.devcontainer\/devcontainer\.json/, "canonical path wins over legacy");
     assert.doesNotMatch(combined(r), /legacy-image/, "legacy file content never leaks into the plan");
@@ -138,8 +140,9 @@ test("setup propagates the inner devcontainer exit code unchanged", POSIX_ONLY, 
     makeWorkspace(dir, BASE_YML);
     mkdirSync(join(dir, ".devcontainer"), { recursive: true });
     writeFileSync(join(dir, ".devcontainer", "devcontainer.json"), '{ "image": "x" }', "utf-8");
-    // Stub devcontainer that exits 42 with marker output; readiness gate must
-    // pass (ADLC_DEVCONTAINER_SKIP_READINESS) so the stub actually runs.
+    // Stub devcontainer that exits 42 with marker output; a stub docker lets
+    // the readiness gate pass so the stub actually runs.
+    writeDockerStub(stubDir);
     writeFileSync(
       join(stubDir, "devcontainer"),
       '#!/bin/sh\n[ "$1" = "--version" ] && exit 0\necho "INNER-MARKER-STDOUT"\necho "INNER-MARKER-STDERR" >&2\nexit 42\n',
@@ -147,7 +150,6 @@ test("setup propagates the inner devcontainer exit code unchanged", POSIX_ONLY, 
     );
     const r = await run(["workspace", "setup"], dir, {
       PATH: `${stubDir}:/usr/bin:/bin`,
-      ADLC_DEVCONTAINER_SKIP_READINESS: "1",
     });
     assert.equal(r.code, 42, "inner exit code propagates unchanged");
     assert.match(r.stdout, /INNER-MARKER-STDOUT/, "inner stdout streams to outer stdout");
@@ -168,6 +170,7 @@ test("setup forwards SIGTERM to the inner devcontainer run", POSIX_ONLY, async (
     const ready = join(dir, "ready");
     const marker = join(dir, "term-received");
     // Stub signals readiness, then waits; on SIGTERM it records the signal and exits 7.
+    writeDockerStub(stubDir);
     writeFileSync(
       join(stubDir, "devcontainer"),
       `#!/bin/sh\n[ "$1" = "--version" ] && exit 0\ntrap 'echo TERM > "${marker}"; exit 7' TERM\n: > "${ready}"\nwhile :; do sleep 0.1; done\n`,
@@ -175,7 +178,7 @@ test("setup forwards SIGTERM to the inner devcontainer run", POSIX_ONLY, async (
     );
     const proc = spawn(process.execPath, [BIN, "workspace", "setup"], {
       cwd: dir,
-      env: { ...process.env, PATH: `${stubDir}:/usr/bin:/bin`, ADLC_DEVCONTAINER_SKIP_READINESS: "1" },
+      env: { ...process.env, PATH: `${stubDir}:/usr/bin:/bin` },
       stdio: "ignore",
     });
     const closed = new Promise((resolve) => proc.on("close", (code) => resolve(code)));

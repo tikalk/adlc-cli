@@ -24,10 +24,8 @@ import { join, resolve } from "node:path";
 const CANONICAL = ".devcontainer/devcontainer.json";
 const LEGACY = ".devcontainer.json";
 
-// Tunables for tests: ADLC_DAEMON_WAIT_ATTEMPTS / ADLC_DAEMON_WAIT_MS shrink
-// the readiness window; ADLC_DEVCONTAINER_SKIP_READINESS bypasses it (stub
-// CLIs in tests stand in for the real binary — the daemon check only makes
-// sense against a live daemon).
+// Tunables: ADLC_DAEMON_WAIT_ATTEMPTS / ADLC_DAEMON_WAIT_MS set the daemon
+// readiness window (default 30 attempts x 1000ms).
 function waitConfig() {
   const attempts = Number(process.env.ADLC_DAEMON_WAIT_ATTEMPTS ?? 30);
   const waitMs = Number(process.env.ADLC_DAEMON_WAIT_MS ?? 1000);
@@ -68,7 +66,6 @@ export function checkDevcontainerCli() {
 // (sidecar per #102 / amendment-3); DOCKER_HOST selects the socket.
 // Returns null when ready, or an error string naming the cause.
 export function waitForDaemon() {
-  if (process.env.ADLC_DEVCONTAINER_SKIP_READINESS === "1") return null;
   const { attempts, waitMs } = waitConfig();
   const dockerHost = process.env.DOCKER_HOST || "unix:///var/run/docker.sock";
   let lastError = "";
@@ -103,9 +100,8 @@ export async function runDevcontainerTrigger({ projectRoot, dryRun, out = null }
   const config = resolveDevcontainerConfig(projectRoot);
   if (!config) return { ran: false, code: 0 };
 
-  const configTrace = process.env.ADLC_DEVCONTAINER_CONFIG_TRACE === "1" ? ` (${config})` : "";
   const argv = ["up", "--workspace-folder", projectRoot];
-  const planLine = `devcontainer ${argv.join(" ")}${configTrace}`;
+  const planLine = `devcontainer ${argv.join(" ")} (${config})`;
   const print = out || ((line) => process.stdout.write(`${line}\n`));
 
   if (dryRun) {
