@@ -194,3 +194,44 @@ test("P9: an unsafe run id or gate id reads no payload file", async () => {
   assert.deepEqual(readGatePayload(dir, "../etc", "gate-spec"), { present: false, payload: null });
   assert.deepEqual(readGatePayload(dir, "r9", "../../x"), { present: false, payload: null });
 });
+
+test("P10: an approval covers only the payload that was shown (changed file re-pauses)", async () => {
+  const dir = project();
+  writePayload(dir, "rp10", "gate-spec", PLAN);
+  const wf = workflow("    payload: true\n");
+  const paused = await run(dir, wf, "rp10");
+  assert.equal(paused.status, RunStatus.PAUSED);
+  assert.match(paused.stepResults["gate-spec"].output.gate_payload_sha, /^[0-9a-f]{64}$/);
+  // The file changes while the run waits: the approval was for the old plan.
+  writePayload(dir, "rp10", "gate-spec", { ...PLAN, summary: "a different plan" });
+  const engine = new WorkflowEngine(dir);
+  const again = await engine.resume("rp10", { verdict: "approve" }, STEP_REGISTRY);
+  assert.equal(again.status, RunStatus.PAUSED, "approval of different content must not pass");
+  const out = again.stepResults["gate-spec"].output;
+  assert.equal(out.payload_changed, true);
+  assert.ok(out.message.includes("a different plan"), "re-pause shows the new content");
+  // Approving what is shown now completes.
+  const done = await new WorkflowEngine(dir).resume("rp10", { verdict: "approve" }, STEP_REGISTRY);
+  assert.equal(done.status, RunStatus.COMPLETED);
+});
+
+test("P11: a rejection is honoured even when the payload changed", async () => {
+  const dir = project();
+  writePayload(dir, "rp11", "gate-spec", PLAN);
+  await run(dir, workflow(), "rp11");
+  writePayload(dir, "rp11", "gate-spec", { ...PLAN, summary: "changed" });
+  const s = await new WorkflowEngine(dir).resume("rp11", { verdict: "reject" }, STEP_REGISTRY);
+  assert.notEqual(s.status, RunStatus.PAUSED);
+  assert.notEqual(s.status, RunStatus.COMPLETED);
+});
+
+test("P12: a context gate re-renders a changed payload instead of reusing the old message", async () => {
+  const dir = project();
+  writePayload(dir, "rp12", "gate-spec", PLAN);
+  const ctx = "    context:\n      records: [\".adlc/drafts/adr/*.md\"]\n      since: last_approved\n";
+  await run(dir, workflow(ctx), "rp12");
+  writePayload(dir, "rp12", "gate-spec", { ...PLAN, summary: "context gate, new plan" });
+  const s = await new WorkflowEngine(dir).resume("rp12", { verdict: "approve" }, STEP_REGISTRY);
+  assert.equal(s.status, RunStatus.PAUSED);
+  assert.ok(s.stepResults["gate-spec"].output.message.includes("context gate, new plan"));
+});

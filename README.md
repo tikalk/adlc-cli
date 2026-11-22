@@ -256,6 +256,7 @@ before a gate can write `$ADLC_GATE_PAYLOADS/<gate_id>.json`:
 
 - The gate shows it under the first line of its `message`, capped at 30 lines / 2000 characters (`…(truncated)` past that), and keeps it in the paused output as `gate_payload`.
 - Only `summary` is required. Up to 8 sections and 8 artifacts; an artifact is kept only with a plain `http(s)` URL. Control characters are stripped. `options` is accepted and ignored in this version.
+- An approval covers what was shown: the paused output keeps `gate_payload_sha`, and an `approve` given after the payload file changed pauses again with the new content (`payload_changed: true`). A `reject` is always honoured.
 - Set `payload: true` on a gate that expects one: with no file it then says `(no agent payload)`. A file that is present but invalid always shows `(no agent payload: <reason>)`. Either way the gate still pauses.
 
 **Agent-step run context and output (ADR-444).** `command` and `prompt` steps
