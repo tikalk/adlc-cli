@@ -1,0 +1,31 @@
+{
+  "run_id": "f799c02e",
+  "workflow_id": "factory",
+  "installed_workflow_id": null,
+  "installed_registry_root": null,
+  "status": "failed",
+  "current_step_index": 0,
+  "current_step_id": "preflight",
+  "step_results": {
+    "preflight": {
+      "type": "shell",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": {},
+      "output": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input\n"
+      },
+      "status": "failed",
+      "error": "Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input"
+    }
+  },
+  "workflow_dir": "/private/tmp/claude-501/-Users-itaior-tikal-adlc-workspace/19d555f3-9c42-47e5-9508-7746530be1ec/scratchpad/cli/workflows/factory",
+  "created_at": "2026-11-22T07:58:03.617Z",
+  "updated_at": "2026-11-22T07:58:05.729Z",
+  "error": "Shell command exited with code 1. stderr: preflight: missing: factory-intent factory-mission factory-runbook factory-runbook/scripts/bash/run-branch.sh factory-runbook/scripts/bash/open-mr.sh issue_ref-input",
+  "run_start_sha": "bb72ac393b3cb7709a967e8ef7c8c1b27cba726c"
+}
