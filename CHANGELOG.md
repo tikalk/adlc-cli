@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.15.1] - 2026-11-22
+
+### Fixed
+
+- **Gates on a target-branch run compare against that branch** (#114) — a run with a target branch (`ADLC_TARGET_BRANCH`, else the `target_branch` input, else `WORKFLOW_INPUTS.target_branch`) builds the gate's decision list against `origin/<target>` first, fetching it once if a `--single-branch` clone lacks it. Before, such a run had no `origin/main` to compare against and every gate said "Decision list unavailable: no target branch". The name must be a plain git branch name; anything else is ignored. Runs without a target branch are unchanged.
+
 ## [2.15.0] - 2026-11-22
 
 ### Added
