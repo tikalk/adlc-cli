@@ -115,7 +115,11 @@ export class GateStep extends StepBase {
       const rendered = withGatePayload(message, readGatePayload(context.projectRoot, context.runId, config.id), config.payload === true);
       message = rendered.message;
       gatePayload = rendered.payload;
-      if (message !== base) gatePayloadSha = createHash("sha256").update(message).digest("hex");
+      // The rendered message is capped, so the fingerprint also covers the
+      // full validated payload: a change past the cut is still a change.
+      if (message !== base) {
+        gatePayloadSha = createHash("sha256").update(`${message}\n\u0000\n${JSON.stringify(gatePayload ?? null)}`).digest("hex");
+      }
     }
     const previousRun = context.steps?.[config.id];
     const shownPayloadSha = previousRun?.status === StepStatus.PAUSED ? (previousRun.output?.gate_payload_sha ?? null) : null;
@@ -211,14 +215,6 @@ export class GateStep extends StepBase {
       }
     }
 
-    // An approval answering a pause whose payload differs from the current
-    // one did not see this content: clear it and pause again with what is
-    // there now. A rejection is still honoured.
-    if (payloadChanged && boundVerdictInput !== null && !isRejection(choice)) {
-      context.inputs[boundVerdictInput] = "";
-      output.payload_changed = true;
-      return new StepResult({ status: StepStatus.PAUSED, output });
-    }
 
     // Nothing to approve (`context.on_empty: pass`, opt-in): the list was
     // built just now, at this HEAD, and holds no new or changed record, so
@@ -283,6 +279,15 @@ export class GateStep extends StepBase {
         output,
         error: `Gate step ${rid(config)}: head moved since the gate paused (shown ${shortSha(shownManifest.head_sha)}, now ${shortSha(headNow)}); verdict not applied.`,
       });
+    }
+    // After the moved-HEAD halt, which takes priority: an approval answering
+    // a pause whose payload differs from the current one did not see this
+    // content, so clear it and pause again with what is there now. A
+    // rejection is still honoured.
+    if (payloadChanged && boundVerdictInput !== null && !isRejection(choice)) {
+      context.inputs[boundVerdictInput] = "";
+      output.payload_changed = true;
+      return new StepResult({ status: StepStatus.PAUSED, output });
     }
     if (
       "context" in config &&

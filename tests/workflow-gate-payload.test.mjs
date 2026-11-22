@@ -235,3 +235,27 @@ test("P12: a context gate re-renders a changed payload instead of reusing the ol
   assert.equal(s.status, RunStatus.PAUSED);
   assert.ok(s.stepResults["gate-spec"].output.message.includes("context gate, new plan"));
 });
+
+test("P13: a moved head still halts when the payload also changed (halt takes priority)", async () => {
+  const dir = project();
+  writePayload(dir, "rp13", "gate-spec", PLAN);
+  const ctx = "    context:\n      records: [\".adlc/drafts/adr/*.md\"]\n      since: last_approved\n";
+  await run(dir, workflow(ctx), "rp13");
+  writePayload(dir, "rp13", "gate-spec", { ...PLAN, summary: "changed while HEAD moved" });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "moved"], { cwd: dir });
+  const s = await new WorkflowEngine(dir).resume("rp13", { verdict: "approve" }, STEP_REGISTRY);
+  assert.equal(s.status, RunStatus.FAILED, "moved head halts, it does not re-pause");
+  assert.match(s.stepResults["gate-spec"].error ?? s.error ?? "", /head moved/);
+});
+
+test("P14: a change past the rendered cut still re-pauses", async () => {
+  const dir = project();
+  const sections = Array.from({ length: 8 }, (_, i) => ({ heading: `H${i}`, body: "y".repeat(400) }));
+  writePayload(dir, "rp14", "gate-spec", { summary: "s", sections });
+  await run(dir, workflow(), "rp14");
+  const changed = sections.map((x, i) => (i === 7 ? { heading: "H7", body: "z".repeat(400) } : x));
+  writePayload(dir, "rp14", "gate-spec", { summary: "s", sections: changed });
+  const s = await new WorkflowEngine(dir).resume("rp14", { verdict: "approve" }, STEP_REGISTRY);
+  assert.equal(s.status, RunStatus.PAUSED);
+  assert.equal(s.stepResults["gate-spec"].output.payload_changed, true);
+});
