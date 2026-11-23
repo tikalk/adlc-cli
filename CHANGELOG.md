@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.15.1] - 2026-11-23
+
+### Fixed
+
+- **A step that concludes `blocked:` ends the run** (#118, adlc-workspace#167) — an agent step that exited 0 with a `blocked:` conclusion (for example `factory-mission --plan` refusing on the dependency gate) completed, so the next gate paused with nothing to approve and an approval started `execute` on a refused mission. The step now fails with the conclusion as its error: the run ends `failed` and `workflow run` exits 10, a logical failure that a lane does not retry. The refusal is read from the raw output file before validation, so an invalid sibling field cannot drop it; the error is redacted and kept on one line. Only a gate's boolean `aborted: true` now ends a run `aborted`, so agent-written output can never select that state. Other conclusions are unchanged.
+- **Gates on a target-branch run compare against that branch** (#114) — a run with a target branch (`ADLC_TARGET_BRANCH`, else the `target_branch` input, else `WORKFLOW_INPUTS.target_branch`) builds the gate's decision list against `origin/<target>` first, fetching it once if a `--single-branch` clone lacks it. Before, such a run had no `origin/main` to compare against and every gate said "Decision list unavailable: no target branch". The name must be a plain git branch name; anything else is ignored. Runs without a target branch are unchanged.
+
 ## [2.15.0] - 2026-11-22
 
 ### Added
