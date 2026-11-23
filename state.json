@@ -1,0 +1,31 @@
+{
+  "run_id": "ab1a002a",
+  "workflow_id": "factory",
+  "installed_workflow_id": null,
+  "installed_registry_root": null,
+  "status": "failed",
+  "current_step_index": 0,
+  "current_step_id": "preflight",
+  "step_results": {
+    "preflight": {
+      "type": "shell",
+      "integration": null,
+      "model": null,
+      "mode": null,
+      "options": {},
+      "input": {},
+      "output": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "'missing' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n"
+      },
+      "status": "failed",
+      "error": "Shell command exited with code 1. stderr: 'missing' is not recognized as an internal or external command,\r\noperable program or batch file."
+    }
+  },
+  "workflow_dir": "D:\\a\\adlc-cli\\adlc-cli\\workflows\\factory",
+  "created_at": "2026-11-23T13:14:29.291Z",
+  "updated_at": "2026-11-23T13:14:31.703Z",
+  "error": "Shell command exited with code 1. stderr: 'missing' is not recognized as an internal or external command,\r\noperable program or batch file.",
+  "run_start_sha": "b2f7db89b433447dc1cc593be40115de3a8dd06c"
+}
