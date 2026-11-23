@@ -1,8 +1,7 @@
 // End-of-run summary (adlc-workspace#66).
 //
 // One message that says how a run ended, built only from the run's own files
-// (.adlc/workflows/runs/<run_id>/state.json, inputs.json, log.jsonl and the
-// run copy of the workflow definition). The engine makes no network call here (ADR-416): a runtime
+// (.adlc/workflows/runs/<run_id>/state.json, inputs.json and log.jsonl). The engine makes no network call here (ADR-416): a runtime
 // that relays runs to a chat thread forwards `text` as it is.
 //
 // Every string that came from a step (errors, conclusions, links, who answered
@@ -12,8 +11,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { redactSecrets } from "./redact.mjs";
-import { gateStepIds } from "./gate-payload.mjs";
-import { WorkflowDefinition } from "./engine.mjs";
 
 export const SUMMARY_MAX_CHARS = 3000;
 export const SUMMARY_FIELD_CHARS = 300;
@@ -69,26 +66,6 @@ function stepLinks(output) {
   return links.filter((l) => LINK.test(l));
 }
 
-// Gate ids from the run copy of the definition (runs/<id>/workflow.yml): the
-// file the engine executes and resumes from, so the same source the engine's
-// own gate decisions come from. log.jsonl is only an ordering hint: anything
-// in the workspace can append to it. No readable copy: no gate lines.
-function definedGateIds(runDir) {
-  const copy = join(runDir, "workflow.yml");
-  if (!existsSync(copy)) return null;
-  let data = null;
-  try {
-    data = WorkflowDefinition.fromYamlFile(copy).data;
-  } catch {
-    try {
-      data = JSON.parse(readFileSync(copy, "utf-8").replace(/^# serialized from string source\n/, ""));
-    } catch {
-      return null;
-    }
-  }
-  return data && typeof data === "object" ? new Set(gateStepIds(data.steps)) : null;
-}
-
 /**
  * Build the summary of one run from its directory. Returns null when the run
  * has no readable state.json.
@@ -99,7 +76,6 @@ export function buildRunSummary(runDir, { env = process.env } = {}) {
   const inputs = (readJson(join(runDir, "inputs.json")) ?? {}).inputs ?? {};
   const log = readLines(join(runDir, "log.jsonl"));
   const results = state.step_results && typeof state.step_results === "object" ? state.step_results : {};
-  const gateIds = definedGateIds(runDir) ?? new Set();
 
   // Step order: as the run started them (log.jsonl), then any result the log
   // does not name, in state order.
@@ -125,11 +101,13 @@ export function buildRunSummary(runDir, { env = process.env } = {}) {
     if (!r || typeof r !== "object") continue;
     const output = r.output && typeof r.output === "object" ? r.output : {};
     const step = { id: cleanField(id, 80, env), status: typeof r.status === "string" ? r.status : "unknown" };
-    if (types[id]) step.type = types[id];
+    const type = typeof r.type === "string" ? r.type : types[id];
+    if (type) step.type = type;
     steps.push(step);
-    // Gates only by the run's definition: any other step can write
-    // `choice`/`answered_by` to its own output.
-    if (gateIds.has(id) && typeof output.choice === "string") {
+    // Gates only by the type the engine recorded in the step's result (its
+    // runtime id, never the step's own output or the log). Step output cannot
+    // carry `choice`/`answered_by`/`auto_passed` (reserved in readStepOutput).
+    if (r.type === "gate" && typeof output.choice === "string") {
       const gate = { id: step.id, choice: cleanField(output.choice, 40, env) };
       if (typeof output.answered_by === "string" && ANSWERER.test(output.answered_by)) gate.answered_by = output.answered_by;
       if (output.auto_passed === true) gate.auto = true;

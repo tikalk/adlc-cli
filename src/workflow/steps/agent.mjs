@@ -362,7 +362,9 @@ function priorPauseCount(context, config) {
 
 // ── run context + structured step output (ADR-444) ─────────────────────────
 
-const RESERVED_OUTPUT_KEYS = new Set(["integration", "model", "input", "stdout", "stderr", "exit_code", "interrupted"]);
+// `choice`, `answered_by` and `auto_passed` are a gate's own fields: no step
+// output may supply them (adlc-workspace#66, the end-of-run summary).
+const RESERVED_OUTPUT_KEYS = new Set(["integration", "model", "input", "stdout", "stderr", "exit_code", "interrupted", "choice", "answered_by", "auto_passed"]);
 const OUTPUT_KEY = /^[a-z][a-z0-9_]{0,39}$/;
 const MAX_OUTPUT_ENTRIES = 16;
 const MAX_OUTPUT_VALUE = 2048;

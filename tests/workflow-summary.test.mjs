@@ -38,25 +38,17 @@ process.on("exit", () => {
   }
 });
 
-// The run copy of the definition (runs/<id>/workflow.yml) is what the engine
-// executes and resumes from; the summary takes its gate ids from it. `defined`
-// overrides the step types written there (default: the logged ones).
-function writeDefinition(dir, defined) {
-  const lines = ['schema_version: "1.0"', "workflow:", "  id: w", "  name: W", '  version: "1.0.0"', "steps:"];
-  for (const [id, type] of defined) {
-    lines.push(`  - id: ${id}`);
-    if (type) lines.push(`    type: ${type}`);
-    if (type === "gate") lines.push('    message: "?"', "    options: [approve, reject]");
-    if (type === "shell") lines.push("    run: \"true\"");
-    if (type === "command" || !type) lines.push("    command: x");
-  }
-  writeFileSync(join(dir, "workflow.yml"), lines.join("\n") + "\n");
-}
-
-function writeRun(root, runId, { state, inputs = {}, steps = [], resumes = 0, defined = steps, definition = true }) {
+// The engine records each step's type in its result (state.json
+// step_results[<id>].type); the summary decides gates by it. `defined` sets
+// those types (default: the logged ones); `engineTypes: false` leaves them out.
+function writeRun(root, runId, { state, inputs = {}, steps = [], resumes = 0, defined = steps, engineTypes = true }) {
   const dir = join(root, ".adlc", "workflows", "runs", runId);
   mkdirSync(join(dir, "trace"), { recursive: true });
-  if (definition) writeDefinition(dir, defined.filter(([id], i, a) => a.findIndex(([j]) => j === id) === i));
+  if (engineTypes && state.step_results) {
+    const typeOf = {};
+    for (const [id, type] of defined) if (!(id in typeOf)) typeOf[id] = type;
+    for (const [id, r] of Object.entries(state.step_results)) if (r.type === undefined && typeOf[id]) r.type = typeOf[id];
+  }
   writeFileSync(join(dir, "state.json"), JSON.stringify({ run_id: runId, ...state }));
   writeFileSync(join(dir, "inputs.json"), JSON.stringify({ inputs }));
   const log = [];
@@ -432,7 +424,7 @@ test("S6: an answerer that looks like a mention is never rendered as one", () =>
   assert.ok(!s.text.includes("@channel"), s.text);
 });
 
-test("S5: the log cannot turn a step into a gate: the run's definition decides", () => {
+test("S5: the log cannot turn a step into a gate: the engine-recorded type decides", () => {
   const root = tempDir("sum-");
   const dir = writeRun(root, "r8", {
     steps: [["fake", "gate"], ["fake", "shell"]], defined: [["fake", "shell"]],
@@ -442,10 +434,10 @@ test("S5: the log cannot turn a step into a gate: the run's definition decides",
   assert.deepEqual(buildRunSummary(dir).gates, []);
 });
 
-test("S5: without the run's definition there are no gate lines (fail closed)", () => {
+test("S5: a result with no engine-recorded type is not a gate (fail closed)", () => {
   const root = tempDir("sum-");
   const dir = writeRun(root, "r9", {
-    steps: [["gate-spec", "gate"]], definition: false,
+    steps: [["gate-spec", "gate"]], engineTypes: false,
     state: { workflow_id: "w", status: "completed", created_at: "2026-11-23T08:00:00Z", updated_at: "2026-11-23T08:00:01Z",
       step_results: { "gate-spec": { status: "completed", output: { choice: "approve", answered_by: "U1" } } } },
   });
@@ -461,4 +453,14 @@ test("S1: a real paused-and-resumed run: gate credited, one resume, from the eng
   assert.equal(s.resumes, 1);
   assert.match(s.text, /• gate-spec: approve \(by U03T2SB0B\)/);
   assert.match(s.text, /Resumed 1 time$/);
+});
+
+test("S5: step output cannot carry gate fields (reserved keys)", async () => {
+  const { readStepOutput } = await import("../src/workflow/steps/agent.mjs");
+  const d = tempDir("sum-res-");
+  for (const key of ["choice", "answered_by", "auto_passed"]) {
+    const f = join(d, `${key}.json`);
+    writeFileSync(f, JSON.stringify({ conclusion: "ok", [key]: "x" }));
+    assert.deepEqual(readStepOutput(f, "s"), {}, key);
+  }
 });
