@@ -18,7 +18,7 @@ export const SUMMARY_MAX_CHARS = 3000;
 export const SUMMARY_FIELD_CHARS = 300;
 export const SUMMARY_MAX_LINKS = 10;
 const LINK = /^https?:\/\/[^\s<>|]{1,2040}$/i;
-const ANSWERER = /^[A-Za-z0-9._@-]{1,64}$/;
+const ANSWERER = /^[A-Za-z0-9._-][A-Za-z0-9._@-]{0,63}$/;
 
 function readJson(path) {
   try {
@@ -87,7 +87,8 @@ export function buildRunSummary(runDir, { env = process.env } = {}) {
   for (const e of log) {
     if (e?.event === "step_started" && typeof e.step_id === "string") {
       if (!order.includes(e.step_id)) order.push(e.step_id);
-      if (typeof e.type === "string") types[e.step_id] = e.type;
+      // The first logged type stands; a later line cannot retype a step.
+      if (typeof e.type === "string" && !(e.step_id in types)) types[e.step_id] = e.type;
     }
   }
   for (const id of Object.keys(results)) if (!order.includes(id)) order.push(id);
@@ -177,7 +178,7 @@ export function renderSummaryText(raw) {
     dispatch: raw.dispatch ? e(raw.dispatch) : raw.dispatch, conclusion: raw.conclusion ? e(raw.conclusion) : raw.conclusion,
     failed_step: raw.failed_step ? { id: e(raw.failed_step.id), error: e(raw.failed_step.error) } : null,
     mr_urls: raw.mr_urls.map(e),
-    gates: raw.gates.map((g) => ({ ...g, id: e(g.id), choice: e(g.choice) })),
+    gates: raw.gates.map((g) => ({ ...g, id: e(g.id), choice: e(g.choice), ...(g.answered_by ? { answered_by: e(g.answered_by) } : {}) })),
     steps: raw.steps.map((st) => ({ ...st, id: e(st.id) })),
   };
   const lines = [];

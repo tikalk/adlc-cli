@@ -228,14 +228,19 @@ steps:
   return { dir, wf };
 }
 
+// The gate pauses first (no verdict), then a relay resumes it with the
+// verdict and ADLC_ANSWERED_BY: the gate that asked is the gate answered.
 async function runGate(env, verdict = "approve") {
   const { dir, wf } = gateProject();
   const saved = process.env.ADLC_ANSWERED_BY;
-  if (env === undefined) delete process.env.ADLC_ANSWERED_BY;
-  else process.env.ADLC_ANSWERED_BY = env;
   try {
+    delete process.env.ADLC_ANSWERED_BY;
     const engine = new WorkflowEngine(dir);
-    const state = await engine.execute(engine.loadWorkflow(wf), { verdict }, "g1", STEP_REGISTRY);
+    const paused = await engine.execute(engine.loadWorkflow(wf), {}, "g1", STEP_REGISTRY);
+    assert.equal(paused.status, RunStatus.PAUSED);
+    if (env === undefined) delete process.env.ADLC_ANSWERED_BY;
+    else process.env.ADLC_ANSWERED_BY = env;
+    const state = await engine.resume("g1", { verdict }, STEP_REGISTRY);
     return { dir, state };
   } finally {
     if (saved === undefined) delete process.env.ADLC_ANSWERED_BY;
@@ -257,6 +262,7 @@ test("S2: a reject records who rejected", async () => {
 test("S2: no ADLC_ANSWERED_BY, or one that is not a plain id, records nothing", async () => {
   assert.equal((await runGate(undefined)).state.stepResults["gate-spec"].output.answered_by, undefined);
   assert.equal((await runGate("<!here>")).state.stepResults["gate-spec"].output.answered_by, undefined);
+  assert.equal((await runGate("@channel")).state.stepResults["gate-spec"].output.answered_by, undefined);
 });
 
 // ── the command ─────────────────────────────────────────────────────────────
@@ -357,4 +363,64 @@ test("S2: the answerer is recorded only for a verdict supplied in this run or re
   assert.equal(state.status, RunStatus.COMPLETED);
   assert.equal(state.stepResults["gate-one"].output.answered_by, "U1");
   assert.equal(state.stepResults["gate-two"].output.answered_by, undefined);
+});
+
+// ── security review of 55631f7 ──────────────────────────────────────────────
+
+test("S2: a verdict preset at the start (no pause) is not credited to anyone", async () => {
+  const { dir, wf } = gateProject();
+  const state = await withAnswerer("U1", () => { const e = new WorkflowEngine(dir); return e.execute(e.loadWorkflow(wf), { verdict: "approve" }, "g0", STEP_REGISTRY); });
+  assert.equal(state.status, RunStatus.COMPLETED);
+  assert.equal(state.stepResults["gate-spec"].output.answered_by, undefined);
+});
+
+test("S2: two gates sharing one verdict input: only the gate that asked is credited", async () => {
+  const dir = tempDir("sum-shared-");
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  const wf = join(tempDir("sum-shared-wf-"), "workflow.yml");
+  writeFileSync(wf, `schema_version: "1.0"
+workflow:
+  id: sh-wf
+  name: SH
+  version: "1.0.0"
+inputs:
+  verdict: {type: string, default: "", enum: ["", approve, reject]}
+steps:
+  - id: gate-a
+    type: gate
+    message: "A?"
+    options: [approve, reject]
+    verdict_input: verdict
+  - id: gate-b
+    type: gate
+    message: "B?"
+    options: [approve, reject]
+    verdict_input: verdict
+`);
+  const engine = new WorkflowEngine(dir);
+  await withAnswerer(undefined, () => engine.execute(engine.loadWorkflow(wf), {}, "sh", STEP_REGISTRY));
+  const state = await withAnswerer("U1", () => engine.resume("sh", { verdict: "approve" }, STEP_REGISTRY));
+  assert.equal(state.stepResults["gate-a"].output.answered_by, "U1");
+  assert.equal(state.stepResults["gate-b"]?.output?.answered_by, undefined);
+});
+
+test("S6: an answerer that looks like a mention is never rendered as one", () => {
+  const root = tempDir("sum-");
+  const dir = writeRun(root, "r7", {
+    steps: [["gate-spec", "gate"]],
+    state: { workflow_id: "w", status: "completed", created_at: "2026-11-23T08:00:00Z", updated_at: "2026-11-23T08:00:01Z",
+      step_results: { "gate-spec": { status: "completed", output: { choice: "approve", answered_by: "@channel" } } } },
+  });
+  const s = buildRunSummary(dir);
+  assert.ok(!s.text.includes("@channel"), s.text);
+});
+
+test("S5: a later log line cannot turn a step into a gate", () => {
+  const root = tempDir("sum-");
+  const dir = writeRun(root, "r8", {
+    steps: [["fake", "shell"], ["fake", "gate"]],
+    state: { workflow_id: "w", status: "completed", created_at: "2026-11-23T08:00:00Z", updated_at: "2026-11-23T08:00:01Z",
+      step_results: { fake: { status: "completed", output: { choice: "approve", answered_by: "U0BOSS" } } } },
+  });
+  assert.deepEqual(buildRunSummary(dir).gates, []);
 });
