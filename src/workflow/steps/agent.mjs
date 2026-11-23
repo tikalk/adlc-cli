@@ -202,6 +202,19 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     });
   }
   Object.assign(output, readStepOutput(runEnv.ADLC_STEP_OUTPUT, rid(config)));
+  // A refusal ends the run (adlc-workspace#167): a step whose conclusion
+  // starts with `blocked:` (a dependency gate, no issue, a refused publish)
+  // FAILS even though the agent exited 0, so no later gate pauses with
+  // nothing to approve and no later step runs. A logical failure — never
+  // fast_failure — so `workflow run` exits 10 and the lane does not retry.
+  // Checked before the question payload: a refused step never asks.
+  if (typeof output.conclusion === "string" && /^\s*blocked:/i.test(output.conclusion)) {
+    return new StepResult({
+      status: StepStatus.FAILED,
+      error: `Agent step ${rid(config)}: ${output.conclusion.trim()}`,
+      output,
+    });
+  }
   // Question payload (adlc-workspace#148): after exit 0, a valid
   // runs/<run_id>/questions/<step_id>.json pauses the run with kind=question
   // instead of completing. Invalid payloads keep COMPLETED with a warning.
