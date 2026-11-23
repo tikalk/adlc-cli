@@ -198,7 +198,7 @@ test("B2: `adlc-cli workflow run` exits 10 on a blocked plan", { skip: !POSIX },
   const failed = r.stdout.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } })
     .find((e) => e && e.type === "run_failed");
   assert.ok(failed, r.stdout);
-  assert.notEqual(failed.status, "aborted"); // not a reject
+  assert.equal(failed.status, "failed"); // a logical failure, not a reject
   assert.match(failed.error ?? "", /blocked: dependency-gate/);
 });
 
@@ -220,4 +220,39 @@ test("B6: the blocked error is redacted and kept on one line", { skip: !POSIX },
   assert.ok(!err.includes(token), err);
   assert.ok(!err.includes("\n"), err);
   assert.match(err, /blocked: push refused/);
+});
+
+// B7 (factory-review F2 on #118): step output merges all-or-nothing, so one
+// invalid sibling field drops the whole object. The refusal must still end
+// the run: it is read from the raw file, before validation (fail closed).
+for (const [name, output] of [
+  ["a non-string sibling field", JSON.stringify({ conclusion: BLOCKED, elapsed: 12 })],
+  ["a conclusion over 2048 characters", JSON.stringify({ conclusion: BLOCKED + " " + "x".repeat(2100) })],
+  ["more than 16 fields", JSON.stringify({ conclusion: BLOCKED, ...Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`k${i}`, "v"])) })],
+  ["a reserved sibling key", JSON.stringify({ conclusion: BLOCKED, stdout: "x" })],
+  ["JSON that does not parse", `{"conclusion": "${BLOCKED}", oops}`],
+]) {
+  test(`B7: a blocked conclusion with ${name} still fails the run`, { skip: !POSIX }, async () => {
+    const { state, ran } = await runLane({ output });
+    assert.equal(state.status, RunStatus.FAILED);
+    assert.deepEqual(ran, ["plan"]);
+    assert.equal(state.stepResults["gate-spec"], undefined);
+    assert.match(state.stepResults.plan.error, /blocked: dependency-gate on #164/);
+    assert.ok(state.stepResults.plan.error.length < 2300);
+  });
+}
+
+test("B7: an invalid file without a blocked conclusion still completes as before", { skip: !POSIX }, async () => {
+  const { state } = await runLane({ output: JSON.stringify({ conclusion: "plan-ready", elapsed: 12 }) });
+  assert.equal(state.status, RunStatus.PAUSED);
+});
+
+test("B8: zero-width and format characters before blocked: do not hide the refusal", { skip: !POSIX }, async () => {
+  const { state } = await runLane({ output: JSON.stringify({ conclusion: "\u200b\ufeffblocked: dependency-gate on #164 (open)" }) });
+  assert.equal(state.status, RunStatus.FAILED);
+});
+
+test("B6: C1 control characters are collapsed too", { skip: !POSIX }, async () => {
+  const { state } = await runLane({ output: JSON.stringify({ conclusion: "blocked: a\u0085b\u009bc" }) });
+  assert.doesNotMatch(state.stepResults.plan.error, /[\u0080-\u009f]/);
 });

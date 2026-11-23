@@ -208,13 +208,16 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   // FAILS even though the agent exited 0, so no later gate pauses with
   // nothing to approve and no later step runs. A logical failure — never
   // fast_failure — so `workflow run` exits 10 and the lane does not retry.
-  // Checked before the question payload: a refused step never asks.
-  if (typeof output.conclusion === "string" && /^\s*blocked:/i.test(output.conclusion)) {
+  // Checked before the question payload: a refused step never asks. Read from
+  // the raw file, not the validated merge: one invalid sibling field drops
+  // the whole object, and the refusal must still end the run (fail closed).
+  const blocked = readBlockedConclusion(runEnv.ADLC_STEP_OUTPUT);
+  if (blocked !== null) {
     return new StepResult({
       status: StepStatus.FAILED,
       // Agent-written text: redact secrets with the env the agent ran with,
       // and keep it on one line (it reaches run_failed and the runtime log).
-      error: `Agent step ${rid(config)}: ${redactSecrets(output.conclusion, { ...process.env, ...runEnv }).replace(/[\u0000-\u001f\u007f]+/g, " ").trim()}`,
+      error: `Agent step ${rid(config)}: ${redactSecrets(blocked, { ...process.env, ...runEnv }).replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim()}`,
       output,
     });
   }
@@ -248,6 +251,42 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     output.question_warning = `question payload ignored: ${question.why}`;
   }
   return new StepResult({ status: StepStatus.COMPLETED, output });
+}
+
+// ── blocked conclusion (adlc-workspace#167) ───────────────────────────────
+// The step's `conclusion` when it starts with `blocked:` (any case, after
+// whitespace and invisible format characters such as U+200B), else null.
+// Independent of the all-or-nothing output validation: a file the merge
+// rejects (a non-string sibling, too many fields, an over-long value, a
+// reserved key) or that does not parse as JSON still carries the refusal.
+// The returned text is capped at the output value limit.
+const BLOCKED_PREFIX = /^[\s\p{Cf}]*blocked:/iu;
+const BLOCKED_IN_RAW = /"conclusion"\s*:\s*"((?:[^"\\]|\\.){0,2048})/;
+
+function readBlockedConclusion(path) {
+  if (!path || !existsSync(path)) return null;
+  let raw;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+  if (raw.length > MAX_OUTPUT_FILE) raw = raw.slice(0, MAX_OUTPUT_FILE);
+  let conclusion = null;
+  try {
+    const data = JSON.parse(raw);
+    if (data && typeof data === "object" && !Array.isArray(data) && typeof data.conclusion === "string") {
+      conclusion = data.conclusion;
+    }
+  } catch {
+    // Not JSON: fall back to the first "conclusion" string in the text.
+    const m = BLOCKED_IN_RAW.exec(raw);
+    if (m) {
+      try { conclusion = JSON.parse(`"${m[1]}"`); } catch { conclusion = m[1]; }
+    }
+  }
+  if (typeof conclusion !== "string" || !BLOCKED_PREFIX.test(conclusion)) return null;
+  return conclusion.replace(/^[\s\p{Cf}]+/u, "").slice(0, MAX_OUTPUT_VALUE);
 }
 
 // ── question payload (adlc-workspace#148) ─────────────────────────────────
