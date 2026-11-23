@@ -2,7 +2,7 @@
 //
 // One message that says how a run ended, built only from the run's own files
 // (.adlc/workflows/runs/<run_id>/state.json, inputs.json, log.jsonl and the
-// trace events). The engine makes no network call here (ADR-416): a runtime
+// run copy of the workflow definition). The engine makes no network call here (ADR-416): a runtime
 // that relays runs to a chat thread forwards `text` as it is.
 //
 // Every string that came from a step (errors, conclusions, links, who answered
@@ -12,7 +12,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { redactSecrets } from "./redact.mjs";
-import { tracePaths } from "./trace.mjs";
+import { gateStepIds } from "./gate-payload.mjs";
+import { WorkflowDefinition } from "./engine.mjs";
 
 export const SUMMARY_MAX_CHARS = 3000;
 export const SUMMARY_FIELD_CHARS = 300;
@@ -68,6 +69,26 @@ function stepLinks(output) {
   return links.filter((l) => LINK.test(l));
 }
 
+// Gate ids from the run copy of the definition (runs/<id>/workflow.yml): the
+// file the engine executes and resumes from, so the same source the engine's
+// own gate decisions come from. log.jsonl is only an ordering hint: anything
+// in the workspace can append to it. No readable copy: no gate lines.
+function definedGateIds(runDir) {
+  const copy = join(runDir, "workflow.yml");
+  if (!existsSync(copy)) return null;
+  let data = null;
+  try {
+    data = WorkflowDefinition.fromYamlFile(copy).data;
+  } catch {
+    try {
+      data = JSON.parse(readFileSync(copy, "utf-8").replace(/^# serialized from string source\n/, ""));
+    } catch {
+      return null;
+    }
+  }
+  return data && typeof data === "object" ? new Set(gateStepIds(data.steps)) : null;
+}
+
 /**
  * Build the summary of one run from its directory. Returns null when the run
  * has no readable state.json.
@@ -77,8 +98,8 @@ export function buildRunSummary(runDir, { env = process.env } = {}) {
   if (!state || typeof state !== "object") return null;
   const inputs = (readJson(join(runDir, "inputs.json")) ?? {}).inputs ?? {};
   const log = readLines(join(runDir, "log.jsonl"));
-  const trace = readLines(tracePaths(runDir).events);
   const results = state.step_results && typeof state.step_results === "object" ? state.step_results : {};
+  const gateIds = definedGateIds(runDir) ?? new Set();
 
   // Step order: as the run started them (log.jsonl), then any result the log
   // does not name, in state order.
@@ -106,9 +127,9 @@ export function buildRunSummary(runDir, { env = process.env } = {}) {
     const step = { id: cleanField(id, 80, env), status: typeof r.status === "string" ? r.status : "unknown" };
     if (types[id]) step.type = types[id];
     steps.push(step);
-    // Gates only by the type the engine logged when it started the step: any
-    // other step can write `choice`/`answered_by` to its own output.
-    if (types[id] === "gate" && typeof output.choice === "string") {
+    // Gates only by the run's definition: any other step can write
+    // `choice`/`answered_by` to its own output.
+    if (gateIds.has(id) && typeof output.choice === "string") {
       const gate = { id: step.id, choice: cleanField(output.choice, 40, env) };
       if (typeof output.answered_by === "string" && ANSWERER.test(output.answered_by)) gate.answered_by = output.answered_by;
       if (output.auto_passed === true) gate.auto = true;
@@ -137,7 +158,14 @@ export function buildRunSummary(runDir, { env = process.env } = {}) {
   const ended = Date.parse(state.updated_at ?? "");
   const durationSeconds = Number.isFinite(started) && Number.isFinite(ended) && ended >= started
     ? Math.round((ended - started) / 1000) : null;
-  const resumes = trace.filter((e) => e?.payload?.adlc?.event === "run_resumed").length;
+  // Resumes from log.jsonl (the trace events are sampled): every call ends
+  // with workflow_finished or workflow_interrupted; one that stopped the run
+  // (paused, interrupted) and has entries after it was resumed.
+  let resumes = 0;
+  log.forEach((e, i) => {
+    const stopped = (e?.event === "workflow_finished" && e.status === "paused") || e?.event === "workflow_interrupted";
+    if (stopped && i < log.length - 1) resumes++;
+  });
 
   const summary = {
     run_id: cleanField(String(state.run_id ?? ""), 80, env),

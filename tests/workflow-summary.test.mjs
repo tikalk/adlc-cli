@@ -38,15 +38,32 @@ process.on("exit", () => {
   }
 });
 
-function writeRun(root, runId, { state, inputs = {}, steps = [], resumes = 0 }) {
+// The run copy of the definition (runs/<id>/workflow.yml) is what the engine
+// executes and resumes from; the summary takes its gate ids from it. `defined`
+// overrides the step types written there (default: the logged ones).
+function writeDefinition(dir, defined) {
+  const lines = ['schema_version: "1.0"', "workflow:", "  id: w", "  name: W", '  version: "1.0.0"', "steps:"];
+  for (const [id, type] of defined) {
+    lines.push(`  - id: ${id}`);
+    if (type) lines.push(`    type: ${type}`);
+    if (type === "gate") lines.push('    message: "?"', "    options: [approve, reject]");
+    if (type === "shell") lines.push("    run: \"true\"");
+    if (type === "command" || !type) lines.push("    command: x");
+  }
+  writeFileSync(join(dir, "workflow.yml"), lines.join("\n") + "\n");
+}
+
+function writeRun(root, runId, { state, inputs = {}, steps = [], resumes = 0, defined = steps, definition = true }) {
   const dir = join(root, ".adlc", "workflows", "runs", runId);
   mkdirSync(join(dir, "trace"), { recursive: true });
+  if (definition) writeDefinition(dir, defined.filter(([id], i, a) => a.findIndex(([j]) => j === id) === i));
   writeFileSync(join(dir, "state.json"), JSON.stringify({ run_id: runId, ...state }));
   writeFileSync(join(dir, "inputs.json"), JSON.stringify({ inputs }));
-  writeFileSync(join(dir, "log.jsonl"), steps.map(([id, type]) => JSON.stringify({ event: "step_started", step_id: id, type })).join("\n") + "\n");
-  const ev = [];
-  for (let i = 0; i < resumes; i++) ev.push(JSON.stringify({ schema_version: 1, type: "log", payload: { adlc: { event: "run_resumed" } } }));
-  writeFileSync(join(dir, "trace", "events.jsonl"), ev.join("\n") + (ev.length ? "\n" : ""));
+  const log = [];
+  for (let i = 0; i < resumes; i++) log.push(JSON.stringify({ event: "workflow_finished", status: "paused" }));
+  for (const [id, type] of steps) log.push(JSON.stringify({ event: "step_started", step_id: id, type }));
+  log.push(JSON.stringify({ event: "workflow_finished", status: state.status }));
+  writeFileSync(join(dir, "log.jsonl"), log.join("\n") + "\n");
   return dir;
 }
 
@@ -415,12 +432,33 @@ test("S6: an answerer that looks like a mention is never rendered as one", () =>
   assert.ok(!s.text.includes("@channel"), s.text);
 });
 
-test("S5: a later log line cannot turn a step into a gate", () => {
+test("S5: the log cannot turn a step into a gate: the run's definition decides", () => {
   const root = tempDir("sum-");
   const dir = writeRun(root, "r8", {
-    steps: [["fake", "shell"], ["fake", "gate"]],
+    steps: [["fake", "gate"], ["fake", "shell"]], defined: [["fake", "shell"]],
     state: { workflow_id: "w", status: "completed", created_at: "2026-11-23T08:00:00Z", updated_at: "2026-11-23T08:00:01Z",
       step_results: { fake: { status: "completed", output: { choice: "approve", answered_by: "U0BOSS" } } } },
   });
   assert.deepEqual(buildRunSummary(dir).gates, []);
+});
+
+test("S5: without the run's definition there are no gate lines (fail closed)", () => {
+  const root = tempDir("sum-");
+  const dir = writeRun(root, "r9", {
+    steps: [["gate-spec", "gate"]], definition: false,
+    state: { workflow_id: "w", status: "completed", created_at: "2026-11-23T08:00:00Z", updated_at: "2026-11-23T08:00:01Z",
+      step_results: { "gate-spec": { status: "completed", output: { choice: "approve", answered_by: "U1" } } } },
+  });
+  const s = buildRunSummary(dir);
+  assert.deepEqual(s.gates, []);
+  assert.match(s.text, /• ✓ gate-spec: completed/);
+});
+
+test("S1: a real paused-and-resumed run: gate credited, one resume, from the engine's own files", async () => {
+  const { dir } = await runGate("U03T2SB0B");
+  const s = buildRunSummary(join(dir, ".adlc", "workflows", "runs", "g1"));
+  assert.deepEqual(s.gates, [{ id: "gate-spec", choice: "approve", answered_by: "U03T2SB0B" }]);
+  assert.equal(s.resumes, 1);
+  assert.match(s.text, /• gate-spec: approve \(by U03T2SB0B\)/);
+  assert.match(s.text, /Resumed 1 time$/);
 });
