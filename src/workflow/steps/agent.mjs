@@ -13,6 +13,7 @@ import { readAgent } from "../../utils/init-options.mjs";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { currentHeadSha } from "../gate-context.mjs";
+import { redactSecrets } from "../redact.mjs";
 
 const rid = (config) => `'${config.id ?? "?"}'`;
 
@@ -211,7 +212,9 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   if (typeof output.conclusion === "string" && /^\s*blocked:/i.test(output.conclusion)) {
     return new StepResult({
       status: StepStatus.FAILED,
-      error: `Agent step ${rid(config)}: ${output.conclusion.trim()}`,
+      // Agent-written text: redact secrets with the env the agent ran with,
+      // and keep it on one line (it reaches run_failed and the runtime log).
+      error: `Agent step ${rid(config)}: ${redactSecrets(output.conclusion, { ...process.env, ...runEnv }).replace(/[\u0000-\u001f\u007f]+/g, " ").trim()}`,
       output,
     });
   }

@@ -201,3 +201,23 @@ test("B2: `adlc-cli workflow run` exits 10 on a blocked plan", { skip: !POSIX },
   assert.notEqual(failed.status, "aborted"); // not a reject
   assert.match(failed.error ?? "", /blocked: dependency-gate/);
 });
+
+// B5 (security review of #118): a blocked step keeps its merged output, so
+// agent-written fields must not steer the run. `aborted` (a string here; the
+// gate sets the boolean true) must not turn the failure into an abort, which
+// exits 1 and is retried.
+test("B5: an agent-written aborted field cannot turn a blocked step into an abort", { skip: !POSIX }, async () => {
+  const { state } = await runLane({ output: JSON.stringify({ conclusion: BLOCKED, aborted: "true" }) });
+  assert.equal(state.status, RunStatus.FAILED);
+  assert.equal(classifyWorkflowStatus(state.status, { fastFailure: state.fastFailure === true }).exitCode, 10);
+});
+
+test("B6: the blocked error is redacted and kept on one line", { skip: !POSIX }, async () => {
+  const token = "glpat-" + "a1b2c3d4e5f6g7h8i9j0";
+  const { state } = await runLane({ output: JSON.stringify({ conclusion: `blocked: push refused for https://oauth2:${token}@gl.test/g/p.git\nsecond line` }) });
+  const err = state.stepResults.plan.error;
+  assert.equal(state.status, RunStatus.FAILED);
+  assert.ok(!err.includes(token), err);
+  assert.ok(!err.includes("\n"), err);
+  assert.match(err, /blocked: push refused/);
+});
