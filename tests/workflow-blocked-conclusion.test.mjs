@@ -256,3 +256,30 @@ test("B6: C1 control characters are collapsed too", { skip: !POSIX }, async () =
   const { state } = await runLane({ output: JSON.stringify({ conclusion: "blocked: a\u0085b\u009bc" }) });
   assert.doesNotMatch(state.stepResults.plan.error, /[\u0080-\u009f]/);
 });
+
+// B9 (security review of 6b38ebf): redact before truncating, decode the
+// malformed-JSON fallback before redacting, and check every conclusion in it.
+test("B9: a secret across the 2048-character cut is redacted, not half-kept", { skip: !POSIX }, async () => {
+  const token = "glpat-" + "a1b2c3d4e5f6g7h8i9j0";
+  const pad = "x".repeat(2048 - "blocked: ".length - 10);
+  const { state } = await runLane({ output: JSON.stringify({ conclusion: `blocked: ${pad} ${token}` }) });
+  const err = state.stepResults.plan.error;
+  assert.equal(state.status, RunStatus.FAILED);
+  assert.ok(!err.includes("glpat-a1b2"), err.slice(-80));
+});
+
+test("B9: an escaped secret in JSON that does not parse is decoded and redacted", { skip: !POSIX }, async () => {
+  // \u0067 = "g"; a raw tab inside the string makes JSON.parse fail.
+  const raw = `{"conclusion": "blocked: push refused \\u0067lpat-a1b2c3d4e5f6g7h8i9j0\tx", oops}`;
+  const { state } = await runLane({ output: raw });
+  const err = state.stepResults.plan.error;
+  assert.equal(state.status, RunStatus.FAILED);
+  assert.ok(!err.includes("a1b2c3d4e5f6g7h8i9j0"), err);
+  assert.ok(!err.includes("\\u0067"), err);
+});
+
+test("B9: a blocked conclusion after another conclusion in a broken file still counts", { skip: !POSIX }, async () => {
+  const raw = `{"conclusion": "plan-ready", "conclusion": "${BLOCKED}", oops}`;
+  const { state } = await runLane({ output: raw });
+  assert.equal(state.status, RunStatus.FAILED);
+});
