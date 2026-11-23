@@ -321,7 +321,10 @@ export class GateStep extends StepBase {
     }
     output.choice = choice;
     const answeredBy = (process.env.ADLC_ANSWERED_BY ?? "").trim();
-    if (fromInput && /^[A-Za-z0-9._@-]{1,64}$/.test(answeredBy)) output.answered_by = answeredBy;
+    // Only for a verdict supplied in this run/resume call: a verdict kept from
+    // an earlier call was not given by whoever resumed the run now.
+    const suppliedNow = boundVerdictInput !== null && (context.suppliedInputs ?? []).includes(boundVerdictInput);
+    if (fromInput && suppliedNow && /^[A-Za-z0-9._@-]{1,64}$/.test(answeredBy)) output.answered_by = answeredBy;
 
     // Match rejection case-insensitively, agreeing with validate().
     if (isRejection(choice)) {

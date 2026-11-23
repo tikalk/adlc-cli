@@ -105,7 +105,9 @@ export function buildRunSummary(runDir, { env = process.env } = {}) {
     const step = { id: cleanField(id, 80, env), status: typeof r.status === "string" ? r.status : "unknown" };
     if (types[id]) step.type = types[id];
     steps.push(step);
-    if (typeof output.choice === "string") {
+    // Gates only by the type the engine logged when it started the step: any
+    // other step can write `choice`/`answered_by` to its own output.
+    if (types[id] === "gate" && typeof output.choice === "string") {
       const gate = { id: step.id, choice: cleanField(output.choice, 40, env) };
       if (typeof output.answered_by === "string" && ANSWERER.test(output.answered_by)) gate.answered_by = output.answered_by;
       if (output.auto_passed === true) gate.auto = true;
@@ -158,7 +160,26 @@ export function buildRunSummary(runDir, { env = process.env } = {}) {
 
 const MARK = { completed: "✓", failed: "✗", skipped: "–", paused: "⏸", running: "…" };
 
-export function renderSummaryText(s) {
+// Chat-safe text: `&`, `<`, `>` escaped (no links, mentions or broadcasts
+// made of step text) and @here/@channel/@everyone broken with a zero-width
+// space. Only the rendered text; the JSON fields keep the cleaned values.
+export function chatSafe(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/@(here|channel|everyone)\b/gi, "@\u200b$1");
+}
+
+export function renderSummaryText(raw) {
+  const e = chatSafe;
+  const s = {
+    ...raw,
+    run_id: e(raw.run_id), workflow_id: e(raw.workflow_id), issue_ref: raw.issue_ref ? e(raw.issue_ref) : raw.issue_ref,
+    dispatch: raw.dispatch ? e(raw.dispatch) : raw.dispatch, conclusion: raw.conclusion ? e(raw.conclusion) : raw.conclusion,
+    failed_step: raw.failed_step ? { id: e(raw.failed_step.id), error: e(raw.failed_step.error) } : null,
+    mr_urls: raw.mr_urls.map(e),
+    gates: raw.gates.map((g) => ({ ...g, id: e(g.id), choice: e(g.choice) })),
+    steps: raw.steps.map((st) => ({ ...st, id: e(st.id) })),
+  };
   const lines = [];
   const head = [`*Run ${s.run_id} ${s.status}*`];
   if (s.workflow_id) head.push(s.workflow_id);

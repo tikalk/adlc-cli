@@ -276,3 +276,85 @@ test("S1: `workflow summary` prints the text, `--json` the object; a missing run
   const missing = spawnSync(process.execPath, [BIN, "workflow", "summary", "nope"], { cwd: root, encoding: "utf-8" });
   assert.equal(missing.status, 1);
 });
+
+// ── security review of a9f8541 ──────────────────────────────────────────────
+
+test("S5: a non-gate step that writes choice/answered_by is not shown as a gate", () => {
+  const root = tempDir("sum-");
+  const dir = writeRun(root, "r5", {
+    steps: [["fake", "shell"], ["typeless", undefined]],
+    state: { workflow_id: "w", status: "completed", created_at: "2026-11-23T08:00:00Z", updated_at: "2026-11-23T08:00:01Z",
+      step_results: {
+        fake: { status: "completed", output: { choice: "approve", answered_by: "U0BOSS" } },
+        typeless: { status: "completed", output: { choice: "approve", answered_by: "U0BOSS" } },
+      } },
+  });
+  const s = buildRunSummary(dir);
+  assert.deepEqual(s.gates, []);
+  assert.doesNotMatch(s.text, /Gates:|U0BOSS/);
+});
+
+test("S6: chat markup and broadcast mentions in step text are neutralised in the text", () => {
+  const root = tempDir("sum-");
+  const dir = writeRun(root, "r6", {
+    steps: [["execute", "command"]],
+    state: { workflow_id: "w", status: "completed", created_at: "2026-11-23T08:00:00Z", updated_at: "2026-11-23T08:00:01Z",
+      step_results: { execute: { status: "completed", output: { conclusion: "done <!channel> <https://evil.test|click> a & b @here @everyone @channel" } } } },
+  });
+  const s = buildRunSummary(dir);
+  assert.ok(!s.text.includes("<!channel>"), s.text);
+  assert.ok(!s.text.includes("<https://evil.test|click>"), s.text);
+  assert.match(s.text, /&lt;!channel&gt;/);
+  assert.match(s.text, /a &amp; b/);
+  for (const m of ["@here", "@everyone", "@channel"]) assert.ok(!s.text.includes(m), m);
+  assert.equal(s.conclusion, "done <!channel> <https://evil.test|click> a & b @here @everyone @channel"); // JSON keeps the text
+});
+
+function twoGateProject() {
+  const dir = tempDir("sum-gate2-");
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  const wf = join(tempDir("sum-gate2-wf-"), "workflow.yml");
+  writeFileSync(wf, `schema_version: "1.0"
+workflow:
+  id: g2-wf
+  name: G2
+  version: "1.0.0"
+inputs:
+  v1: {type: string, default: "", enum: ["", approve, reject]}
+  v2: {type: string, default: "", enum: ["", approve, reject]}
+steps:
+  - id: gate-one
+    type: gate
+    message: "One?"
+    options: [approve, reject]
+    verdict_input: v1
+  - id: gate-two
+    type: gate
+    message: "Two?"
+    options: [approve, reject]
+    verdict_input: v2
+`);
+  return { dir, wf };
+}
+
+async function withAnswerer(id, fn) {
+  const saved = process.env.ADLC_ANSWERED_BY;
+  if (id === undefined) delete process.env.ADLC_ANSWERED_BY; else process.env.ADLC_ANSWERED_BY = id;
+  try { return await fn(); } finally {
+    if (saved === undefined) delete process.env.ADLC_ANSWERED_BY; else process.env.ADLC_ANSWERED_BY = saved;
+  }
+}
+
+test("S2: the answerer is recorded only for a verdict supplied in this run or resume call", async () => {
+  const { dir, wf } = twoGateProject();
+  const engine = new WorkflowEngine(dir);
+  // Started with v2 preset and no answerer: gate-one pauses.
+  let state = await withAnswerer(undefined, () => engine.execute(engine.loadWorkflow(wf), { v2: "approve" }, "g2", STEP_REGISTRY));
+  assert.equal(state.status, RunStatus.PAUSED);
+  // U1 answers gate-one. gate-two then runs on the v2 set at start: U1 did
+  // not give that verdict, so it must not be credited to U1.
+  state = await withAnswerer("U1", () => engine.resume("g2", { v1: "approve" }, STEP_REGISTRY));
+  assert.equal(state.status, RunStatus.COMPLETED);
+  assert.equal(state.stepResults["gate-one"].output.answered_by, "U1");
+  assert.equal(state.stepResults["gate-two"].output.answered_by, undefined);
+});
