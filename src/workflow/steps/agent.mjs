@@ -13,6 +13,7 @@ import { readAgent } from "../../utils/init-options.mjs";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { currentHeadSha } from "../gate-context.mjs";
+import { redactSecrets } from "../redact.mjs";
 
 const rid = (config) => `'${config.id ?? "?"}'`;
 
@@ -202,6 +203,25 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     });
   }
   Object.assign(output, readStepOutput(runEnv.ADLC_STEP_OUTPUT, rid(config)));
+  // A refusal ends the run (adlc-workspace#167): a step whose conclusion
+  // starts with `blocked:` (a dependency gate, no issue, a refused publish)
+  // FAILS even though the agent exited 0, so no later gate pauses with
+  // nothing to approve and no later step runs. A logical failure — never
+  // fast_failure — so `workflow run` exits 10 and the lane does not retry.
+  // Checked before the question payload: a refused step never asks. Read from
+  // the raw file, not the validated merge: one invalid sibling field drops
+  // the whole object, and the refusal must still end the run (fail closed).
+  const blocked = readBlockedConclusion(runEnv.ADLC_STEP_OUTPUT);
+  if (blocked !== null) {
+    return new StepResult({
+      status: StepStatus.FAILED,
+      // Agent-written text: redact secrets with the env the agent ran with,
+      // and keep it on one line (it reaches run_failed and the runtime log).
+      // Redact the whole text first, then collapse and cap it.
+      error: `Agent step ${rid(config)}: ${redactSecrets(blocked, { ...process.env, ...runEnv }).replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, MAX_OUTPUT_VALUE)}`,
+      output,
+    });
+  }
   // Question payload (adlc-workspace#148): after exit 0, a valid
   // runs/<run_id>/questions/<step_id>.json pauses the run with kind=question
   // instead of completing. Invalid payloads keep COMPLETED with a warning.
@@ -232,6 +252,52 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     output.question_warning = `question payload ignored: ${question.why}`;
   }
   return new StepResult({ status: StepStatus.COMPLETED, output });
+}
+
+// ── blocked conclusion (adlc-workspace#167) ───────────────────────────────
+// The step's `conclusion` when it starts with `blocked:` (any case, after
+// whitespace and invisible format characters such as U+200B), else null.
+// Independent of the all-or-nothing output validation: a file the merge
+// rejects (a non-string sibling, too many fields, an over-long value, a
+// reserved key) or that does not parse as JSON still carries the refusal.
+// The caller redacts the whole text before it caps it.
+const BLOCKED_PREFIX = /^[\s\p{Cf}]*blocked:/iu;
+// Every "conclusion": "<string>" in a file that does not parse, whole (the
+// file is already bounded by MAX_OUTPUT_FILE).
+const CONCLUSION_IN_RAW = /"conclusion"\s*:\s*"((?:[^"\\]|\\.)*)/g;
+
+// Decode a JSON string body tolerantly: valid escapes are decoded one by one
+// (so `\u0067lpat-…` is redacted as `glpat-…`), invalid ones are left as they
+// are, and raw control characters are kept for the caller to collapse.
+function decodeJsonStringBody(body) {
+  const simple = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+  return body.replace(/\\(u[0-9a-fA-F]{4}|["\\/bfnrt])/g, (_, e) =>
+    e[0] === "u" ? String.fromCharCode(parseInt(e.slice(1), 16)) : simple[e]);
+}
+
+function readBlockedConclusion(path) {
+  if (!path || !existsSync(path)) return null;
+  let raw;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch {
+    // Unreadable: the merge reads nothing from it either; the step keeps
+    // today's outcome (only a readable `blocked:` changes it).
+    return null;
+  }
+  if (raw.length > MAX_OUTPUT_FILE) raw = raw.slice(0, MAX_OUTPUT_FILE);
+  const candidates = [];
+  try {
+    const data = JSON.parse(raw);
+    if (data && typeof data === "object" && !Array.isArray(data) && typeof data.conclusion === "string") {
+      candidates.push(data.conclusion);
+    }
+  } catch {
+    // Not JSON: every "conclusion" string in the text counts, decoded.
+    for (const m of raw.matchAll(CONCLUSION_IN_RAW)) candidates.push(decodeJsonStringBody(m[1]));
+  }
+  const hit = candidates.find((c) => BLOCKED_PREFIX.test(c));
+  return hit === undefined ? null : hit.replace(/^[\s\p{Cf}]+/u, "");
 }
 
 // ── question payload (adlc-workspace#148) ─────────────────────────────────

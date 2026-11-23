@@ -282,6 +282,18 @@ later step or gate can read them, for example
 a rule, the file is ignored with a log line. Stdout is never parsed for
 results.
 
+**A `conclusion` that starts with `blocked:` fails the step.** An agent
+(`command`/`prompt`) step that exits 0 but writes, for example,
+`{"conclusion": "blocked: dependency-gate on #164 (open)"}` has refused its
+work. The engine fails the step with that text as the error (secrets
+redacted, kept on one line), so no later gate pauses with nothing to approve
+and no later step runs. The run ends `failed` and `workflow run` exits 10, a
+logical failure that a lane does not retry. The prefix is case-insensitive
+and may follow whitespace or invisible format characters. The refusal counts
+even when the rest of the file breaks the rules above, because it is read
+before validation. A conclusion that only mentions it later completes as
+before. A blocked step never pauses on a question payload.
+
 **Passing values to a `shell` step: use `env:`, not the script text.** A
 `{{ … }}` expression inside `run` is pasted into the script as text before the
 shell reads it, so a value with a quote, a backtick or `$(…)` becomes shell

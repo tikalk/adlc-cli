@@ -1163,7 +1163,10 @@ export class WorkflowEngine {
           return;
         }
 
-        if (result.output.aborted) {
+        // Strict: only a gate's boolean `true` aborts. Agent step output is
+        // merged as strings and must never select the aborted state
+        // (adlc-workspace#167 security review).
+        if (result.output.aborted === true) {
           state.status = RunStatus.ABORTED;
           state.error = result.error;
           await state.appendLog({ event: "workflow_aborted", step_id: stepId });
@@ -1326,7 +1329,7 @@ export class WorkflowEngine {
       if (rec.status === StepStatus.PAUSED) return RunStatus.PAUSED;
       if (rec.status === StepStatus.FAILED) {
         const out = rec.output ?? {};
-        if (out.aborted) return RunStatus.ABORTED;
+        if (out.aborted === true) return RunStatus.ABORTED;
         if (template.continue_on_error !== true) return RunStatus.FAILED;
       }
       return null;
