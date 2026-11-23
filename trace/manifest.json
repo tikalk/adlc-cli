@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_id": "18e2b6f5",
+  "workflow_id": "factory",
+  "issue_ref": null,
+  "repository": {
+    "remote": "https://github.com/tikalk/adlc-cli.git",
+    "branch": "fix/167-blocked-conclusion-fails-step",
+    "run_start_sha": "6b38ebf89040662c461214f053971914c47a5ff9",
+    "head_sha": "6b38ebf89040662c461214f053971914c47a5ff9"
+  },
+  "agent": {
+    "id": null,
+    "session_id": null,
+    "parent_session_id": null
+  },
+  "model": {
+    "name": null,
+    "route": null
+  },
+  "container": {
+    "image_digest": null
+  },
+  "config": {
+    "skill_lock_hash": null,
+    "mcp_config_hash": null
+  },
+  "created_at": "2026-11-23T12:32:35.051Z",
+  "updated_at": "2026-11-23T12:32:37.625Z",
+  "finished_at": "2026-11-23T12:32:37.633Z",
+  "outcome": "failed",
+  "gateway_cost": null,
+  "retention_class": "full",
+  "workload_class": "unknown",
+  "trace_pruned": false
+}
