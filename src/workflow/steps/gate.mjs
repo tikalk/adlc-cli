@@ -302,6 +302,10 @@ export class GateStep extends StepBase {
       return new StepResult({ status: StepStatus.PAUSED, output });
     }
 
+    // A verdict that came in through the run's inputs (a relay such as the
+    // agentic-container runtime) records who gave it, from ADLC_ANSWERED_BY:
+    // a plain id only (adlc-workspace#66, the end-of-run summary).
+    const fromInput = choice !== null && choice !== undefined;
     if (choice === null || choice === undefined) {
       // Non-interactive: pause for later resume (the file is not read here).
       if (!process.stdin.isTTY) {
@@ -316,6 +320,8 @@ export class GateStep extends StepBase {
       );
     }
     output.choice = choice;
+    const answeredBy = (process.env.ADLC_ANSWERED_BY ?? "").trim();
+    if (fromInput && /^[A-Za-z0-9._@-]{1,64}$/.test(answeredBy)) output.answered_by = answeredBy;
 
     // Match rejection case-insensitively, agreeing with validate().
     if (isRejection(choice)) {

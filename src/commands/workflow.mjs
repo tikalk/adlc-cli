@@ -51,6 +51,8 @@ import {
   ACCENT,
 } from "../ui/index.mjs";
 
+import { buildRunSummary } from "../workflow/summary.mjs";
+
 const RUNS_DIR = ".adlc/workflows/runs";
 
 export async function cmdWorkflow(args, flags, rawArgv) {
@@ -63,6 +65,8 @@ export async function cmdWorkflow(args, flags, rawArgv) {
       return cmdWorkflowResume(rest, rawArgv);
     case "status":
       return cmdWorkflowStatus(rest);
+    case "summary":
+      return cmdWorkflowSummary(rest, rawArgv);
     case "validate":
       return cmdWorkflowValidate(rest, rawArgv);
     case "state":
@@ -674,6 +678,30 @@ async function cmdWorkflowStatus(rest) {
 function statusCell(status) {
   const { glyph, color } = statusStyle(status);
   return combine(style(glyph, color ?? "gray"), " ", status);
+}
+
+// ── summary ──────────────────────────────────────────────────────────────
+// One end-of-run message built from the run's files (adlc-workspace#66): the
+// outcome, the failing step, every MR/PR link, the conclusion, the gate
+// answers and who gave them, one line per step. `--json` prints the object.
+
+function cmdWorkflowSummary(rest, rawArgv = []) {
+  const runId = rest.find((a) => !a.startsWith("-"));
+  if (!runId || !/^[A-Za-z0-9._-]{1,128}$/.test(runId)) {
+    err(tint("Usage: adlc-cli workflow summary <run_id> [--json]", "gray"));
+    return 1;
+  }
+  const summary = buildRunSummary(join(process.cwd(), RUNS_DIR, runId));
+  if (summary === null) {
+    error(`Run state not found: ${join(RUNS_DIR, runId, "state.json")}`);
+    return 1;
+  }
+  if ((rawArgv ?? []).includes("--json") || rest.includes("--json")) {
+    console.log(JSON.stringify(summary));
+  } else {
+    console.log(summary.text);
+  }
+  return 0;
 }
 
 function loadStateRaw(runId, projectRoot) {

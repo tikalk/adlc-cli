@@ -143,6 +143,7 @@ The live SSH transport is the default: `--provider coder` provisions or reuses a
 | `workflow run <source>` | Execute a workflow — YAML path, installed ID, or built-in (`factory` = the outer loop) |
 | `workflow resume <run_id>` | Resume a paused/failed run; gates re-prompt (or bind a `verdict_input` via `--input`) |
 | `workflow status [run_id]` | List runs / show one run's step states |
+| `workflow summary <run_id> [--json]` | One end-of-run message from the run's files: outcome and duration, the failing step and its error, every MR/PR link (`mr_url`/`mr_urls`), the conclusion, each gate's answer and who gave it (`answered_by`, from `ADLC_ANSWERED_BY` when a relay resumes the gate), one line per step, and resumes. Redacted and capped to fit one chat message; no network calls |
 | `workflow validate <source>` | Validate a definition; `--headless` requires gates to declare `verdict_input` |
 | `workflow state …` | LLM-executor helpers: `start/advance/pause/fail/show` (ADR-395) |
 
