@@ -701,6 +701,30 @@ export async function cmdWorkspaceSetup(args, flags) {
     }
   }
 
+  // 5.7 devcontainer trigger — thin `devcontainer up` (no emulation, #101).
+  // Fires on declaration only (.devcontainer/devcontainer.json >
+  // .devcontainer.json > skip), never on a provider flag (ADR-443).
+  // Deterministic, no LLM: exact exit-code propagation, SIGTERM/SIGINT
+  // forwarding, dry-run silence. Fail-fast before skills/agent-led steps.
+  {
+    const { runDevcontainerTrigger } = await import("../utils/devcontainer.mjs");
+    sectionHeader("devcontainer (step 5.7)");
+    const trigger = await runDevcontainerTrigger({
+      projectRoot,
+      dryRun,
+      out: (line) => item(line.replace(/^  → /, ""), { glyph: sym.arrow, color: "gray" }),
+    });
+    if (trigger.ran) {
+      if (trigger.code !== 0) {
+        failure(trigger.error || "devcontainer up failed");
+        return trigger.code || 1;
+      }
+      if (!dryRun) changed = true;
+    } else {
+      item("no devcontainer declaration (skipping)", { glyph: sym.exists, color: "gray" });
+    }
+  }
+
   // Tracked files already changed before setup installs skills: `--link`
   // must still refuse on those, but not on files setup itself changes below.
   const dirtyBeforeSkills = !dryRun && ws.init && ws.link ? trackedChanges(projectRoot) : null;
