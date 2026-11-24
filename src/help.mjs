@@ -79,6 +79,7 @@ export function printCliHelp() {
         ["workflow restore <run_id>", "Restore a parked run from the remote run ref"],
         ["workflow board [--remote <name>]", "Pane of glass: local runs + remote refs/factory-runs/* (--format json)"],
         ["workflow status [run_id]", "List runs / show one run's step states"],
+        ["workflow summary <run_id> [--json]", "One end-of-run message: outcome, MR/PR links, gates, steps"],
         ["workflow validate <src>", "Validate a workflow definition (--headless checks gate verdicts)"],
         ["workflow search [query]", "Search available workflows in catalog"],
         ["workflow add <id|url> [--as <name>]", "Install a workflow from catalog or URL into workspace"],

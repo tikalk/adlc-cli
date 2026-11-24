@@ -48,6 +48,9 @@ export class StepContext {
     this.workflowDir = fields.workflowDir ?? null;
     // Whether the engine is re-executing the current step during resume.
     this.isResume = fields.isResume ?? false;
+    // Input keys passed in this run/resume call (not ones kept from an earlier
+    // call): a gate credits ADLC_ANSWERED_BY only for a verdict supplied now.
+    this.suppliedInputs = fields.suppliedInputs ?? [];
     // Run-level shas context gates resolve `since` from ({ runStartSha,
     // lastApprovedSha }); shared by reference so approvals are seen by
     // every derived context.

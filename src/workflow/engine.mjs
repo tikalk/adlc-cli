@@ -813,6 +813,7 @@ export class WorkflowEngine {
       runId: state.runId,
       workflowDir,
       gateIds: gateStepIds(definition.steps),
+      suppliedInputs: Object.keys(inputs ?? {}),
     });
     context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };
 
@@ -923,6 +924,7 @@ export class WorkflowEngine {
       runId: state.runId,
       workflowDir: state.workflowDir,
       gateIds: gateStepIds(definition.steps),
+      suppliedInputs: Object.keys(inputs ?? {}),
     });
     context.isResume = true;
     context.gateRun = { runStartSha: state.runStartSha, lastApprovedSha: state.lastApprovedSha };

@@ -302,6 +302,10 @@ export class GateStep extends StepBase {
       return new StepResult({ status: StepStatus.PAUSED, output });
     }
 
+    // A verdict that came in through the run's inputs (a relay such as the
+    // agentic-container runtime) records who gave it, from ADLC_ANSWERED_BY:
+    // a plain id only (adlc-workspace#66, the end-of-run summary).
+    const fromInput = choice !== null && choice !== undefined;
     if (choice === null || choice === undefined) {
       // Non-interactive: pause for later resume (the file is not read here).
       if (!process.stdin.isTTY) {
@@ -316,6 +320,17 @@ export class GateStep extends StepBase {
       );
     }
     output.choice = choice;
+    const answeredBy = (process.env.ADLC_ANSWERED_BY ?? "").trim();
+    // Only for a verdict supplied in this run/resume call: a verdict kept from
+    // an earlier call was not given by whoever resumed the run now.
+    // And only for the gate that asked: this gate was paused before this call
+    // (a verdict preset at the start, or one a second gate shares, was not an
+    // answer to this gate). A plain id, never starting with "@".
+    const suppliedNow = boundVerdictInput !== null && (context.suppliedInputs ?? []).includes(boundVerdictInput);
+    const askedBefore = context.steps?.[config.id]?.status === StepStatus.PAUSED;
+    if (fromInput && suppliedNow && askedBefore && /^[A-Za-z0-9._-][A-Za-z0-9._@-]{0,63}$/.test(answeredBy)) {
+      output.answered_by = answeredBy;
+    }
 
     // Match rejection case-insensitively, agreeing with validate().
     if (isRejection(choice)) {
