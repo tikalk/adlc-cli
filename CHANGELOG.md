@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.16.0] - 2026-11-24
+
+### Added
+
+- **`workflow summary <run_id> [--json]`: one end-of-run message** (#119, adlc-workspace#66) — built from the run's own files (`state.json`, `inputs.json`, `log.jsonl`), no network: the outcome and duration, the issue and dispatch, the failing step and its error, every MR/PR link of every step (`mr_url`, `mr_urls`), the conclusion (`execute`'s wins), each gate's answer and who gave it, one line per step, and resumes. Step text is redacted, one line and capped; the text fits one chat message, with `& < >` escaped and `@here`/`@channel`/`@everyone` broken. A gate line needs the engine-recorded step type `gate`. `--json` prints the same data plus `text`. A relay (the agentic-container runtime) posts it in the run thread.
+- **Gates record who answered** (#119) — a gate that was paused and is answered through its verdict input in this run/resume call records `answered_by` from `ADLC_ANSWERED_BY` (a plain id, never starting with `@`). A verdict preset at the start, or one a second gate shares, is not credited. `choice`, `answered_by` and `auto_passed` are now reserved in step output, so no step can supply a gate's fields.
+- **`workspace setup` runs `devcontainer up` when the project declares one** (#93, adlc-workspace#101, ADR-386-amendment-3) — after the directories and before skills: `.devcontainer/devcontainer.json`, else `.devcontainer.json`, else skipped. It shells out to the real devcontainer CLI (no emulation), propagates its exit code, forwards SIGTERM/SIGINT, and fails setup fast on a non-zero exit; `--dry-run` prints the command only. A project with a declaration needs the devcontainer CLI on PATH, otherwise setup fails with "devcontainer CLI not found".
+
 ## [2.15.1] - 2026-11-23
 
 ### Fixed
