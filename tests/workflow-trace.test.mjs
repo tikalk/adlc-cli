@@ -450,3 +450,106 @@ test("I-2: finalize refreshes manifest head_sha when steps moved the repo HEAD",
   assert.equal(after.repository.head_sha, movedSha, "finalize must record the post-step revision");
   assert.equal(after.repository.run_start_sha, startSha, "run_start_sha keeps the run-start revision");
 });
+
+// ── M25 G1 transcript producer contract (RED: producer missing) ──────────
+
+test("G1: recordStepTranscript writes redacted per-step files + git-ref artifacts", async () => {
+  const { recordStepTranscript, transcriptPaths } = await import("../src/workflow/trace.mjs");
+  const dir = tempDir("g1-transcript-");
+  const runDirPath = runDir(dir, "t1");
+  mkdirSync(runDirPath, { recursive: true });
+  const res = await withEnv("SEEDED_TRANSCRIPT_SECRET", "glpat-SEEDgabriel0011223344", async () =>
+    recordStepTranscript(runDirPath, "stepA", {
+      stdout: "hello glpat-SEEDgabriel0011223344 world\n",
+      sessionDump: async () => [{ role: "assistant", content: "echo glpat-SEEDgabriel0011223344 ok" }],
+    }),
+  );
+  assert.equal(res.ok, true);
+  const paths = transcriptPaths(runDirPath, "stepA");
+  assert.ok(!readFileSync(paths.stdoutLog, "utf-8").includes("glpat-SEEDgabriel0011223344"), "secret redacted from stdout.log");
+  assert.ok(!readFileSync(paths.sessionJsonl, "utf-8").includes("glpat-SEEDgabriel0011223344"), "secret redacted from session.jsonl");
+  const doc = readJson(tracePaths(runDirPath).artifacts);
+  assert.ok(doc.artifacts.some((a) => a.path === "steps/stepA.stdout.log" && a.storage_uri.startsWith("git-ref://")));
+  assert.ok(doc.artifacts.some((a) => a.path === "steps/stepA.session.jsonl" && a.storage_uri.startsWith("git-ref://")));
+});
+
+test("G1: producer is fail-soft — dump failure still writes stdout", async () => {
+  const { recordStepTranscript, transcriptPaths } = await import("../src/workflow/trace.mjs");
+  const dir = tempDir("g1-failsoft-");
+  const runDirPath = runDir(dir, "t2");
+  mkdirSync(runDirPath, { recursive: true });
+  const res = await recordStepTranscript(runDirPath, "stepB", {
+    stdout: "partial output\n",
+    sessionDump: async () => { throw new Error("db gone"); },
+  });
+  assert.equal(res.ok, true);
+  assert.ok(existsSync(transcriptPaths(runDirPath, "stepB").stdoutLog));
+});
+
+test("G1: transcript cap marks trimmed and skips later files without failing run", async () => {
+  const { initTrace, finalizeTrace, recordStepTranscript, transcriptPaths, TRANSCRIPT_MAX_FILE_BYTES } =
+    await import("../src/workflow/trace.mjs");
+  const dir = tempDir("g1-cap-");
+  const runDirPath = runDir(dir, "t3");
+  mkdirSync(runDirPath, { recursive: true });
+  initTrace(runDirPath, { state: { runId: "t3", workflowId: "w", status: "running", projectRoot: dir } });
+  const res = await recordStepTranscript(runDirPath, "stepBig", { stdout: "x".repeat(TRANSCRIPT_MAX_FILE_BYTES + 16) });
+  assert.equal(res.ok, true);
+  assert.equal(res.capped ?? res.skipped, true);
+  assert.equal(readJson(tracePaths(runDirPath).manifest).retention_class, "trimmed");
+  const res2 = await recordStepTranscript(runDirPath, "stepAfter", { stdout: "small\n" });
+  assert.equal(res2.ok, true);
+  assert.equal(res2.skipped, true);
+  assert.ok(!existsSync(transcriptPaths(runDirPath, "stepAfter").stdoutLog));
+});
+
+test("G1: retention keeps full transcripts on failure, manifest-only on unsampled success", async () => {
+  const { initTrace, finalizeTrace, recordStepTranscript } = await import("../src/workflow/trace.mjs");
+  const dir = tempDir("g1-retain-");
+  // Failed run: finalize keeps everything.
+  const failRun = runDir(dir, "t4fail");
+  mkdirSync(failRun, { recursive: true });
+  initTrace(failRun, { state: { runId: "t4fail", workflowId: "w", status: "running", projectRoot: dir } });
+  await recordStepTranscript(failRun, "s1", { stdout: "out\n" });
+  finalizeTrace(failRun, { status: "failed", projectRoot: dir });
+  assert.ok(existsSync(join(failRun, "steps", "s1.stdout.log")), "failed run keeps full transcripts");
+  // Completed unsampled run: events prune, transcripts already captured stay.
+  const okRun = runDir(dir, "t4ok");
+  mkdirSync(okRun, { recursive: true });
+  initTrace(okRun, { state: { runId: "t4ok", workflowId: "w", status: "running", projectRoot: dir } });
+  await recordStepTranscript(okRun, "s1", { stdout: "out\n" });
+  finalizeTrace(okRun, { status: "completed", projectRoot: dir });
+  const man = readJson(tracePaths(okRun).manifest);
+  assert.equal(man.retention_class, "manifest-only");
+  assert.ok(!existsSync(tracePaths(okRun).events), "unsampled success prunes events");
+  assert.ok(existsSync(join(okRun, "steps", "s1.stdout.log")), "unsampled success keeps captured transcripts");
+});
+
+test("G1: dumpAgentSession scopes the sqlite query by ADLC_AGENT_SESSION_ID", async () => {
+  const { dumpAgentSession } = await import("../src/workflow/trace.mjs");
+  const calls = [];
+  const rows = await dumpAgentSession("sess-9", {
+    query: async (dbPath, sessionId) => {
+      calls.push([dbPath, sessionId]);
+      return [{ type: "assistant", content: [{ type: "text", text: "hi" }] }];
+    },
+  });
+  assert.deepEqual(calls.map((c) => c[1]), ["sess-9"]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].text, "hi");
+});
+
+test("G1: re-recorded transcript overwrites artifact index entry instead of duplicating", async () => {
+  const { recordStepTranscript } = await import("../src/workflow/trace.mjs");
+  const dir = tempDir("g1-dedup-");
+  const runDirPath = runDir(dir, "t5");
+  mkdirSync(runDirPath, { recursive: true });
+  await recordStepTranscript(runDirPath, "s1", { stdout: "first\n" });
+  await recordStepTranscript(runDirPath, "s1", { stdout: "second\n" });
+  const paths_for = tracePaths(runDirPath);
+  const entries = readJson(paths_for.artifacts).artifacts.filter(
+    (a) => a.path === "steps/s1.stdout.log",
+  );
+  assert.equal(entries.length, 1);
+  assert.equal(readFileSync(join(runDirPath, "steps", "s1.stdout.log"), "utf-8"), "second\n");
+});

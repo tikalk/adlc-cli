@@ -14,6 +14,21 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { currentHeadSha } from "../gate-context.mjs";
 import { redactSecrets } from "../redact.mjs";
+import { dumpAgentSession, recordStepTranscript } from "../trace.mjs";
+
+export async function captureStepTranscript({ projectRoot, runId, stepId, stdout, sessionDump } = {}) {
+  try {
+    if (!projectRoot || !runId || !stepId) return { ok: true, skipped: true };
+    const runDir = join(projectRoot, ".adlc", "workflows", "runs", runId);
+    const dump =
+      typeof sessionDump === "function"
+        ? sessionDump
+        : async () => dumpAgentSession(process.env.ADLC_AGENT_SESSION_ID ?? null);
+    return await recordStepTranscript(runDir, stepId, { stdout: stdout ?? "", sessionDump: dump });
+  } catch {
+    return { ok: true, skipped: true };
+  }
+}
 
 const rid = (config) => `'${config.id ?? "?"}'`;
 
@@ -155,6 +170,7 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
 
   if (process.listenerCount("SIGINT") > 0 && exit.signal === "SIGINT") {
     output.interrupted = true;
+    await emitStepTranscript(context, config, output);
     return new StepResult({
       status: StepStatus.FAILED,
       error: `Agent step ${rid(config)} interrupted (SIGINT).`,
@@ -173,6 +189,7 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     // elapsed but no fast_failure mark.
     const agentElapsedSeconds = Number(process.hrtime.bigint() - spawnedAt) / 1e9;
     output.agent_elapsed_seconds = Math.round(agentElapsedSeconds * 10) / 10;
+    await emitStepTranscript(context, config, output);
     return new StepResult({
       status: StepStatus.FAILED,
       error:
@@ -192,6 +209,7 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     const fastFailure = !timedOut && agentElapsedSeconds < fastFailureThresholdSeconds();
     output.agent_elapsed_seconds = Math.round(agentElapsedSeconds * 10) / 10;
     if (fastFailure) output.fast_failure = true;
+    await emitStepTranscript(context, config, output);
     return new StepResult({
       status: StepStatus.FAILED,
       error:
@@ -213,6 +231,7 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
   // the whole object, and the refusal must still end the run (fail closed).
   const blocked = readBlockedConclusion(runEnv.ADLC_STEP_OUTPUT);
   if (blocked !== null) {
+    await emitStepTranscript(context, config, output);
     return new StepResult({
       status: StepStatus.FAILED,
       // Agent-written text: redact secrets with the env the agent ran with,
@@ -251,6 +270,7 @@ async function runAgentStep({ agentKey, model, mode, prompt, context, config, ti
     console.error(`[workflow] step ${rid(config)}: question payload ignored (${question.why})`);
     output.question_warning = `question payload ignored: ${question.why}`;
   }
+  await emitStepTranscript(context, config, output);
   return new StepResult({ status: StepStatus.COMPLETED, output });
 }
 
@@ -446,6 +466,22 @@ export function runContextEnv(context, config) {
   const issueRef = context.inputs?.issue_ref;
   if (typeof issueRef === "string" && issueRef !== "") env.ADLC_ISSUE_REF = issueRef;
   return env;
+}
+
+// Post-step transcript capture (ADR-548, fail-soft): runs at every agent-step
+// exit point after `output` is final. Never throws, never changes the result.
+async function emitStepTranscript(context, config, output) {
+  try {
+    const stepId = typeof config.id === "string" ? config.id : null;
+    const runId = typeof context.runId === "string" ? context.runId : null;
+    if (!stepId || !runId || !context.projectRoot) return;
+    await captureStepTranscript({
+      projectRoot: context.projectRoot,
+      runId,
+      stepId,
+      stdout: output?.stdout ?? "",
+    });
+  } catch {}
 }
 
 // The step's structured result: a flat object of short strings, merged only

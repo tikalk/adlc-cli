@@ -10,18 +10,23 @@
 // enters the trace passes through the shared text redactor first. Writes are
 // fail-soft at the call sites — telemetry never fails a run.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { RunStatus } from "./base.mjs";
 import { redactSecrets } from "./redact.mjs";
 import { readAgent } from "../utils/init-options.mjs";
+import { extractAssistantTexts } from "../format/audit.mjs";
 import { currentHeadSha } from "./gate-context.mjs";
 
 export const TRACE_SCHEMA_VERSION = 1;
+export const TRANSCRIPT_MAX_FILE_BYTES = 5 * 1024 * 1024;
+export const TRANSCRIPT_MAX_REF_BYTES = 20 * 1024 * 1024;
 
 const TRACE_DIR = "trace";
+const STEPS_DIR = "steps";
 const DEFAULT_AGENT_ID = "adlc-cli";
 
 // ADR-364 canonical event types, keyed by the run-log event name.
@@ -42,6 +47,19 @@ export function tracePaths(runDir) {
     manifest: join(dir, "manifest.json"),
     events: join(dir, "events.jsonl"),
     artifacts: join(dir, "artifacts.json"),
+  };
+}
+
+// Per-step transcript files (ADR-548): stdout captured on the step seam plus
+// the post-step agent-session dump, both inside the run dir so they ship in
+// refs/factory-runs/<run_id> via the existing ref write path.
+export function transcriptPaths(runDir, stepId) {
+  const safe = String(stepId ?? "step").replace(/[^A-Za-z0-9._-]+/g, "_");
+  return {
+    dir: join(runDir, STEPS_DIR),
+    stdoutLog: join(runDir, STEPS_DIR, `${safe}.stdout.log`),
+    sessionJsonl: join(runDir, STEPS_DIR, `${safe}.session.jsonl`),
+    safeStepId: safe,
   };
 }
 
@@ -287,6 +305,184 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 // Append a content-addressed artifact entry. `path` (relative to the run dir)
 // hashes a local file; otherwise an explicit content_sha256 is required.
 // Invalid input throws — callers decide whether that is fatal.
+// Fail-hard cap (ADR-548): stop transcript writes past the per-file / per-ref
+// budgets, mark `trimmed`, keep the run going. Per-file: any single write
+// larger than TRANSCRIPT_MAX_FILE_BYTES is refused. Per-ref: the running
+// total of steps/*.log + steps/*.session.jsonl past TRANSCRIPT_MAX_REF_BYTES
+// stops further transcript capture. Callers stay fail-soft: always {ok:true}.
+function transcriptBytesUsed(runDir) {
+  let total = 0;
+  try {
+    const dir = join(runDir, STEPS_DIR);
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".stdout.log") && !name.endsWith(".session.jsonl")) continue;
+      try {
+        total += statSync(join(dir, name)).size;
+      } catch {}
+    }
+  } catch {}
+  return total;
+}
+
+function markTrimmed(runDir) {
+  try {
+    const paths = tracePaths(runDir);
+    const raw = readFileSync(paths.manifest, "utf-8");
+    const doc = JSON.parse(raw);
+    if (doc.retention_class === "trimmed") return;
+    doc.retention_class = "trimmed";
+    doc.trace_pruned = false;
+    writeFileSync(paths.manifest, JSON.stringify(doc, null, 2) + "\n");
+    try {
+      const arts = JSON.parse(readFileSync(paths.artifacts, "utf-8"));
+      arts.retention_class = "trimmed";
+      writeFileSync(paths.artifacts, JSON.stringify(arts, null, 2) + "\n");
+    } catch {}
+  } catch {}
+}
+
+// Opencode session dump scoped by ADLC_AGENT_SESSION_ID (plan step seam):
+// rows come from the session store; only assistant texts are kept, via the
+// existing audit.mjs extractor. Fail-soft — any store error yields [].
+export async function dumpAgentSession(sessionId, { query = defaultSessionQuery, dbPath } = {}) {
+  if (!sessionId) return [];
+  let rows;
+  try {
+    rows = await query(dbPath, sessionId);
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const row of rows ?? []) {
+    for (const text of extractAssistantTexts(row)) out.push({ text });
+  }
+  return out;
+}
+
+// Default opencode sqlite lookup: session_message rows for one session id.
+// dbPath defaults to the well-known local store location.
+function defaultSessionQuery(dbPath, sessionId) {
+  const resolved =
+    dbPath ??
+    join(homedir() ?? "~", ".local", "share", "opencode", "opencode.db");
+  const sql = `SELECT data FROM session_message WHERE session_id = '${String(sessionId).replace(/'/g, "''")}' AND type = 'assistant' ORDER BY seq ASC LIMIT 4000`;
+  let raw;
+  try {
+    raw = execFileSync("sqlite3", ["-json", resolved, sql], { encoding: "utf-8" });
+  } catch {
+    return [];
+  }
+  if (!raw.trim()) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  return (Array.isArray(parsed) ? parsed : []).map((r) => {
+    try {
+      return JSON.parse(r.data);
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+// Per-step transcript producer (ADR-548, post-step cadence): capture-time
+// redacted stdout + session dump into steps/<step>.{stdout.log,session.jsonl}
+// and index both in trace/artifacts.json with git-ref:// URIs. Fail-soft:
+// every failure path returns {ok:true} (with capped/skipped flags) so a
+// producer failure never fails the step or run. No S3 changes (ref-first).
+export async function recordStepTranscript(runDir, stepId, { stdout = "", sessionDump = null } = {}) {
+  try {
+    const paths = transcriptPaths(runDir, stepId);
+    const manifestNow = (() => {
+      try {
+        return JSON.parse(readFileSync(tracePaths(runDir).manifest, "utf-8"));
+      } catch {
+        return null;
+      }
+    })();
+    if (manifestNow?.retention_class === "trimmed") return { ok: true, skipped: true };
+    if (transcriptBytesUsed(runDir) >= TRANSCRIPT_MAX_REF_BYTES) {
+      markTrimmed(runDir);
+      return { ok: true, skipped: true };
+    }
+    const cleanStdout = String(stdout ?? "");
+    if (Buffer.byteLength(cleanStdout, "utf-8") > TRANSCRIPT_MAX_FILE_BYTES) {
+      markTrimmed(runDir);
+      return { ok: true, skipped: true, capped: true };
+    }
+    mkdirSync(paths.dir, { recursive: true });
+    // Capture-time redaction (ADR-478): secrets never enter the ref even
+    // transiently. A redactor failure stops capture, never the step.
+    let redStdout;
+    try {
+      redStdout = redactDeep(cleanStdout);
+    } catch {
+      return { ok: true, skipped: true };
+    }
+    try {
+      const projected = transcriptBytesUsed(runDir) + Buffer.byteLength(redStdout, "utf-8");
+      if (projected > TRANSCRIPT_MAX_REF_BYTES) {
+        markTrimmed(runDir);
+        return { ok: true, skipped: true, capped: true };
+      }
+      writeFileSync(paths.stdoutLog, redStdout);
+    } catch {
+      return { ok: true, skipped: true };
+    }
+    // Session leg: failures write an empty file, never fail the step.
+    let rows = [];
+    if (typeof sessionDump === "function") {
+      try {
+        rows = (await sessionDump()) ?? [];
+      } catch {
+        rows = [];
+      }
+    }
+    let sessionText = "";
+    try {
+      const lines = [];
+      for (const row of rows) {
+        const texts =
+          row && typeof row === "object" && "text" in row
+            ? [row.text]
+            : extractAssistantTexts(row);
+        for (const t of texts) {
+          if (typeof t === "string" && t) lines.push(JSON.stringify({ text: redactDeep(t) }));
+        }
+      }
+      sessionText = lines.length ? lines.join("\n") + "\n" : "";
+    } catch {
+      sessionText = "";
+    }
+    try {
+      if (Buffer.byteLength(sessionText, "utf-8") > TRANSCRIPT_MAX_FILE_BYTES) {
+        markTrimmed(runDir);
+        rmSync(paths.stdoutLog, { force: true });
+        return { ok: true, skipped: true, capped: true };
+      }
+      const projected = transcriptBytesUsed(runDir) + Buffer.byteLength(sessionText, "utf-8");
+      if (projected > TRANSCRIPT_MAX_REF_BYTES) {
+        markTrimmed(runDir);
+        return { ok: true, skipped: true, capped: true };
+      }
+      writeFileSync(paths.sessionJsonl, sessionText);
+    } catch {
+      return { ok: true, skipped: true };
+    }
+    // Index both files (dedup by path: re-runs overwrite, never duplicate).
+    try {
+      recordArtifact(runDir, { path: `steps/${paths.safeStepId}.stdout.log`, media_type: "text/plain", storage_uri: `git-ref://steps/${paths.safeStepId}.stdout.log`, retention_class: "transcript", sensitivity: "redacted", producing_event: "step_completed" });
+      recordArtifact(runDir, { path: `steps/${paths.safeStepId}.session.jsonl`, media_type: "application/jsonl", storage_uri: `git-ref://steps/${paths.safeStepId}.session.jsonl`, retention_class: "transcript", sensitivity: "redacted", producing_event: "step_completed" });
+    } catch {}
+    return { ok: true };
+  } catch {
+    return { ok: true, skipped: true };
+  }
+}
+
 export function recordArtifact(runDir, artifact = {}) {
   const paths = tracePaths(runDir);
   mkdirSync(paths.dir, { recursive: true });
@@ -327,7 +523,10 @@ export function recordArtifact(runDir, artifact = {}) {
   }
 
   entry.created_at = nowIso();
-  doc.artifacts.push(redactDeep(entry));
+  const redacted = redactDeep(entry);
+  const prior = doc.artifacts.findIndex((a) => a && a.path === redacted.path);
+  if (prior >= 0) doc.artifacts[prior] = redacted;
+  else doc.artifacts.push(redacted);
   writeJson(paths.artifacts, doc);
   return entry;
 }
