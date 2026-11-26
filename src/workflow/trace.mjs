@@ -332,11 +332,11 @@ function markTrimmed(runDir) {
     if (doc.retention_class === "trimmed") return;
     doc.retention_class = "trimmed";
     doc.trace_pruned = false;
-    writeFileSync(paths.manifest, JSON.stringify(doc, null, 2) + "\n");
+    writeJson(paths.manifest, doc);
     try {
       const arts = JSON.parse(readFileSync(paths.artifacts, "utf-8"));
       arts.retention_class = "trimmed";
-      writeFileSync(paths.artifacts, JSON.stringify(arts, null, 2) + "\n");
+      writeJson(paths.artifacts, arts);
     } catch {}
   } catch {}
 }
@@ -459,8 +459,9 @@ export async function recordStepTranscript(runDir, stepId, { stdout = "", sessio
     }
     try {
       if (Buffer.byteLength(sessionText, "utf-8") > TRANSCRIPT_MAX_FILE_BYTES) {
+        // Fail-hard per ADR-548: stop capture, mark trimmed. Keep the
+        // already-written stdout leg — one oversize leg must not nuke both.
         markTrimmed(runDir);
-        rmSync(paths.stdoutLog, { force: true });
         return { ok: true, skipped: true, capped: true };
       }
       const projected = transcriptBytesUsed(runDir) + Buffer.byteLength(sessionText, "utf-8");
